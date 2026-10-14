@@ -650,14 +650,23 @@ jobs:
           dist build ${{ needs.plan.outputs.tag-flag }} --output-format=json "--artifacts=global" > dist-manifest.json
           echo "dist ran successfully"
 
-          # Add NVIDIA GPU detection to the shell installer — it auto-selects
-          # the CUDA archive when nvidia-smi is present on the target machine.
-          if [ -f "target/distrib/kwaainet-installer.sh" ]; then
-            bash ../scripts/patch-installer-cuda.sh target/distrib/kwaainet-installer.sh
-          else
-            echo "WARNING: kwaainet-installer.sh not found at target/distrib/"
-            find . -name "kwaainet-installer.sh" 2>/dev/null
-          fi
+          # Add NVIDIA GPU detection to both generated installers — each
+          # auto-selects the CUDA archive when nvidia-smi is present on the
+          # target machine. A missing installer is a release-blocking error:
+          # when this was a warning, the PowerShell installer went unpatched
+          # for months and every Windows GPU machine installed the CPU build.
+          for installer in kwaainet-installer.sh kwaainet-installer.ps1; do
+            case "$installer" in
+              *.sh)  patcher=patch-installer-cuda.sh ;;
+              *.ps1) patcher=patch-installer-cuda-ps1.sh ;;
+            esac
+            if [ ! -f "target/distrib/$installer" ]; then
+              echo "ERROR: $installer not found at target/distrib/"
+              find . -name "$installer" 2>/dev/null
+              exit 1
+            fi
+            bash "../scripts/$patcher" "target/distrib/$installer"
+          done
 
           # Parse out what we just built and upload it to scratch storage
           echo "paths<<EOF" >> "$GITHUB_OUTPUT"

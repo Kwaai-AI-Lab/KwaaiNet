@@ -31,7 +31,37 @@ function Invoke-CudaUpgrade($download_url, [ref]$artifact_name_ref) {
         $gpuName = & nvidia-smi --query-gpu=name --format=csv,noheader 2>$null | Select-Object -First 1
     } catch { return }
     if ([string]::IsNullOrWhiteSpace($gpuName)) { return }
-    $cudaName = "kwaainet-x86_64-pc-windows-msvc-cuda.zip"
+    # The lean archive is the binary alone; the CUDA runtime DLLs live only in
+    # the -cuda-full archive. A machine installing for the first time has no
+    # runtime to link against, and the CUDA binary then dies at startup with
+    # 0xC0000135 (DLL not found) before printing anything. So take the full
+    # archive unless cublas64_12.dll is already resolvable here — the same
+    # choice install_update() makes in updater.rs, on the same file.
+    $cudaRuntimePresent = $false
+    $probeDirs = @()
+    if ($env:KWAAINET_INSTALL_DIR) {
+        $probeDirs += $env:KWAAINET_INSTALL_DIR
+        $probeDirs += (Join-Path $env:KWAAINET_INSTALL_DIR "bin")
+    }
+    if ($env:CARGO_HOME) { $probeDirs += (Join-Path $env:CARGO_HOME "bin") }
+    else { $probeDirs += (Join-Path $HOME ".cargoin") }
+    if ($env:CUDA_PATH) { $probeDirs += (Join-Path $env:CUDA_PATH "bin") }
+    $probeDirs += ($env:PATH -split ";" | Where-Object { $_ })
+    foreach ($dir in $probeDirs) {
+        # Not Test-Path: a PATH entry with invalid characters makes it emit a
+        # non-terminating ArgumentException, which try/catch does not catch —
+        # it printed a red error mid-install. File::Exists just returns false.
+        try {
+            $probe = [System.IO.Path]::Combine($dir.Trim('"'), "cublas64_12.dll")
+        } catch { continue }
+        if ([System.IO.File]::Exists($probe)) { $cudaRuntimePresent = $true; break }
+    }
+    if ($cudaRuntimePresent) {
+        $cudaName = "kwaainet-x86_64-pc-windows-msvc-cuda.zip"
+    } else {
+        $cudaName = "kwaainet-x86_64-pc-windows-msvc-cuda-full.zip"
+        Write-Host "No CUDA runtime on this machine - downloading the full build (~1 GB, once)"
+    }
     $cudaUrl = "$download_url/$cudaName"
     try {
         Invoke-WebRequest -Uri $cudaUrl -Method Head -ErrorAction Stop | Out-Null
@@ -60,21 +90,18 @@ CUDA_PATCH
 # PowerShell requires param() to be the first non-comment statement, so we
 # must inject after its closing ')' rather than at the top of the file.
 PARAM_END=$(awk '/^param/{found=1} found && /^\)/{print NR; exit}' "$INSTALLER")
-if [ -n "$PARAM_END" ]; then
-    {
-        head -n "$PARAM_END" "$INSTALLER"
-        cat "$CUDA_FUNC"
-        tail -n +"$((PARAM_END + 1))" "$INSTALLER"
-    } > "${INSTALLER}.tmp"
-else
-    # Fallback: no param() block found, insert after line 1
-    echo "WARNING: param() block not found — inserting after line 1 (fallback)"
-    {
-        head -1 "$INSTALLER"
-        cat "$CUDA_FUNC"
-        tail -n +2 "$INSTALLER"
-    } > "${INSTALLER}.tmp"
+if [ -z "$PARAM_END" ]; then
+    # There is no safe fallback: PowerShell requires param() to be the first
+    # non-comment statement, so injecting anywhere else produces an installer
+    # that will not parse. Fail the release instead of shipping one.
+    echo "ERROR: no param() block in $INSTALLER — cannot inject the CUDA helper"
+    exit 1
 fi
+{
+    head -n "$PARAM_END" "$INSTALLER"
+    cat "$CUDA_FUNC"
+    tail -n +"$((PARAM_END + 1))" "$INSTALLER"
+} > "${INSTALLER}.tmp"
 mv "${INSTALLER}.tmp" "$INSTALLER"
 rm -f "$CUDA_FUNC"
 
@@ -87,9 +114,10 @@ if grep -q '\$url = "\$download_url/\$artifact_name"' "$INSTALLER"; then
     sed -i '/\$url = "\$download_url\/\$artifact_name"/a\  if ($global:_cuda_selected) { if ($global:_cuda_checksum -ne "") { $checksum = $global:_cuda_checksum } else { $checksum = "" } }' "$INSTALLER"
     echo "Patched ${INSTALLER}: CUDA auto-detection and checksum override added"
 else
-    echo "WARNING: Could not find '\$url = \"\$download_url/\$artifact_name\"' in PS1 installer"
-    echo "  Searching for download-related lines:"
+    echo "ERROR: could not find '\$url = \"\$download_url/\$artifact_name\"' in PS1 installer"
+    echo "  Download-related lines, for whoever updates this script:"
     grep -n 'download_url\|artifact_name\|downloadFile' "$INSTALLER" | head -10
+    exit 1
 fi
 
 # Inject CUDA DLL collection into the Download function.
@@ -98,11 +126,28 @@ fi
 # by the existing copy loop.
 # We look for the closing brace of: foreach ($bin_name in $bin_names) { ... }
 # which is followed by: $lib_paths = @()
-CUDA_DLL_INJECT='  if ($global:_cuda_selected) { Get-ChildItem "$tmp\\*.dll" -ErrorAction SilentlyContinue | Where-Object { $bin_paths -notcontains $_.FullName } | ForEach-Object { $bin_paths += $_.FullName; Write-Verbose "  Bundled CUDA lib: $($_.Name)" } }'
+CUDA_DLL_INJECT='  if ($global:_cuda_selected) { Get-ChildItem -Path "$tmp" -Filter *.dll -Recurse -ErrorAction SilentlyContinue | Where-Object { $bin_paths -notcontains $_.FullName } | ForEach-Object { $bin_paths += $_.FullName; Write-Host "  Bundled CUDA lib: $($_.Name)" } }'
 
 if grep -q '\$lib_paths = @()' "$INSTALLER"; then
     sed -i "/\\\$lib_paths = @()/i\\${CUDA_DLL_INJECT}" "$INSTALLER"
     echo "Patched ${INSTALLER}: CUDA DLL collection added to Download function"
 else
-    echo "WARNING: Could not find '\$lib_paths = @()' in PS1 installer"
+    echo "ERROR: could not find '\$lib_paths = @()' in PS1 installer"
+    exit 1
 fi
+
+# ── Verify, because `sed -i` succeeds when it matches nothing ────────────
+# An unpatched installer is indistinguishable from a patched one at a glance,
+# and the difference only shows up as a CPU-only binary on somebody's GPU
+# machine months later. Assert every injection landed.
+missing=""
+for marker in     'function Invoke-CudaUpgrade'     'Invoke-CudaUpgrade $download_url ([ref]$artifact_name)'     'if ($global:_cuda_selected) { if ($global:_cuda_checksum'     'Bundled CUDA lib:'
+do
+    grep -qF -- "$marker" "$INSTALLER" || missing="${missing}
+  ${marker}"
+done
+if [ -n "$missing" ]; then
+    echo "ERROR: ${INSTALLER} is missing CUDA injections after patching:${missing}"
+    exit 1
+fi
+echo "Verified ${INSTALLER}: all CUDA injections present"
