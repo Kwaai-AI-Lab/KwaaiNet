@@ -3013,82 +3013,42 @@ async fn spawn_session_dht_records(
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
 ) {
     tokio::spawn(async move {
+        let fail = |code, msg: String| {
+            let out_tx = out_tx.clone();
+            async move {
+                let _ = out_tx.send(Ok(error_frame(id, code, &msg))).await;
+            }
+        };
+        // The slot fills as the node starts, so retrying is right.
         let Some(storage) = dht.read().await.clone() else {
-            let _ = out_tx
-                .send(Ok(error_frame(
-                    id,
-                    ErrorCode::Unimplemented,
-                    "dht_records requires the native p2p stack",
-                )))
-                .await;
-            return;
+            let msg = "the p2p node is still starting; retry shortly";
+            return fail(ErrorCode::Unavailable, msg.to_string()).await;
         };
 
         // Values are up to MAX_VALUE_BYTES each, so a whole-store listing that
         // carried them could not fit a frame at any useful limit.
         if req.include_values && req.key_ids.is_empty() {
-            let _ = out_tx
-                .send(Ok(error_frame(
-                    id,
-                    ErrorCode::InvalidArgument,
-                    "include_values needs key_ids: values are only served for named records",
-                )))
-                .await;
-            return;
+            let msg = "include_values needs key_ids: values are only served for named records";
+            return fail(ErrorCode::InvalidArgument, msg.to_string()).await;
         }
-
-        let known = crate::dht_records::known_keys(&cfg);
-        let names: HashMap<&str, &str> = known
-            .iter()
-            .map(|k| (k.key_id.as_str(), k.name.as_str()))
-            .collect();
-
-        // Filtered on the hex id rather than the raw key so the client can echo
-        // back exactly what it was shown.
-        let wanted: BTreeSet<&str> = req.key_ids.iter().map(String::as_str).collect();
-        let now = kwaai_hivemind_dht::value::get_dht_time();
+        let keys = match parse_key_ids(&req.key_ids) {
+            Ok(keys) => keys,
+            Err(msg) => return fail(ErrorCode::InvalidArgument, msg).await,
+        };
         let limit = match req.limit as usize {
             0 => DHT_RECORDS_DEFAULT_LIMIT,
             n => n.min(DHT_RECORDS_MAX_LIMIT),
         };
 
-        let matched: Vec<_> = storage
-            .local_records()
-            .into_iter()
-            .filter(|record| {
-                wanted.is_empty() || wanted.contains(hex::encode(&record.summary.key).as_str())
-            })
-            .collect();
-        // Counted before truncation: a client comparing it against `records`
-        // is how it learns the listing was cut short.
-        let total_records = matched.len() as u32;
-
-        let records = matched
-            .into_iter()
-            .take(limit)
-            .map(|record| {
-                let key_id = hex::encode(&record.summary.key);
-                // A second lock acquisition per record, so it is taken only for
-                // records that will carry a value — and from this row's own
-                // tier, or a cache row would show the primary tier's value.
-                let stored = req
-                    .include_values
-                    .then(|| storage.local_record(&record.summary.key, record.in_cache))
-                    .flatten();
-                crate::dht_records::local_record(
-                    &record,
-                    stored.as_ref().map(|(v, _)| v),
-                    names.get(key_id.as_str()).copied().unwrap_or_default(),
-                    now,
-                )
-            })
-            .collect();
-
-        let reply = DhtRecordsReply {
-            server_time: now_rfc3339(),
-            records,
-            known_keys: known,
-            total_records,
+        // A full listing walks a million-entry store under its read lock.
+        let include_values = req.include_values;
+        let built = tokio::task::spawn_blocking(move || {
+            build_dht_records(&storage, &cfg, include_values, &keys, limit)
+        })
+        .await;
+        let reply = match built {
+            Ok(reply) => reply,
+            Err(e) => return fail(ErrorCode::Internal, format!("dht_records failed: {e}")).await,
         };
         let _ = out_tx
             .send(Ok(ServerFrame {
@@ -3098,6 +3058,81 @@ async fn spawn_session_dht_records(
             .await;
         let _ = out_tx.send(Ok(done_frame(id))).await;
     });
+}
+
+/// Decode `key_ids` to raw DHT keys, accepting either case and a `0x` prefix.
+fn parse_key_ids(ids: &[String]) -> Result<BTreeSet<Vec<u8>>, String> {
+    ids.iter()
+        .map(|id| {
+            let digits = id
+                .strip_prefix("0x")
+                .or_else(|| id.strip_prefix("0X"))
+                .unwrap_or(id);
+            match hex::decode(digits) {
+                Ok(key) if !key.is_empty() => Ok(key),
+                _ => Err(format!("key_ids: {id:?} is not a hex DHT id")),
+            }
+        })
+        .collect()
+}
+
+/// Build a `dht_records` reply. Blocking: it takes the store's locks.
+fn build_dht_records(
+    storage: &DHTStorage,
+    cfg: &KwaaiNetConfig,
+    include_values: bool,
+    keys: &BTreeSet<Vec<u8>>,
+    limit: usize,
+) -> DhtRecordsReply {
+    let known = crate::dht_records::known_keys(cfg);
+    let names: HashMap<&str, &str> = known
+        .iter()
+        .map(|k| (k.key_id.as_str(), k.name.as_str()))
+        .collect();
+    let now = kwaai_hivemind_dht::value::get_dht_time();
+
+    // Counted before truncation: a client comparing it against `records`
+    // is how it learns the listing was cut short.
+    let (matched, total_records) = if keys.is_empty() {
+        storage.local_records_page(limit)
+    } else {
+        let mut rows = storage.local_records_for(keys);
+        let total = rows.len();
+        rows.truncate(limit);
+        (rows, total)
+    };
+
+    let mut budget = crate::dht_records::ValueBudget::default();
+    let records: Vec<_> = matched
+        .iter()
+        .map(|record| {
+            let key_id = hex::encode(&record.summary.key);
+            // Read from this row's own tier, or a cache row would show the
+            // primary tier's value.
+            let held = include_values
+                .then(|| {
+                    storage.with_local_record(&record.summary.key, record.in_cache, |v, _| {
+                        crate::dht_records::hold_value(v, &budget)
+                    })
+                })
+                .flatten();
+            crate::dht_records::local_record(
+                record,
+                held,
+                names.get(key_id.as_str()).copied().unwrap_or_default(),
+                now,
+                &mut budget,
+            )
+        })
+        .collect();
+
+    DhtRecordsReply {
+        server_time: now_rfc3339(),
+        values_truncated: records.iter().any(|r| r.values_truncated),
+        records,
+        known_keys: known,
+        total_records: total_records as u32,
+    }
 }
 
 /// A bootstrap counts as reachable while it is connected or accepted a
@@ -5612,6 +5647,145 @@ mod tests {
             assert_eq!(sweep_stale_spools(tmp.path(), day), 1);
             assert!(!stale.exists());
             assert!(live.exists() && other.exists());
+        }
+    }
+
+    fn store_values(storage: &DHTStorage, rows: Vec<(&[u8], &[u8], Vec<u8>)>) {
+        use kwaai_hivemind_dht::protocol::{RequestAuthInfo, StoreRequest};
+        let n = rows.len();
+        let exp = kwaai_hivemind_dht::value::get_dht_time() + 3600.0;
+        let (keys, subkeys, values) = rows.into_iter().fold(
+            (vec![], vec![], vec![]),
+            |(mut k, mut s, mut v), (key, subkey, value)| {
+                k.push(key.to_vec());
+                s.push(subkey.to_vec());
+                v.push(value);
+                (k, s, v)
+            },
+        );
+        let ok = storage.handle_store(StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys,
+            subkeys,
+            values,
+            expiration_time: vec![exp; n],
+            in_cache: vec![false; n],
+            peer: None,
+        });
+        assert!(ok.store_ok.iter().all(|ok| *ok), "fixture stores must land");
+    }
+
+    /// Values big enough to blow a 4 MiB frame many times over must come back
+    /// in one that fits, with every withheld value flagged.
+    #[test]
+    fn dht_records_values_stay_inside_one_frame() {
+        use kwaai_hivemind_dht::IS_REGULAR_VALUE;
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        // Not msgpack, so each renders as hex at twice its raw size.
+        let big = vec![0xc1u8; 900 * 1024];
+        let subkeys: Vec<[u8; 1]> = (0..8u8).map(|i| [i]).collect();
+        let mut rows: Vec<(&[u8], &[u8], Vec<u8>)> = subkeys
+            .iter()
+            .map(|sk| (b"dict".as_slice(), sk.as_slice(), big.clone()))
+            .collect();
+        for key in [b"r1", b"r2", b"r3"] {
+            rows.push((key.as_slice(), IS_REGULAR_VALUE, big.clone()));
+        }
+        store_values(&storage, rows);
+
+        let keys = [
+            b"dict".to_vec(),
+            b"r1".to_vec(),
+            b"r2".to_vec(),
+            b"r3".to_vec(),
+        ]
+        .into();
+        let reply = build_dht_records(&storage, &KwaaiNetConfig::default(), true, &keys, 100);
+        let frame = ServerFrame {
+            id: 1,
+            body: Some(server_frame::Body::DhtRecords(reply.clone())),
+        };
+        let len = prost_rpc::Message::encoded_len(&frame);
+        assert!(len < 4 << 20, "{len} bytes");
+
+        assert_eq!(reply.records.len(), 4);
+        assert!(reply.values_truncated);
+        let dict = &reply.records[0];
+        assert_eq!(dict.subkey_count, 8);
+        assert!(!dict.subkeys.is_empty() && dict.subkeys.len() < 8);
+        assert!(dict.values_truncated);
+        // Once spent, nothing later is attached, however small.
+        for r in &reply.records[1..] {
+            assert!(r.value.is_none() && r.values_truncated, "{}", r.key_id);
+        }
+    }
+
+    /// The subkey cap truncates one record without spending the budget the
+    /// next record's value needs.
+    #[test]
+    fn dht_records_subkey_cap_is_per_record() {
+        use kwaai_hivemind_dht::IS_REGULAR_VALUE;
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        let n = crate::dht_records::MAX_SUBKEYS_PER_RECORD + 10;
+        let subkeys: Vec<[u8; 2]> = (0..n as u16).map(u16::to_be_bytes).collect();
+        let mut rows: Vec<(&[u8], &[u8], Vec<u8>)> = subkeys
+            .iter()
+            .map(|sk| (b"a-dict".as_slice(), sk.as_slice(), vec![0x01]))
+            .collect();
+        rows.push((b"b-plain", IS_REGULAR_VALUE, vec![0x2a]));
+        store_values(&storage, rows);
+
+        let keys = [b"a-dict".to_vec(), b"b-plain".to_vec()].into();
+        let reply = build_dht_records(&storage, &KwaaiNetConfig::default(), true, &keys, 100);
+        let (dict, plain) = (&reply.records[0], &reply.records[1]);
+        assert_eq!(dict.subkey_count as usize, n);
+        assert_eq!(
+            dict.subkeys.len(),
+            crate::dht_records::MAX_SUBKEYS_PER_RECORD
+        );
+        assert!(dict.values_truncated && reply.values_truncated);
+        assert_eq!(
+            plain.value.as_ref().map(|v| v.rendered.as_str()),
+            Some("42")
+        );
+        assert!(!plain.values_truncated);
+    }
+
+    /// A listing pages with the total still counting every match, and a
+    /// filtered one finds its keys by point lookup.
+    #[test]
+    fn dht_records_limit_and_key_filter() {
+        use kwaai_hivemind_dht::IS_REGULAR_VALUE;
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        let names: Vec<[u8; 1]> = (0..5u8).map(|i| [i]).collect();
+        store_values(
+            &storage,
+            names
+                .iter()
+                .map(|k| (k.as_slice(), IS_REGULAR_VALUE, vec![0xc0]))
+                .collect(),
+        );
+        let cfg = KwaaiNetConfig::default();
+
+        let page = build_dht_records(&storage, &cfg, false, &BTreeSet::new(), 2);
+        assert_eq!(page.total_records, 5);
+        let ids: Vec<_> = page.records.iter().map(|r| r.key_id.as_str()).collect();
+        assert_eq!(ids, ["00", "01"]);
+        assert!(page.records.iter().all(|r| r.value.is_none()));
+
+        let keys = parse_key_ids(&["0X03".into(), "ff".into()]).unwrap();
+        let picked = build_dht_records(&storage, &cfg, false, &keys, 100);
+        assert_eq!(picked.total_records, 1);
+        assert_eq!(picked.records[0].key_id, "03");
+    }
+
+    #[test]
+    fn dht_key_ids_accept_either_case_and_0x() {
+        let lower = parse_key_ids(&["abcd".into()]).unwrap();
+        assert_eq!(parse_key_ids(&["ABCD".into()]).unwrap(), lower);
+        assert_eq!(parse_key_ids(&["0xAbCd".into()]).unwrap(), lower);
+        for bad in ["xyz", "abc", "", "0x"] {
+            assert!(parse_key_ids(&[bad.into()]).is_err(), "{bad:?}");
         }
     }
 }
