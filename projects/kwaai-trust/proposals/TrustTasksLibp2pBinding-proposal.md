@@ -1,8 +1,13 @@
 <!--
-REVISION 3, POSTED to dtgwg-trust-tasks-tf#248 on 2026-10-14 (16:53 UTC) from commit 8a7792ce,
-without this HTML header: https://github.com/trustoverip/dtgwg-trust-tasks-tf/discussions/248#discussioncomment-18929785
+REVISION 4, DRAFT, NOT POSTED (2026-10-14). Adds the decision that KwaaiNet becomes a
+Verifiable Trust Community, peer endorsement via vtc/relationships/request as the first task,
+diagrams 5 and 6, a correction of the framework version, and three new questions.
+REVISION 3 was POSTED to dtgwg-trust-tasks-tf#248 on 2026-10-14 (16:53 UTC) from commit
+8a7792ce, without this HTML header:
+https://github.com/trustoverip/dtgwg-trust-tasks-tf/discussions/248#discussioncomment-18929785
+(`git show 8a7792ce:projects/kwaai-trust/proposals/TrustTasksLibp2pBinding-proposal.md`).
 Revision 2 was posted as a reply on 2026-08-19 (17:02 UTC); its text is this file at
-commit aec4a589 (`git show aec4a589:projects/kwaai-trust/proposals/TrustTasksLibp2pBinding-proposal.md`).
+commit aec4a589.
 These HTML comments do not render on GitHub — paste the whole file.
 Paragraphs are deliberately unwrapped: GitHub joins soft-wrapped lines, and long
 lines survive copy-paste into the comment box unchanged.
@@ -11,7 +16,14 @@ in the discussion as well as in the repo. If the diagrams change, re-render the 
 update the SHA (see projects/kwaai-trust/design/DTGWG-TrustStack-diagrams.md).
 -->
 
-Thanks @stormer78 for the go-ahead on our call. This revision does three things: it shows how we would build the binding, in five diagrams; it corrects two statements in our last reply, one of them about KwaaiNet itself; and it asks you to confirm a few points here in writing, so the decision is on the record where you asked for it to be.
+Thanks @stormer78 for the go-ahead on our call. This revision does four things: it shows how we would build the binding, in six diagrams; it corrects three statements we made earlier, one of them about KwaaiNet itself; it says how KwaaiNet will use Trust Tasks, as a Verifiable Trust Community; and it asks you to confirm a few points here in writing, so the decision is on the record where you asked for it to be.
+
+## What changed since revision 3
+
+- **KwaaiNet will become a Verifiable Trust Community.** We mapped the 634 Trust Task specifications in the registry onto the node-to-node exchanges KwaaiNet has or plans. 34 fit directly between two nodes, and about 155 more apply once the network itself is a community. That settles it: the community model is where the registry's identity tasks live, so that is how we will use them.
+- **Our first real task is one you already have.** Peer endorsement uses `vtc/relationships/request` 0.2 unchanged: a node asks a peer for a Verifiable Relationship Credential and receives it in the response. The prototype therefore needs no new task specification, only the binding. Diagram 5 now shows it, and the new diagram 6 shows the community.
+- **A correction: the framework version.** We wrote that the binding would target framework 0.7.0. That is a Working Draft with no published envelope schema, and your registry checks require a published release. We will target a published one; see the questions at the end.
+- **Three new questions,** listed under "Still open".
 
 ## What we got wrong in the first version
 
@@ -43,13 +55,13 @@ This is a better proposition than another transport binding, and we would rather
 
 **libp2p identity converts cleanly to a VID.** For the common key types (Ed25519, secp256k1, ECDSA) a PeerId is an encoding of the peer's public key, and every connection is authenticated against it by Noise. The binding can therefore derive the peer's VID as a `did:key` deterministically and verify it offline, and an in-band `did:key`, `did:peer:0` or `did:peer:2` naming the same key can be accepted as consistent. Routing information keeps your reason for `did:peer`: a node can publish an optional `did:peer:2` whose service endpoint carries its multiaddrs, which is where the bridge needs it.
 
-## How it would work, in five diagrams
+## How it would work, in six diagrams
 
-The diagrams are coloured by owner. **Green** is the crate we would contribute to your workspace, `trust-tasks-libp2p`. **Grey** is Trust Tasks core and existing crates (`trust-tasks-rs`, `dtg-credentials`, the Affinidi stack). **Blue** is the node application — KwaaiNet in these diagrams, but any libp2p stack plays the same part. Names marked *(proposed)* do not exist yet. The Mermaid source is [here](https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/2794d9407a690cd5a32adb72dc9a3a9429232332/projects/kwaai-trust/design/DTGWG-TrustStack-diagrams.md).
+The diagrams are coloured by owner. **Green** is the crate we would contribute to your workspace, `trust-tasks-libp2p`. **Grey** is Trust Tasks core and existing crates (`trust-tasks-rs`, `dtg-credentials`, the Affinidi stack). **Blue** is the node application — KwaaiNet in these diagrams, but any libp2p stack plays the same part. Names marked *(proposed)* do not exist yet. The Mermaid source is [here](https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/892ffb91c15e3084ae4dc1ff8ae09be03e850ba3/projects/kwaai-trust/design/DTGWG-TrustStack-diagrams.md).
 
 ### 1. Data flow: one Trust Task between two peers
 
-![Data flow of one Trust Task between two peers](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/2794d9407a690cd5a32adb72dc9a3a9429232332/projects/kwaai-trust/design/img/dtgwg-trust-stack/1-data-flow.png)
+![Data flow of one Trust Task between two peers](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/892ffb91c15e3084ae4dc1ff8ae09be03e850ba3/projects/kwaai-trust/design/img/dtgwg-trust-stack/1-data-flow.png)
 
 The sending application hands a Trust Task to the crate. The crate sets the issuer to the `did:key` derived from the node's own PeerId, attaches any credential, wraps the document in a small protobuf frame (compressed when worthwhile) and writes it to a libp2p stream on the binding's protocol ID. The stream crosses the network directly or through a circuit relay; either way it is end-to-end Noise. On the receiving side the application passes three things to the crate: the stream, the Noise-authenticated PeerId, and whether the path was relayed. The crate rejects oversize frames (and oversize documents after decompression), cross-checks the document's issuer against the transport identity per §4.8.1, and hands the document to `consume_inbound` for replay and freshness checks before the application sees it. A mismatched issuer gets an `identity_mismatch` error back on the same stream.
 
@@ -57,34 +69,40 @@ What matters for maintenance is the boundary: **the application's networking cod
 
 ### 2. Entities: identity, tasks and credentials
 
-![Entity relationships](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/2794d9407a690cd5a32adb72dc9a3a9429232332/projects/kwaai-trust/design/img/dtgwg-trust-stack/2-entity-relationships.png)
+![Entity relationships](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/892ffb91c15e3084ae4dc1ff8ae09be03e850ba3/projects/kwaai-trust/design/img/dtgwg-trust-stack/2-entity-relationships.png)
 
-Each node has exactly one VID, a `did:key` derived from its PeerId, and optionally a `did:peer:2` routing DID; dialable addresses otherwise travel in libp2p signed peer records. A Trust Task names an issuer and a recipient VID, belongs to a thread that carries its lifecycle state, and travels in a binding frame that carries the document's JSON bytes and a compression flag. Credentials follow the DTG credential specification: an issuer and a subject VID, the required `issuerScope`, an `eddsa-jcs-2022` Data Integrity proof, and for statement credentials a predicate the verifier accepts. A credential can be bound to the Trust Task that produced it through `taskContext`.
+Each node has exactly one VID, a `did:key` derived from its PeerId, and optionally a `did:peer:2` routing DID; dialable addresses otherwise travel in libp2p signed peer records. A Trust Task names an issuer and a recipient VID, belongs to a thread that carries its lifecycle state, and travels in a binding frame that carries the document's JSON bytes and a compression flag. Credentials follow the DTG credential specification: an issuer and a subject VID, the required `issuerScope`, an `eddsa-jcs-2022` Data Integrity proof, and for statement credentials a predicate the verifier accepts. A credential can be bound to the Trust Task that produced it through `taskContext`. A node may be a member of a community, which issues membership and statement credentials, publishes members' relationship credentials as its trust graph, and has its keys held by a Verifiable Trust Agent (dashed: still open for us).
 
 ### 3. A request, its response, and a rejected sender
 
-![Request, response and identity mismatch](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/2794d9407a690cd5a32adb72dc9a3a9429232332/projects/kwaai-trust/design/img/dtgwg-trust-stack/3-sequence-request-response.png)
+![Request, response and identity mismatch](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/892ffb91c15e3084ae4dc1ff8ae09be03e850ba3/projects/kwaai-trust/design/img/dtgwg-trust-stack/3-sequence-request-response.png)
 
 The coloured bands show the same ownership split. Once the stream is open, the crate checks the frame size and resolves the parties. If the in-band issuer matches the transport identity, or was omitted and is filled in from it, core checks replay and freshness and the application answers on the same stream. If it does not match, the crate's `reject()` returns `identity_mismatch` and the application never sees the task. Closing, resetting or dropping a stream ends the exchange but changes no task state.
 
 ### 4. Work that outlives its stream
 
-![Late response on a fresh stream](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/2794d9407a690cd5a32adb72dc9a3a9429232332/projects/kwaai-trust/design/img/dtgwg-trust-stack/4-sequence-late-response.png)
+![Late response on a fresh stream](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/892ffb91c15e3084ae4dc1ff8ae09be03e850ba3/projects/kwaai-trust/design/img/dtgwg-trust-stack/4-sequence-late-response.png)
 
 A task can outlive the connection that started it. The consumer can report `executing` and the first stream can close. When the result is ready the consumer opens a new stream, and the producer matches it to the task by `id` and `threadId`. libp2p has no correlation identifiers of its own, so the binding specification would say this explicitly, as §9.1 requires. Either side can open a stream later, for example to send a `trust-task-control` suspend or cancel.
 
-### 5. Issuing and verifying a credential
+### 5. Peer endorsement: the first task, using `vtc/relationships/request`
 
-![Credential issued and verified](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/2794d9407a690cd5a32adb72dc9a3a9429232332/projects/kwaai-trust/design/img/dtgwg-trust-stack/5-sequence-credential-issue-verify.png)
+![Peer endorsement via vtc/relationships/request](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/892ffb91c15e3084ae4dc1ff8ae09be03e850ba3/projects/kwaai-trust/design/img/dtgwg-trust-stack/5-sequence-peer-endorsement.png)
 
-The issuer builds a statement credential whose issuer and subject are both `did:key` VIDs and signs it with `dtg-credentials` (JCS canonicalisation, `eddsa-jcs-2022`). It travels to the subject as a Trust Task payload over the binding. The subject verifies the proof, the `issuerScope` and the predicate, and stores the credential only if all three pass.
+A node asks a peer to endorse it with `vtc/relationships/request` 0.2, unchanged, over the binding. The issuing node runs the inbound pipeline and decides by its own policy. If it agrees, it builds a Verifiable Relationship Credential whose issuer is its own `did:key` and whose subject is the requester's, signs it with `dtg-credentials` (JCS canonicalisation, `eddsa-jcs-2022`), and returns it in the response on the same stream. The requester verifies the proof and that issuer and subject match the task's parties, and stores the credential only if both hold. Publishing it to the community with `vtc/relationships/publish` is a separate, optional step. A decline is a `trust-task-error` with `vtc/relationships/request:declined`.
+
+### 6. KwaaiNet as a Verifiable Trust Community
+
+![KwaaiNet as a Verifiable Trust Community](https://raw.githubusercontent.com/Kwaai-AI-Lab/KwaaiNet/892ffb91c15e3084ae4dc1ff8ae09be03e850ba3/projects/kwaai-trust/design/img/dtgwg-trust-stack/6-kwaainet-vtc.png)
+
+KwaaiNet's nodes become the community's members. Tasks between two nodes, such as endorsement and credential presentation (`credential-exchange/query`, then `present`), travel over the libp2p binding. Tasks with the community travel to the community's service: joining (`vtc/join-requests/submit`), publishing relationship credentials, receiving membership and node credentials (`vtc/endorsements/issue`), and recognition checks before a node is trusted with work (`registry/recognition`). An earlier, central credential issuer of ours is retired in favour of it. The dashed box is our open question: in OpenVTC's implementation every community sits on a Verifiable Trust Agent, and we have not yet decided how we will provide one.
 
 ## Accepting the guidance
 
 | Guidance | Our response |
 | --- | --- |
 | Shim producing the payload, trait overlay, pluggable libp2p behind it | Agreed in substance, with one refinement for your view. Rather than libp2p behind a trait, **one complete `trust-tasks-libp2p` crate in your workspace that depends on no libp2p networking stack** — only PeerId types and any async byte stream. Any libp2p implementation hands it a `(PeerId, stream)` pair, so nobody has to implement a trait and no stack's libp2p version is forced on another. An optional feature can provide a ready-made endpoint for stacks without their own stream layer |
-| Target the latest framework, not `0.2` | Agreed — framework 0.7.0 today |
+| Target the latest framework, not `0.2` | Agreed — the latest **published** release. We first wrote 0.7.0, but that is a Working Draft with no published envelope schema, so it would fail your registry checks. 0.5.0, as the other bindings declare, or 0.6.0: which would you prefer? |
 | §4.8.1 unchanged; convert libp2p addressing to a DID/VID | Agreed. The PeerId-to-`did:key` mapping above is that conversion |
 | Document relay properties rather than editorialise | Agreed. One property the specification will state plainly: relays running libp2p's default limits (128 KiB, 2 minutes per circuit) can cut a large document off |
 | Maintainers keep the binding in sync with the framework | Thank you. We would also like to **co-maintain the crate** — named in CODEOWNERS, with Kwaai owning libp2p-side changes — so the work does not fall only on you |
@@ -152,6 +170,9 @@ Your approval on the call is what we are working from. Since this discussion is 
 
 ## Still open
 
+- **Which framework release to target:** 0.5.0, like the other bindings, or 0.6.0?
+- **Identifiers when a node joins a community.** `vtc/join-requests/submit` declares the applicant's identifier as pairwise, but the binding's VID, a `did:key` derived from the PeerId, is public by construction. Should a node join with a separate pairwise key bound to its PeerId by a credential, or is a public identifier acceptable here with the justification §13.1 asks for?
+- **Does a community need its own Verifiable Trust Agent?** OpenVTC places every community on a VTA that holds its keys. Is that a requirement of the community model, or a choice of that implementation? Our nodes each hold one key and would not run a VTA themselves; we would welcome your view on whether that is sound.
 - **Whether another group should lead.** We are not the only libp2p stack here. If someone else is further along, we would rather support their specification than advance our own — the binding existing matters more to us than whose name is on it.
 
 ## Timing
