@@ -129,17 +129,6 @@ message ServerFrame {
         // Reply to a StatusRequest.
         StatusReply status = 14;
 
-        // Structured progress event for a shard_run operation, emitted
-        // only when ShardRunRequest.events was set. Interleaved with
-        // `token` bodies on the same id, and never terminal — the
-        // operation still ends with Done or Error.
-        //
-        // Tags 15-18 are claimed by in-flight work (block coverage,
-        // storage discovery, network, connect); this starts at 19 so
-        // the two land together without renumbering.
-        InferenceEvent inference_event = 19;
-
-
         // Snapshot of model block coverage. Exactly one arrives for a
         // one-shot BlockCoverageRequest; a subscription delivers one
         // per refresh interval until the op is cancelled.
@@ -158,6 +147,12 @@ message ServerFrame {
         // per discovery round: one with probes_pending set, then one
         // with reachability resolved.
         StorageUpdate storage = 16;
+
+        // Structured progress event for a shard_run operation, emitted
+        // only when ShardRunRequest.events was set. Interleaved with
+        // `token` bodies on the same id, and never terminal — the
+        // operation still ends with Done or Error.
+        InferenceEvent inference_event = 19;
     }
 }
 
@@ -261,8 +256,9 @@ message ShardRunRequest {
     // channel with the tokens, so producing them unasked adds
     // backpressure to the path the user is actually waiting on.
     //
-    // A daemon predating this field ignores it and emits no events. See
-    // InferenceEvent for how a client tells that apart from a quiet run.
+    // A daemon predating this field ignores it. One that honours it emits
+    // RESOLVED before any token or Done, so a token or Done with no event
+    // before it means an old daemon.
     bool events = 5;
 
     // 6-15 reserved for high-frequency metadata.
@@ -982,9 +978,9 @@ message InferenceEvent {
     // Discovery round or path-rebuild generation, 1-based.
     optional uint32 attempt = 43;
 
-    // Whether the action this event reports succeeded. Only meaningful
-    // for PEER_DIAL, where a failed dial is routine rather than fatal —
-    // the peer may still be reachable when the hop is actually made.
+    // Whether the action this event reports succeeded. Meaningful for
+    // PEER_DIAL, where a failed dial is routine rather than fatal (the
+    // peer may still be reachable at hop time); always true on HOP_OK.
     bool ok = 44;
 
     // ── Cross-node correlation ──
