@@ -169,9 +169,8 @@ message ServerFrame {
         StatusReply status = 14;
 
         // --- RAG replies (tags 20-25, owned by feat/grpc-rag) ---
-        // Numbering deliberately mirrors the ClientFrame side for
-        // 20-23 and 25; 24 has no request counterpart because ingest's
-        // reply is distinct from its progress frames.
+        // Tags do not pair with ClientFrame's: rag_ingest's reply is 24
+        // and its progress 22. Match replies by id, never by tag.
 
         // Reply to RagStatusRequest.
         RagStatusUpdate rag_status = 20;
@@ -841,7 +840,7 @@ message ConnectReply {
 //
 // Transport note: phase 1 serves only knowledge bases whose
 // storage_url is "local" (the embedded vector store). KBs outsourced
-// to a remote Eve node answer UNAVAILABLE rather than silently
+// to a remote Eve node answer UNIMPLEMENTED rather than silently
 // returning nothing.
 // =====================================================================
 
@@ -855,23 +854,15 @@ message RagKb {
     // effectively part of the KB's identity.
     string embed_model = 2;
 
-    // Documents ingested so far, by name. Best-effort: a KB whose
-    // metadata store can't be opened is still reported, with an empty
-    // list, rather than failing the whole status op.
-    //
-    // Superseded by `documents`, which carries the same names plus their
-    // chunk counts. Still populated — an older client reading only this
-    // field keeps working — so the two are always the same length and in
-    // the same order.
-    repeated string docs = 3;
-
     // True when the KB's vectors live somewhere other than the local
     // embedded store (a remote Eve node or an HTTP storage service).
     // Phase 1 can report these but not query or ingest into them.
-    bool remote = 4;
+    bool remote = 3;
 
-    // Documents with the size of each. Same set as `docs`; prefer this.
-    repeated RagDoc documents = 5;
+    // Documents ingested so far, each with its chunk count. Best-effort:
+    // a KB whose metadata store can't be opened is still reported, with
+    // an empty list, rather than failing the whole status op.
+    repeated RagDoc documents = 4;
 }
 
 // One ingested document, as reported by rag_status.
@@ -902,8 +893,8 @@ message RagInitRequest {
 }
 
 message RagInitReply {
-    // The KB as it exists after init. `docs` is empty for a fresh KB
-    // and populated when init was a no-op on an existing one.
+    // The KB as it exists after init. `documents` is empty for a fresh
+    // KB and populated when init refreshed an existing one.
     RagKb kb = 1;
 }
 
@@ -1003,7 +994,7 @@ message RagDeleteRequest {
     // KB to delete from. Empty means "default".
     string kb = 1;
 
-    // Document name as reported in RagKb.docs — the display name the
+    // Document name as reported in RagDoc.name — the display name the
     // ingest recorded, not a filesystem path. Deleting by name rather
     // than by chunk id keeps the client from having to know how a
     // document was split.

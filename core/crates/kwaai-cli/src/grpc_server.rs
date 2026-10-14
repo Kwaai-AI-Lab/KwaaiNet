@@ -854,8 +854,6 @@ fn collect_rag_kbs() -> Result<Vec<RagKb>> {
         out.push(RagKb {
             name,
             embed_model: rag.embed_model.clone(),
-            // Kept in step with `documents` for clients that predate it.
-            docs: documents.iter().map(|d| d.name.clone()).collect(),
             remote: rag_is_remote(rag),
             documents,
         });
