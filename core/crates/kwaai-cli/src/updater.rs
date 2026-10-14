@@ -127,18 +127,15 @@ impl UpdateChecker {
     pub async fn install_update(&self, version: &str) -> Result<()> {
         #[cfg(unix)]
         {
-            // On Linux, prefer the CUDA-enabled binary for NVIDIA GPU machines —
-            // but only when this binary is itself a gnu build. A musl build only
-            // ever runs because the original install found glibc too old for
-            // gnu (see scripts/patch-installer-cuda.sh's matching guard); the
-            // only CUDA archive ever published is gnu-linked, so self-updating
-            // a musl host straight to it would install a binary that can't run
-            // (missing libcudart at runtime) — the exact bug that guard exists
-            // to prevent in the shell installer. Falls through to
-            // install_cpu_linux, which re-runs that installer and makes the
-            // same glibc-aware decision fresh each time.
+            // On Linux, prefer the CUDA-enabled binary for NVIDIA GPU machines,
+            // within the limits `linux_update_variant` sets out.
             #[cfg(not(target_os = "macos"))]
-            if !cfg!(target_env = "musl") && nvidia_smi_async().await {
+            if linux_update_variant(
+                cfg!(target_env = "musl"),
+                cfg!(target_arch = "x86_64"),
+                nvidia_smi_async().await,
+            ) == LinuxUpdate::Cuda
+            {
                 return self.install_cuda_linux(version).await;
             }
 
@@ -490,6 +487,39 @@ impl UpdateChecker {
     }
 }
 
+/// Which Linux build `install_update` installs.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+#[derive(Debug, PartialEq, Eq)]
+enum LinuxUpdate {
+    /// `install_cuda_linux`: the x86_64 gnu-linked CUDA archive.
+    Cuda,
+    /// `install_cpu_linux`: the shell installer, which picks gnu or musl itself.
+    Cpu,
+}
+
+/// The CUDA archive is published for one target only, x86_64 gnu, so it is
+/// installed only when this binary is that target and an NVIDIA GPU is present.
+///
+/// - **aarch64** (Jetson, Grace) would be handed an x86_64 binary and fail with
+///   `exec format error`.
+/// - **musl** builds are installed where the installer judged the gnu build
+///   unusable, and since #221 the installer keeps a musl GPU host on the CPU
+///   build (`scripts/patch-installer-cuda.sh → _try_cuda_upgrade`). The updater
+///   follows the same decision rather than overriding it from inside the node.
+///
+/// This does not make the CUDA build safe on the hosts it does allow: the
+/// archive ships the binary without the CUDA runtime libraries it links
+/// against, so a gnu host with no system CUDA 12 toolkit still gets a binary
+/// that fails on `libcudart.so.12` (#240).
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+fn linux_update_variant(is_musl: bool, is_x86_64: bool, has_nvidia: bool) -> LinuxUpdate {
+    if has_nvidia && is_x86_64 && !is_musl {
+        LinuxUpdate::Cuda
+    } else {
+        LinuxUpdate::Cpu
+    }
+}
+
 /// Query nvidia-smi asynchronously with a 4-second timeout.
 /// Returns true if nvidia-smi exits successfully within the time limit.
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -749,6 +779,26 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_x86_64_gnu_gpu_host_gets_the_cuda_build() {
+        use LinuxUpdate::{Cpu, Cuda};
+        // (is_musl, is_x86_64, has_nvidia) -> variant
+        for (musl, x86_64, gpu, want) in [
+            (false, true, true, Cuda),
+            (true, true, true, Cpu), // musl host: stay on the installer's choice
+            (false, false, true, Cpu), // aarch64: the CUDA archive is x86_64-only
+            (false, true, false, Cpu), // no GPU
+            (true, false, true, Cpu),
+            (true, true, false, Cpu),
+        ] {
+            assert_eq!(
+                linux_update_variant(musl, x86_64, gpu),
+                want,
+                "musl={musl} x86_64={x86_64} gpu={gpu}"
+            );
+        }
+    }
 
     #[test]
     fn parse_marker_accepts_known_formats_only() {
