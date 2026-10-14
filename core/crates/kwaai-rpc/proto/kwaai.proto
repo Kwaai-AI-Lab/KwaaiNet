@@ -859,14 +859,17 @@ enum InferencePhase {
     INFERENCE_PHASE_HOP_OK = 8;
 
     // A hop failed. Sets everything HOP_START does, plus duration_ms,
-    // message (the error) and failure. Followed by either a HOP_START
-    // for the next candidate at the same block_start, or a
-    // PATH_REBUILD when no candidate is left.
+    // message (the error) and failure. Followed by a HOP_START for the
+    // next candidate at the same block_start; when none is left, by
+    // PATH_REBUILD, or by the operation's Error if this token's one
+    // rebuild was already spent.
     INFERENCE_PHASE_HOP_FAILED = 9;
 
-    // Every candidate for a block position failed; the path is being
-    // rebuilt and the token retried. The KV cache is lost at this
-    // point, so output may degrade. Sets: block_start, message, attempt.
+    // No candidate could serve block_start, so the path is being rebuilt
+    // and the token retried once. Usually follows HOP_FAILED, but comes
+    // alone when no peer covered block_start at all. The KV cache is
+    // lost, so output may degrade. Sets: block_start, message, attempt,
+    // token_index, is_prefill, session_id, seq_pos.
     INFERENCE_PHASE_PATH_REBUILD = 10;
 
     // A token was sampled from the logits the last hop returned —

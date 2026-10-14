@@ -2472,12 +2472,14 @@ async fn run_streaming_inner(
                 // Rebuild path on transient failure and retry once,
                 // matching cmd_shard_run's recovery behaviour.
                 emit_progress(sink, || {
-                    InferenceProgress::new(run_started, ProgressPhase::PathRebuild)
+                    let mut ev = InferenceProgress::new(run_started, ProgressPhase::PathRebuild)
                         .token(token_ctx)
                         .attempt(path_attempt + 1)
                         .msg(format!(
                             "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
-                        ))
+                        ));
+                    ev.block_start = e.downcast_ref::<ChainPositionError>().map(|c| c.block);
+                    ev
                 });
                 unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
                 pinned_path =
@@ -3925,6 +3927,22 @@ pub fn hop_candidates<'a>(
     candidates
 }
 
+/// A [`forward_through_chain`] failure at a block position no candidate could
+/// serve. Displays as its message, so callers formatting the error see no change.
+#[derive(Debug)]
+pub struct ChainPositionError {
+    pub block: usize,
+    message: String,
+}
+
+impl std::fmt::Display for ChainPositionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ChainPositionError {}
+
 /// Send an `InferenceRequest` to the first peer in `chain`, routing the
 /// activation tensor through each subsequent hop until the last returns
 /// logits. `chain` is normally a pinned path, which is followed as planned;
@@ -3955,7 +3973,11 @@ pub async fn forward_through_chain(
         let candidates = hop_candidates(chain, pos, failed_peers, unreached, our_peer_id);
 
         if candidates.is_empty() {
-            anyhow::bail!("No server covers block {} — chain has a gap (all candidates failed or blacklisted)", pos);
+            return Err(ChainPositionError {
+                block: pos,
+                message: format!("No server covers block {pos} — chain has a gap (all candidates failed or blacklisted)"),
+            }
+            .into());
         }
 
         // Per-hop deadline: 5 minutes is generous enough for slow CPU prefill of
@@ -4111,11 +4133,14 @@ pub async fn forward_through_chain(
         }
 
         if !succeeded {
-            anyhow::bail!(
-                "All {} candidate(s) for block {} failed",
-                candidates.len(),
-                pos
-            );
+            return Err(ChainPositionError {
+                block: pos,
+                message: format!(
+                    "All {} candidate(s) for block {pos} failed",
+                    candidates.len()
+                ),
+            }
+            .into());
         }
     }
 
@@ -5104,6 +5129,22 @@ mod tests {
         sink.emit(progress(ProgressPhase::HopOk));
         sink.emit(progress(ProgressPhase::HopOk));
         assert_eq!(sink.dropped(), 2);
+    }
+
+    /// PATH_REBUILD reads the failed position back out of the anyhow error,
+    /// while every other caller still sees only the message.
+    #[test]
+    fn chain_position_error_survives_anyhow() {
+        let e: anyhow::Error = ChainPositionError {
+            block: 12,
+            message: "All 2 candidate(s) for block 12 failed".to_string(),
+        }
+        .into();
+        assert_eq!(format!("{e:#}"), "All 2 candidate(s) for block 12 failed");
+        assert_eq!(
+            e.downcast_ref::<ChainPositionError>().map(|c| c.block),
+            Some(12)
+        );
     }
 
     #[test]
