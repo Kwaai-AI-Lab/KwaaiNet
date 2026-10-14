@@ -879,7 +879,8 @@ enum InferencePhase {
     INFERENCE_PHASE_TOKEN_SAMPLED = 11;
 
     // Generation finished. Sets: token_index (total generated),
-    // duration_ms (whole run) and message (the stop reason).
+    // duration_ms (whole run), message (the stop reason) and
+    // dropped_events. Never itself dropped.
     INFERENCE_PHASE_COMPLETE = 12;
 }
 
@@ -1016,6 +1017,11 @@ message InferenceEvent {
 
     // ── Route (CHAIN_PINNED only) ──
     repeated InferenceHop hops = 70;
+
+    // ── Delivery (COMPLETE only) ──
+    // Progress events dropped because this client fell behind. Non-zero
+    // means some earlier events are missing, not that they never happened.
+    optional uint32 dropped_events = 80;
 }
 
 // =====================================================================
