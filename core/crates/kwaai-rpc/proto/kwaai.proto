@@ -101,11 +101,16 @@ message ClientFrame {
 
         // Ingest one document, whose bytes follow as rag_ingest_data
         // frames under this op's id. Emits ServerFrame.rag_progress
-        // frames before the terminal rag_ingest reply. Cancellable.
+        // frames before the terminal rag_ingest reply. Reusing the id
+        // of an op still in flight fails with INVALID_ARGUMENT.
+        // Cancellable. A cancel, or the session closing, mid-upload ends
+        // the ingest; one that fails or is cancelled after storing
+        // vectors removes them again (best-effort).
         RagIngestRequest rag_ingest = 22;
 
         // One piece of an ingest's document, sent in order with
-        // ClientFrame.id set to that ingest's id. Has no reply of its own.
+        // ClientFrame.id set to that ingest's id. Acknowledged by a
+        // RAG_PHASE_RECEIVING progress frame; see RagIngestData.
         RagIngestData rag_ingest_data = 24;
 
         // Retrieve chunks for a query. One ServerFrame.rag_query reply,
@@ -885,10 +890,14 @@ message RagStatusUpdate {
 }
 
 message RagInitRequest {
-    // KB to create. Empty means "default".
+    // KB to create. Empty means "default". Re-initialising an existing
+    // KB keeps its data directory and documents; a remote KB answers
+    // UNIMPLEMENTED.
     string kb = 1;
 
-    // Ollama embedding model. Empty means the daemon's default.
+    // Ollama embedding model. Empty means the daemon's default for a new
+    // KB and the current model for an existing one. Changing the model of
+    // a KB that holds documents fails with INVALID_ARGUMENT.
     string embed_model = 2;
 }
 
@@ -906,14 +915,23 @@ message RagIngestRequest {
     // parser (`.pdf`, `.docx`, …), so send the original file name.
     string doc_name = 2;
 
-    // Total bytes the rag_ingest_data frames will carry. The ingest
-    // starts once exactly this many have arrived; a piece that runs past
-    // it fails the ingest, as does a size above the limit (256 MiB).
+    // Total bytes the rag_ingest_data frames will carry, above 0 and at
+    // most 256 MiB. The ingest starts once exactly this many have
+    // arrived. A piece carrying bytes past it fails the ingest; pieces
+    // sent after exactly `size` bytes are discarded.
+    //
+    // A daemon receives at most 4 uploads at once; beyond that the
+    // ingest fails with UNAVAILABLE before any piece is read.
     uint64 size = 3;
 }
 
 // A piece of the document an ingest is uploading. Keep each well under
 // the 4 MiB gRPC frame limit; 256 KiB is a good size.
+//
+// Flow control is a window of 8 pieces: at most 8 may be unacknowledged
+// (sent, with no RAG_PHASE_RECEIVING frame for them yet). The server
+// buffers no more, so a ninth can fail the ingest with INVALID_ARGUMENT.
+// An upload that sends nothing for 60 s fails the same way.
 message RagIngestData {
     bytes data = 1;
 }
@@ -929,7 +947,9 @@ message RagProgress {
         RAG_PHASE_UNSPECIFIED = 0;
 
         // Receiving the document. done/total count bytes. Sent once per
-        // piece written, so a client can bound the bytes it has in flight.
+        // piece, after it is written: each acknowledges one piece of the
+        // 8-piece window (see RagIngestData). A client that does not read
+        // these for 60 s fails the ingest.
         RAG_PHASE_RECEIVING = 1;
 
         // Decoding the document into plain text. done/total are both 0:
