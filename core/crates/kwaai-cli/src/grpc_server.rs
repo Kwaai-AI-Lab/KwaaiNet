@@ -527,6 +527,9 @@ fn progress_to_proto(p: crate::shard_cmd::InferenceProgress) -> InferenceEvent {
                 throughput: h.throughput,
             })
             .collect(),
+        dropped_events: p
+            .dropped_events
+            .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
     }
 }
 
@@ -3093,6 +3096,20 @@ mod tests {
         churned.self_status.as_mut().unwrap().observed_addrs =
             vec!["/ip4/203.0.113.7/tcp/4001".into()];
         assert_eq!(network_identity(&a), network_identity(&churned));
+    }
+
+    /// A drop count past u32 saturates rather than wrapping to a small number.
+    #[test]
+    fn progress_to_proto_carries_dropped_events() {
+        use crate::shard_cmd::{InferenceProgress, ProgressPhase};
+        let ev = |n| {
+            let mut p = InferenceProgress::new(std::time::Instant::now(), ProgressPhase::Complete);
+            p.dropped_events = n;
+            progress_to_proto(p).dropped_events
+        };
+        assert_eq!(ev(None), None);
+        assert_eq!(ev(Some(7)), Some(7));
+        assert_eq!(ev(Some(u64::MAX)), Some(u32::MAX));
     }
 
     /// Drive a real `shard_run` over a real Session and assert the routing

@@ -1877,6 +1877,8 @@ pub struct InferenceProgress {
     pub peer_count: Option<usize>,
     pub circuit_id: Option<String>,
     pub hops: Vec<ProgressHop>,
+    /// COMPLETE only: progress events lost to a full channel before it.
+    pub dropped_events: Option<u64>,
 }
 
 impl InferenceProgress {
@@ -1911,6 +1913,7 @@ impl InferenceProgress {
             peer_count: None,
             circuit_id: None,
             hops: Vec::new(),
+            dropped_events: None,
         }
     }
 
@@ -2125,8 +2128,8 @@ impl ProgressSink for HopTimingSink {
 ///
 /// Uses `try_send`, so a slow or stalled consumer can never backpressure the
 /// inference loop — telemetry is advisory, and dropping an event is strictly
-/// better than delaying a token. Drops are counted so a caller can tell that
-/// a client's view has gaps.
+/// better than delaying a token. Drops are counted, reported on COMPLETE and
+/// logged when the sink is dropped, so a gap is never silent.
 pub struct ChannelProgressSink {
     tx: tokio::sync::mpsc::Sender<ShardRunEvent>,
     dropped: std::sync::atomic::AtomicU64,
@@ -2143,6 +2146,25 @@ impl ChannelProgressSink {
     /// How many events were dropped because the channel was full.
     pub fn dropped(&self) -> u64 {
         self.dropped.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Send an event that must not be lost, waiting for channel room.
+    /// For once-per-run events only; per-hop events go through `emit`.
+    pub async fn send_awaited(&self, ev: InferenceProgress) {
+        let _ = self.tx.send(ShardRunEvent::Progress(Box::new(ev))).await;
+    }
+}
+
+impl Drop for ChannelProgressSink {
+    // Covers the error path too, which never reaches COMPLETE.
+    fn drop(&mut self) {
+        let dropped = *self.dropped.get_mut();
+        if dropped > 0 {
+            tracing::warn!(
+                dropped,
+                "inference progress events dropped — client view is incomplete"
+            );
+        }
     }
 }
 
@@ -2553,26 +2575,16 @@ async fn run_streaming_inner(
             } else {
                 "max_tokens"
             };
-            // Emitted here rather than from `run_streaming`'s wrapper: only
-            // this scope knows why generation stopped. FIFO on the shared
-            // channel then guarantees it precedes the terminal Done.
-            emit_progress(sink, || {
-                InferenceProgress::new(run_started, ProgressPhase::Complete)
+            // Emitted here because only this scope knows why generation
+            // stopped; FIFO on the shared channel keeps it ahead of Done.
+            // Awaited, not try_sent, so the run's summary is never the drop.
+            if let Some(ref s) = progress {
+                let mut ev = InferenceProgress::new(run_started, ProgressPhase::Complete)
                     .token_index(generated_ids.len(), false)
                     .ms(run_started.elapsed().as_secs_f64() * 1000.0)
-                    .msg(stop_reason)
-            });
-            // Progress is dropped rather than queued when the channel backs
-            // up, so say when a client's view has gaps — otherwise a missing
-            // hop looks like a hop that never happened.
-            if let Some(ref s) = progress {
-                let dropped = s.dropped();
-                if dropped > 0 {
-                    tracing::warn!(
-                        dropped,
-                        "inference progress events dropped — client view is incomplete"
-                    );
-                }
+                    .msg(stop_reason);
+                ev.dropped_events = Some(s.dropped());
+                s.send_awaited(ev).await;
             }
             break;
         }
@@ -5129,6 +5141,29 @@ mod tests {
         sink.emit(progress(ProgressPhase::HopOk));
         sink.emit(progress(ProgressPhase::HopOk));
         assert_eq!(sink.dropped(), 2);
+    }
+
+    /// COMPLETE waits for room instead of being the event a full channel drops.
+    #[tokio::test]
+    async fn channel_progress_sink_awaits_the_terminal_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ShardRunEvent>(1);
+        let sink = ChannelProgressSink::new(tx);
+        sink.emit(progress(ProgressPhase::HopStart));
+        sink.emit(progress(ProgressPhase::HopOk));
+
+        let mut complete = progress(ProgressPhase::Complete);
+        complete.dropped_events = Some(sink.dropped());
+        let (_, first) = tokio::join!(sink.send_awaited(complete), rx.recv());
+        assert!(
+            matches!(first, Some(ShardRunEvent::Progress(e)) if e.phase == ProgressPhase::HopStart)
+        );
+        match rx.recv().await {
+            Some(ShardRunEvent::Progress(e)) => {
+                assert_eq!(e.phase, ProgressPhase::Complete);
+                assert_eq!(e.dropped_events, Some(1));
+            }
+            _ => panic!("COMPLETE was not delivered"),
+        }
     }
 
     /// PATH_REBUILD reads the failed position back out of the anyhow error,
