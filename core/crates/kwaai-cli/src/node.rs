@@ -339,6 +339,88 @@ pub(crate) fn spawn_auto_update(
         .ok()
 }
 
+/// The developer escape hatch, parsed in one place so the gate and the line
+/// that reports the gate can never disagree: set to anything but empty, `0`
+/// or `false`.
+fn env_disables(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+}
+
+fn no_auto_update_env() -> bool {
+    env_disables(std::env::var("KWAAINET_NO_AUTO_UPDATE").ok().as_deref())
+}
+
+/// Why this node will not install its own updates. The gates return silently,
+/// so without this a disabled node looks exactly like an up-to-date one.
+#[derive(Debug)]
+pub(crate) enum AutoUpdateOff {
+    /// Somebody asked for this: the operator, the packaging, or the release line.
+    ByChoice(String),
+    /// Nobody asked for this — the node would update, but cannot read its config.
+    Fault(String),
+}
+
+/// Resolve the gates in the order they are actually applied. Split from
+/// [`auto_update_off`] so that order can be tested without touching the
+/// process environment or the disk.
+fn auto_update_off_for(
+    packaged: Option<&str>,
+    env_disabled: bool,
+    config_auto_update: Option<bool>,
+    pre_release: bool,
+) -> Option<AutoUpdateOff> {
+    if let Some(kind) = packaged {
+        return Some(AutoUpdateOff::ByChoice(format!(
+            "this is a {kind} package, which its package manager upgrades"
+        )));
+    }
+    if env_disabled {
+        return Some(AutoUpdateOff::ByChoice(
+            "KWAAINET_NO_AUTO_UPDATE is set in this environment — clearing it takes a restart"
+                .to_string(),
+        ));
+    }
+    match config_auto_update {
+        // `unwrap_or(false)` at the tick turns an unreadable config into an
+        // opt-out. That is the safe default, but it is nobody's decision.
+        None => Some(AutoUpdateOff::Fault(
+            "config.yaml could not be read, and the announce tick treats that as opt-out"
+                .to_string(),
+        )),
+        Some(false) => Some(AutoUpdateOff::ByChoice(
+            "contribute.auto_update is false in config.yaml".to_string(),
+        )),
+        Some(true) if !pre_release => Some(AutoUpdateOff::ByChoice(format!(
+            "v{} is past 1.0, and only pre-1.0 builds update themselves",
+            crate::updater::CURRENT_VERSION
+        ))),
+        Some(true) => None,
+    }
+}
+
+/// Why this node will not update itself, or `None` when it will. Reads the
+/// config from disk, exactly as the announce tick does.
+pub(crate) fn auto_update_off() -> Option<AutoUpdateOff> {
+    auto_update_off_for(
+        crate::updater::packaged_install(),
+        no_auto_update_env(),
+        KwaaiNetConfig::load_or_create()
+            .ok()
+            .map(|c| c.contribute.auto_update),
+        crate::config::is_pre_release(),
+    )
+}
+
+/// Say once, at startup, that this node will never update itself. Silence
+/// here means auto-update is live.
+pub(crate) fn log_auto_update_off() {
+    match auto_update_off() {
+        Some(AutoUpdateOff::ByChoice(why)) => info!("Auto-update is off: {why}"),
+        Some(AutoUpdateOff::Fault(why)) => warn!("Auto-update is off: {why}"),
+        None => {}
+    }
+}
+
 /// Check for a newer release and, if found, install it automatically.
 /// After a successful install the daemon exits cleanly so the OS service
 /// manager (systemd, launchd) or the user can restart it with the new binary.
@@ -361,11 +443,7 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     // download or install an update from inside the running node.
     // A packaged install is upgraded by the distro package manager: installing
     // into ~/.cargo/bin here would shadow /usr/bin/kwaainet on PATH.
-    if crate::updater::packaged_install().is_some()
-        || std::env::var("KWAAINET_NO_AUTO_UPDATE")
-            .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
-            .unwrap_or(false)
-    {
+    if crate::updater::packaged_install().is_some() || no_auto_update_env() {
         return None;
     }
 
@@ -790,6 +868,70 @@ mod capacity_lease_dht_tests {
 
         let lease_v1 = find_field(&fields, "lease_v1").expect("lease_v1 key present");
         assert_eq!(lease_v1.as_bool(), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod auto_update_gate_tests {
+    use super::*;
+
+    /// The escape hatch is a string, and every spelling of "off" must stay off.
+    #[test]
+    fn the_escape_hatch_reads_the_same_everywhere() {
+        assert!(env_disables(Some("1")));
+        assert!(env_disables(Some("yes")));
+        assert!(!env_disables(None), "unset means auto-update is live");
+        assert!(!env_disables(Some("")));
+        assert!(!env_disables(Some("0")));
+        assert!(!env_disables(Some("false")));
+        assert!(!env_disables(Some("FALSE")));
+    }
+
+    #[test]
+    fn a_live_auto_update_says_nothing() {
+        assert!(auto_update_off_for(None, false, Some(true), true).is_none());
+    }
+
+    /// The gates are reported in the order they are applied, so the line names
+    /// the one that actually stopped the update.
+    #[test]
+    fn the_first_gate_to_fire_is_the_one_reported() {
+        let packaged = auto_update_off_for(Some("deb"), true, Some(false), true);
+        assert!(
+            matches!(packaged, Some(AutoUpdateOff::ByChoice(ref why)) if why.contains("deb")),
+            "{packaged:?}"
+        );
+
+        let env = auto_update_off_for(None, true, Some(false), true);
+        assert!(
+            matches!(env, Some(AutoUpdateOff::ByChoice(ref why))
+                if why.contains("KWAAINET_NO_AUTO_UPDATE")),
+            "{env:?}"
+        );
+
+        let config = auto_update_off_for(None, false, Some(false), true);
+        assert!(
+            matches!(config, Some(AutoUpdateOff::ByChoice(ref why))
+                if why.contains("contribute.auto_update")),
+            "{config:?}"
+        );
+
+        let released = auto_update_off_for(None, false, Some(true), false);
+        assert!(
+            matches!(released, Some(AutoUpdateOff::ByChoice(ref why)) if why.contains("1.0")),
+            "{released:?}"
+        );
+    }
+
+    /// An unreadable config disables auto-update without anyone asking, so it
+    /// warns where a deliberate opt-out only informs.
+    #[test]
+    fn an_unreadable_config_is_a_fault_not_a_choice() {
+        let off = auto_update_off_for(None, false, None, true);
+        assert!(
+            matches!(off, Some(AutoUpdateOff::Fault(ref why)) if why.contains("config.yaml")),
+            "{off:?}"
+        );
     }
 }
 
