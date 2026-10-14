@@ -521,7 +521,7 @@ mod tests {
             assert_eq!(view.rendered, hex::encode(&bytes), "0xc1 {what}");
         }
 
-        // And inside an Ext body, which `render` re-decodes separately.
+        // And inside an Ext body, which `to_json` re-decodes separately.
         let mut ext = Vec::new();
         rmpv::encode::write_value(&mut ext, &rmpv::Value::Ext(64, vec![0xc1])).unwrap();
         assert_eq!(render_value(&ext).rendered, r#"{"$ext":64,"$hex":"c1"}"#);
