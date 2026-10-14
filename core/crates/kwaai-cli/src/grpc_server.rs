@@ -5788,4 +5788,37 @@ mod tests {
             assert!(parse_key_ids(&[bad.into()]).is_err(), "{bad:?}");
         }
     }
+
+    /// The proto promises 64 lowercase hex digits with no `0x`; a small
+    /// distance is what exercises the zero padding.
+    #[test]
+    fn routing_distance_is_64_zero_padded_hex_digits() {
+        use libp2p::kad::{KBucketDistance, NodeStatus, U256};
+        let snapshot = kwaai_p2p::NetworkSnapshot {
+            local_peer_id: libp2p::PeerId::random(),
+            peers: vec![],
+            routing: vec![kwaai_p2p::handle::RoutingEntry {
+                peer_id: libp2p::PeerId::random(),
+                addrs: vec![],
+                status: NodeStatus::Disconnected,
+                bucket: 7,
+                bucket_entries: 1,
+                bucket_pending: false,
+                distance: KBucketDistance(U256::from(0xabu64)),
+            }],
+            reachability: kwaai_p2p::Reachability::Unknown,
+            relay_addrs: vec![],
+            observed_addrs: vec![],
+            listen_addrs: vec![],
+            ipv6: kwaai_p2p::Ipv6Status::Off,
+            local_protocols: vec![],
+            last_contact: vec![],
+        };
+        let none = std::collections::HashSet::new();
+        let update = build_network_update(&snapshot, &none, &none, UpdateReason::Tick);
+        let d = &update.routing[0].distance;
+        assert_eq!(d.len(), 64);
+        assert!(d.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')), "{d}");
+        assert_eq!(d, &format!("{}ab", "0".repeat(62)));
+    }
 }

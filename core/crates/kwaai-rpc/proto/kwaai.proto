@@ -670,14 +670,15 @@ message RoutingPeer {
     // XOR distance from our own key to this peer's, big-endian hex, 64
     // digits, no leading `0x`.
     //
-    // The DHT's own metric, and the only way to check that a lookup
-    // actually walked closer. Fixed for the life of the entry, so it costs
-    // nothing in subscription churn.
+    // The DHT's own metric: it decides which bucket the entry sits in and
+    // which peers a walk asks first. Fixed for the life of the entry, so it
+    // costs nothing in subscription churn.
     string distance = 10;
 
     // Seconds since we last *established* a connection to this peer, in
-    // either direction. Absent means never — which is a real and common
-    // state for a routing entry: kad holds a peer the moment a configured
+    // either direction. Absent means never connected, or not within the
+    // node's bounded recency cache (1024 peers, oldest dropped first). Never
+    // is a real and common state: kad holds a peer the moment a configured
     // address is seeded into it, before any dial has succeeded.
     //
     // Deliberately not part of the subscription's change identity, for the
