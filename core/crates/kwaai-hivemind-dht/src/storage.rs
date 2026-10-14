@@ -138,6 +138,30 @@ fn dict_payload_bytes(entries: &BTreeMap<Vec<u8>, (Vec<u8>, DHTExpiration)>) -> 
         .sum()
 }
 
+fn summarize(key: &[u8], e: &Entry) -> EntrySummary {
+    let (subkeys, value_bytes, latest_expiration, maxsize) = match &e.value {
+        Stored::Regular { value, .. } => (None, value.len(), None, None),
+        Stored::Dictionary {
+            entries,
+            maxsize,
+            latest_expiration,
+        } => (
+            Some(entries.len()),
+            entries.values().map(|(v, _)| v.len()).sum::<usize>(),
+            Some(*latest_expiration),
+            *maxsize,
+        ),
+    };
+    EntrySummary {
+        key: key.to_vec(),
+        expiration: e.expiration,
+        subkeys,
+        value_bytes,
+        latest_expiration,
+        maxsize,
+    }
+}
+
 /// A hivemind `TimedStorage`-alike: expiring entries with an optional size bound.
 ///
 /// Port of `hivemind/utils/timed_storage.py` + `DHTLocalStorage`
@@ -287,35 +311,28 @@ impl LocalStorage {
     /// each, so cloning values here would dwarf the listing. Expired-but-unswept
     /// entries are skipped, agreeing with `get` rather than [`Self::len`].
     pub fn summaries(&self) -> Vec<EntrySummary> {
+        self.summaries_page(usize::MAX).0
+    }
+
+    /// The first `limit` live entries' metadata, in key order, and the count of
+    /// all live entries. Entries past `limit` are only counted, not summarised.
+    pub fn summaries_page(&self, limit: usize) -> (Vec<EntrySummary>, usize) {
         let now = get_dht_time();
-        self.data
-            .iter()
-            .filter(|(_, e)| e.expiration >= now)
-            .map(|(key, e)| EntrySummary {
-                key: key.clone(),
-                expiration: e.expiration,
-                subkeys: match &e.value {
-                    Stored::Regular { .. } => None,
-                    Stored::Dictionary { entries, .. } => Some(entries.len()),
-                },
-                value_bytes: match &e.value {
-                    Stored::Regular { value, .. } => value.len(),
-                    Stored::Dictionary { entries, .. } => {
-                        entries.values().map(|(v, _)| v.len()).sum::<usize>()
-                    }
-                },
-                latest_expiration: match &e.value {
-                    Stored::Regular { .. } => None,
-                    Stored::Dictionary {
-                        latest_expiration, ..
-                    } => Some(*latest_expiration),
-                },
-                maxsize: match &e.value {
-                    Stored::Regular { .. } => None,
-                    Stored::Dictionary { maxsize, .. } => *maxsize,
-                },
-            })
-            .collect()
+        let mut page = Vec::new();
+        let mut total = 0;
+        for (key, e) in self.data.iter().filter(|(_, e)| e.expiration >= now) {
+            if page.len() < limit {
+                page.push(summarize(key, e));
+            }
+            total += 1;
+        }
+        (page, total)
+    }
+
+    /// Metadata for one live entry; `None` when absent or expired, as in `get`.
+    pub fn summary(&self, key: &[u8]) -> Option<EntrySummary> {
+        let entry = self.data.get(key)?;
+        (entry.expiration >= get_dht_time()).then(|| summarize(key, entry))
     }
 
     /// Store a regular (subkey-less) value.
