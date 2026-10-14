@@ -35,13 +35,87 @@ pub fn known_keys(config: &KwaaiNetConfig) -> Vec<DhtKnownKey> {
         .collect()
 }
 
-/// Project one locally-held record. `value` is filled from `stored` when the
-/// caller asked for it; the metadata alone needs no value read.
+/// Value bytes one reply may carry. Leaves room under tonic's 4 MiB decode
+/// limit for the metadata of up to 5000 rows and the known-key table.
+pub const VALUE_BUDGET_BYTES: usize = 3 << 20;
+
+/// Subkeys returned per dictionary, whatever the budget.
+pub const MAX_SUBKEYS_PER_RECORD: usize = 256;
+
+/// What is left of a reply's [`VALUE_BUDGET_BYTES`].
+#[derive(Debug)]
+pub struct ValueBudget {
+    remaining: usize,
+}
+
+impl Default for ValueBudget {
+    fn default() -> Self {
+        Self {
+            remaining: VALUE_BUDGET_BYTES,
+        }
+    }
+}
+
+impl ValueBudget {
+    /// Charge `cost` if it fits; otherwise spend the rest, so no later value
+    /// is attached either.
+    fn charge(&mut self, cost: usize) -> bool {
+        let fits = cost <= self.remaining;
+        self.remaining = if fits { self.remaining - cost } else { 0 };
+        fits
+    }
+
+    fn exhaust(&mut self) {
+        self.remaining = 0;
+    }
+}
+
+/// The part of a stored value a reply can carry, copied out under the
+/// storage lock so rendering happens without it.
+#[derive(Debug)]
+pub enum HeldValue {
+    /// `None` when the raw value alone exceeds the remaining budget.
+    Regular(Option<Vec<u8>>),
+    /// A prefix of the subkeys, and how many the dictionary holds in all.
+    Dictionary {
+        entries: Vec<(Vec<u8>, Vec<u8>, DHTExpiration)>,
+        total: usize,
+    },
+}
+
+/// Copy as much of `stored` as `budget` could possibly admit: raw size is a
+/// lower bound on what [`local_record`] charges, so nothing it would keep is cut.
+pub fn hold_value(stored: &Stored, budget: &ValueBudget) -> HeldValue {
+    match stored {
+        Stored::Regular { value, .. } => {
+            HeldValue::Regular((value.len() <= budget.remaining).then(|| value.clone()))
+        }
+        Stored::Dictionary { entries, .. } => {
+            let mut room = budget.remaining;
+            let held = entries
+                .iter()
+                .take(MAX_SUBKEYS_PER_RECORD)
+                .map_while(|(subkey, (value, expiration))| {
+                    room = room.checked_sub(subkey.len() + value.len())?;
+                    Some((subkey.clone(), value.clone(), *expiration))
+                })
+                .collect();
+            HeldValue::Dictionary {
+                entries: held,
+                total: entries.len(),
+            }
+        }
+    }
+}
+
+/// Project one locally-held record. `held` is the value when the caller asked
+/// for one; it is rendered only as far as `budget` allows.
 pub fn local_record(
     record: &LocalRecord,
-    stored: Option<&Stored>,
+    held: Option<HeldValue>,
     key_name: &str,
     now: f64,
+    budget: &mut ValueBudget,
 ) -> DhtRecord {
     let s = &record.summary;
     let kind = match s.subkeys {
@@ -49,17 +123,40 @@ pub fn local_record(
         None => DhtRecordKind::Regular,
     };
 
-    let (value, subkeys) = match stored {
-        Some(Stored::Regular { value, .. }) => (Some(render_value(value)), Vec::new()),
-        Some(Stored::Dictionary { entries, .. }) => (
-            None,
-            entries
-                .iter()
-                .map(|(subkey, (value, expiration))| subkey_view(subkey, value, *expiration, now))
-                .collect(),
-        ),
-        None => (None, Vec::new()),
-    };
+    let mut values_truncated = false;
+    let mut value = None;
+    let mut subkeys = Vec::new();
+    match held {
+        Some(HeldValue::Regular(Some(raw))) => {
+            let view = render_value(&raw);
+            if budget.charge(raw.len().max(view.rendered.len())) {
+                value = Some(view);
+            } else {
+                values_truncated = true;
+            }
+        }
+        Some(HeldValue::Regular(None)) => {
+            budget.exhaust();
+            values_truncated = true;
+        }
+        Some(HeldValue::Dictionary { entries, total }) => {
+            for (subkey, raw, expiration) in &entries {
+                let view = subkey_view(subkey, raw, *expiration, now);
+                let rendered =
+                    view.subkey.len() + view.value.as_ref().map_or(0, |v| v.rendered.len());
+                if !budget.charge((subkey.len() + raw.len()).max(rendered)) {
+                    break;
+                }
+                subkeys.push(view);
+            }
+            values_truncated = subkeys.len() < total;
+            if entries.len() < total.min(MAX_SUBKEYS_PER_RECORD) {
+                // The copy stopped on the budget, not the cap: it is spent.
+                budget.exhaust();
+            }
+        }
+        None => {}
+    }
 
     DhtRecord {
         key_id: hex::encode(&s.key),
@@ -74,6 +171,7 @@ pub fn local_record(
         dict_maxsize: s.maxsize,
         value,
         subkeys,
+        values_truncated,
     }
 }
 

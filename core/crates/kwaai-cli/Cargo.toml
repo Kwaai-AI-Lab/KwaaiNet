@@ -128,6 +128,8 @@ tokio = { workspace = true, features = ["test-util"] }
 # `placement`'s keyspace test asserts that placement is *not* computed in
 # libp2p-kad's SHA256 space. Test-only: nothing in the binary hashes with it.
 sha2 = "0.10"
+# kwaai-rpc's prost line, to measure an encoded frame against the 4 MiB limit.
+prost-rpc = { package = "prost", version = "0.13" }
 
 [features]
 default = ["storage", "rag", "ipv6"]

@@ -457,8 +457,9 @@ fn dht_record_roundtrip_dictionary_with_subkeys() {
         key_name: "Qwen3-8B.0".to_string(),
         kind: DhtRecordKind::Dictionary as i32,
         in_cache: false,
-        subkey_count: 2,
-        value_bytes: 412,
+        // Three held, two returned: the third was withheld from the reply.
+        subkey_count: 3,
+        value_bytes: 413,
         expiration: 1_788_000_000.5,
         expires_in_secs: 317.25,
         latest_expiration: Some(1_788_000_090.0),
@@ -484,7 +485,7 @@ fn dht_record_roundtrip_dictionary_with_subkeys() {
                 subkey: "\"12D3KooWExampleB\"".to_string(),
                 expiration: 1_787_999_900.0,
                 expires_in_secs: -82.75,
-                value_bytes: 206,
+                value_bytes: 1,
                 value: Some(DhtValueView {
                     msgpack_type: "undecodable".to_string(),
                     rendered: "c1".to_string(),
@@ -494,10 +495,12 @@ fn dht_record_roundtrip_dictionary_with_subkeys() {
                 }),
             },
         ],
+        values_truncated: true,
     };
 
     let decoded = DhtRecord::decode(original.encode_to_vec().as_slice()).expect("must decode");
     assert_eq!(decoded, original);
+    assert!(decoded.values_truncated);
     assert_eq!(decoded.subkeys[1].expires_in_secs, -82.75);
     assert_eq!(
         decoded.subkeys[0].value.as_ref().unwrap().ext_code,
@@ -530,6 +533,7 @@ fn dht_record_roundtrip_regular_value_absent_optionals() {
             decoded: true,
         }),
         subkeys: vec![],
+        values_truncated: false,
     };
 
     let decoded = DhtRecord::decode(original.encode_to_vec().as_slice()).expect("must decode");
@@ -594,6 +598,7 @@ fn dht_records_roundtrip_carries_the_listing_bounds() {
             }],
             // One row returned out of many matched: the truncation signal.
             total_records: 12_043,
+            values_truncated: true,
         })),
     };
     let decoded = ServerFrame::decode(reply.encode_to_vec().as_slice()).expect("must decode");

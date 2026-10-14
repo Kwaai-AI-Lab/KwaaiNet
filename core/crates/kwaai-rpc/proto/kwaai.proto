@@ -1357,10 +1357,18 @@ message DhtRecordsRequest {
     // Fill in `value` and `subkeys`. Requires a non-empty `key_ids`:
     // values run to a megabyte each, so a whole-store listing carrying
     // them could not fit one frame. INVALID_ARGUMENT otherwise.
+    //
+    // Values are attached in reply order until about 3 MiB of value data
+    // has been included, each value charged the larger of its raw and
+    // rendered size (a subkey's own bytes count too); once one does not
+    // fit, no further value is attached. A dictionary returns at most 256
+    // subkeys, in subkey byte order. Anything withheld sets
+    // `values_truncated` on its record and on the reply.
     bool include_values = 1;
 
     // Restrict the listing to these DHT ids (hex, as reported in
-    // DhtRecord.key_id). Empty lists everything.
+    // DhtRecord.key_id; either case, optional `0x`). Empty lists
+    // everything. An id that is not hex is INVALID_ARGUMENT.
     repeated string key_ids = 2;
 
     // Maximum records to return. 0 uses the daemon's default (500);
@@ -1386,6 +1394,10 @@ message DhtRecordsReply {
     // Records matching the filter before `limit` was applied. Greater
     // than `records.len()` means the listing was cut short.
     uint32 total_records = 4;
+
+    // Some record's `values_truncated` is set: `include_values` was asked
+    // and the reply's value budget or subkey cap withheld something.
+    bool values_truncated = 5;
 }
 
 // A plaintext key name and the DHT id it hashes to.
@@ -1458,8 +1470,15 @@ message DhtRecord {
     optional DhtValueView value = 11;
 
     // Per-subkey breakdown, when `include_values` was set and this is a
-    // dictionary. Each subkey expires independently of the record.
+    // dictionary. Each subkey expires independently of the record. A
+    // prefix in subkey byte order: fewer than `subkey_count` entries
+    // means the rest were withheld, and `values_truncated` is set.
     repeated DhtSubkey subkeys = 12;
+
+    // `include_values` was asked but part of this record's value was
+    // withheld: a regular record's `value`, or the subkeys past
+    // `subkeys.len()`. See DhtRecordsRequest.include_values.
+    bool values_truncated = 13;
 }
 
 message DhtSubkey {
