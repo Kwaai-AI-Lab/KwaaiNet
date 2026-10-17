@@ -633,6 +633,10 @@ impl TransformerShard {
             x = block.forward(&x, seq_pos, &mut session.kv[local_idx], &self.rope)?;
         }
 
+        // Release the session map before logging: the per-forward debug line
+        // below would otherwise serialise every concurrent session behind it.
+        drop(sessions);
+
         let total = run_start.elapsed();
         if total.as_millis() > 500 {
             eprintln!(
@@ -642,6 +646,19 @@ impl TransformerShard {
                 total.as_secs_f64() * 1000.0 / self.blocks.len() as f64
             );
         }
+
+        // One line per forward, keyed by the `session_id`/`seq_pos` the
+        // coordinator also reports, so a hop can be matched across both logs.
+        // Debug because it fires on every token; the [PERF] line above is the
+        // always-on slow-path signal. Logged after the work to carry duration.
+        debug!(
+            session_id,
+            seq_pos,
+            start_block = self.start_block,
+            end_block = self.end_block,
+            duration_ms = total.as_secs_f64() * 1000.0,
+            "forward"
+        );
 
         Ok(x)
     }

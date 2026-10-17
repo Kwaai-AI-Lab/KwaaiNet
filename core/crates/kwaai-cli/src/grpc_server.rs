@@ -46,9 +46,10 @@ use kwaai_rpc::v1::{
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
     ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, Done, Error as RpcError,
-    GenerateRequest, NetworkRequest, NetworkUpdate, PeerConnKind, PingReply, PingRequest,
-    RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply, StorageDiscoveryRequest,
-    StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
+    GenerateRequest, HopFailure, InferenceEvent, InferenceHop, InferencePhase, NetworkRequest,
+    NetworkUpdate, PeerConnKind, PingReply, PingRequest, RoutingPeer, SelfStatus, ServerFrame,
+    ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer, StorageReachability,
+    StorageUpdate, UpdateReason,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -457,6 +458,81 @@ fn error_frame(id: u64, code: ErrorCode, msg: &str) -> ServerFrame {
     }
 }
 
+/// Map a daemon-side [`InferenceProgress`] onto the wire type.
+///
+/// `shard_cmd` deliberately keeps its own proto-free mirror so it stays
+/// usable from the CLI without the rpc crate, which leaves exactly one place
+/// — here — that has to know both shapes.
+fn progress_to_proto(p: crate::shard_cmd::InferenceProgress) -> InferenceEvent {
+    use crate::shard_cmd::{HopFailureKind, ProgressPhase};
+
+    let phase = match p.phase {
+        ProgressPhase::Resolved => InferencePhase::Resolved,
+        ProgressPhase::DiscoveryStart => InferencePhase::DiscoveryStart,
+        ProgressPhase::DiscoveryResult => InferencePhase::DiscoveryResult,
+        ProgressPhase::CircuitLoaded => InferencePhase::CircuitLoaded,
+        ProgressPhase::ChainPinned => InferencePhase::ChainPinned,
+        ProgressPhase::PeerDialStart => InferencePhase::PeerDialStart,
+        ProgressPhase::PeerDial => InferencePhase::PeerDial,
+        ProgressPhase::HopStart => InferencePhase::HopStart,
+        ProgressPhase::HopOk => InferencePhase::HopOk,
+        ProgressPhase::HopFailed => InferencePhase::HopFailed,
+        ProgressPhase::PathRebuild => InferencePhase::PathRebuild,
+        ProgressPhase::TokenSampled => InferencePhase::TokenSampled,
+        ProgressPhase::Complete => InferencePhase::Complete,
+    };
+
+    let failure = match p.failure {
+        None => HopFailure::Unspecified,
+        Some(HopFailureKind::NoHandler) => HopFailure::NoHandler,
+        Some(HopFailureKind::Transient) => HopFailure::Transient,
+        Some(HopFailureKind::Timeout) => HopFailure::Timeout,
+        Some(HopFailureKind::Other) => HopFailure::Other,
+    };
+
+    InferenceEvent {
+        elapsed_ms: p.elapsed_ms,
+        phase: phase as i32,
+        message: p.message,
+        peer_id: p.peer_id.unwrap_or_default(),
+        peer_name: p.peer_name.unwrap_or_default(),
+        is_self: p.is_self,
+        block_start: p.block_start.map(|v| v as u32),
+        block_end: p.block_end.map(|v| v as u32),
+        total_blocks: p.total_blocks.map(|v| v as u32),
+        covered_blocks: p.covered_blocks.map(|v| v as u32),
+        duration_ms: p.duration_ms,
+        token_index: p.token_index.map(|v| v as u32),
+        is_prefill: p.is_prefill,
+        candidate_index: p.candidate_index.map(|v| v as u32),
+        attempt: p.attempt.map(|v| v as u32),
+        ok: p.ok,
+        session_id: p.session_id.unwrap_or_default(),
+        seq_pos: p.seq_pos,
+        failure: failure as i32,
+        model: p.model.unwrap_or_default(),
+        dht_prefix: p.dht_prefix.unwrap_or_default(),
+        peer_count: p.peer_count.map(|v| v as u32),
+        circuit_id: p.circuit_id.unwrap_or_default(),
+        hops: p
+            .hops
+            .into_iter()
+            .map(|h| InferenceHop {
+                peer_id: h.peer_id,
+                peer_name: h.peer_name,
+                block_start: h.block_start as u32,
+                block_end: h.block_end as u32,
+                is_self: h.is_self,
+                trust_score: h.trust_score,
+                throughput: h.throughput,
+            })
+            .collect(),
+        dropped_events: p
+            .dropped_events
+            .map(|v| u32::try_from(v).unwrap_or(u32::MAX)),
+    }
+}
+
 /// Classify a `shard_run` failure into a specific [`ErrorCode`]. The
 /// dispatcher in [`crate::shard_cmd`] returns anyhow errors with
 /// descriptive `bail!` messages; pattern-match the strings here so
@@ -638,6 +714,9 @@ async fn spawn_session_shard_run(
         // tag-space so they can be added without a breaking change.
         max_tokens: None,
         circuit_id: None,
+        // Opt-in per request: the client asks for routing telemetry only when
+        // it has somewhere to show it.
+        events: req.events,
     };
 
     let cancels_for_cleanup = cancels.clone();
@@ -671,6 +750,17 @@ async fn spawn_session_shard_run(
                                     done: false,
                                     finish_reason: None,
                                 })),
+                            };
+                            if out_tx.send(Ok(frame)).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(crate::shard_cmd::ShardRunEvent::Progress(p)) => {
+                            let frame = ServerFrame {
+                                id,
+                                body: Some(server_frame::Body::InferenceEvent(
+                                    progress_to_proto(*p),
+                                )),
                             };
                             if out_tx.send(Ok(frame)).await.is_err() {
                                 break;
@@ -3006,5 +3096,176 @@ mod tests {
         churned.self_status.as_mut().unwrap().observed_addrs =
             vec!["/ip4/203.0.113.7/tcp/4001".into()];
         assert_eq!(network_identity(&a), network_identity(&churned));
+    }
+
+    /// A drop count past u32 saturates rather than wrapping to a small number.
+    #[test]
+    fn progress_to_proto_carries_dropped_events() {
+        use crate::shard_cmd::{InferenceProgress, ProgressPhase};
+        let ev = |n| {
+            let mut p = InferenceProgress::new(std::time::Instant::now(), ProgressPhase::Complete);
+            p.dropped_events = n;
+            progress_to_proto(p).dropped_events
+        };
+        assert_eq!(ev(None), None);
+        assert_eq!(ev(Some(7)), Some(7));
+        assert_eq!(ev(Some(u64::MAX)), Some(u32::MAX));
+    }
+
+    /// Drive a real `shard_run` over a real Session and assert the routing
+    /// telemetry reaches the wire.
+    ///
+    /// There is no p2p daemon here, so the run fails as soon as it tries to
+    /// connect to one — which still exercises the whole path end to end:
+    /// `run_streaming_inner` builds the event, the sink pushes it onto the
+    /// run's channel, `progress_to_proto` maps it, and it leaves the socket
+    /// as a real `ServerFrame`. Only `Resolved` precedes that failure, so
+    /// that is what this can honestly assert; the phases that need peers
+    /// are covered by the NAT topology, not by a unit test.
+    #[tokio::test]
+    async fn shard_run_streams_inference_events_when_requested() {
+        use futures::StreamExt as _;
+        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
+        use kwaai_rpc::v1::InferencePhase;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let _serial = TEST_LOCK.lock().await;
+
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let port = ephemeral_port();
+        let handle = spawn_on_tcp_port(KwaaiNetConfig::default(), port);
+        let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
+        assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
+
+        let endpoint = format!("http://127.0.0.1:{port}");
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)
+            .expect("valid endpoint")
+            .connect()
+            .await
+            .expect("connect to loopback gRPC server");
+        let mut client = KwaaiNetClient::new(channel);
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
+        tx.send(ClientFrame {
+            id: 1,
+            body: Some(client_frame::Body::ShardRun(ShardRunRequest {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+                model: None,
+                conversation_id: None,
+                events: true,
+            })),
+        })
+        .await
+        .expect("send shard_run frame");
+
+        let mut inbound = client
+            .session(ReceiverStream::new(rx))
+            .await
+            .expect("open Session")
+            .into_inner();
+
+        // Collect until the operation terminates, or we give up waiting.
+        let mut phases = Vec::new();
+        let collect = async {
+            while let Some(Ok(frame)) = inbound.next().await {
+                match frame.body {
+                    Some(server_frame::Body::InferenceEvent(e)) => phases.push(e.phase),
+                    Some(server_frame::Body::Done(_)) | Some(server_frame::Body::Error(_)) => break,
+                    _ => {}
+                }
+            }
+        };
+        // Generous: the daemon polls the DHT before giving up on discovery.
+        let _ = tokio::time::timeout(Duration::from_secs(45), collect).await;
+
+        assert!(
+            phases.contains(&(InferencePhase::Resolved as i32)),
+            "expected a Resolved event on the wire, got {phases:?}"
+        );
+
+        // Close our end first: an open Session keeps the connection — and
+        // so the listener — alive past the handle drop.
+        drop(inbound);
+        drop(tx);
+        drop(client);
+        drop(handle);
+        wait_for_close(port).await.unwrap_or_else(|last| {
+            panic!("TCP listener still {last:?} {LISTENER_CLOSE_BUDGET:?} after handle drop")
+        });
+    }
+
+    /// The mirror of the above: with `events` unset the daemon must stay
+    /// silent, since that is what keeps the flag worth having.
+    #[tokio::test]
+    async fn shard_run_stays_silent_without_the_events_flag() {
+        use futures::StreamExt as _;
+        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let _serial = TEST_LOCK.lock().await;
+
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let port = ephemeral_port();
+        let handle = spawn_on_tcp_port(KwaaiNetConfig::default(), port);
+        let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
+        assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
+
+        let endpoint = format!("http://127.0.0.1:{port}");
+        let channel = tonic::transport::Endpoint::from_shared(endpoint)
+            .expect("valid endpoint")
+            .connect()
+            .await
+            .expect("connect to loopback gRPC server");
+        let mut client = KwaaiNetClient::new(channel);
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
+        tx.send(ClientFrame {
+            id: 1,
+            body: Some(client_frame::Body::ShardRun(ShardRunRequest {
+                role: "user".to_string(),
+                content: "hello".to_string(),
+                model: None,
+                conversation_id: None,
+                events: false,
+            })),
+        })
+        .await
+        .expect("send shard_run frame");
+
+        let mut inbound = client
+            .session(ReceiverStream::new(rx))
+            .await
+            .expect("open Session")
+            .into_inner();
+
+        let mut saw_event = false;
+        let collect = async {
+            while let Some(Ok(frame)) = inbound.next().await {
+                match frame.body {
+                    Some(server_frame::Body::InferenceEvent(_)) => {
+                        saw_event = true;
+                        break;
+                    }
+                    Some(server_frame::Body::Done(_)) | Some(server_frame::Body::Error(_)) => break,
+                    _ => {}
+                }
+            }
+        };
+        let _ = tokio::time::timeout(Duration::from_secs(45), collect).await;
+
+        assert!(!saw_event, "events were emitted without being requested");
+
+        drop(inbound);
+        drop(tx);
+        drop(client);
+        drop(handle);
+        wait_for_close(port).await.unwrap_or_else(|last| {
+            panic!("TCP listener still {last:?} {LISTENER_CLOSE_BUDGET:?} after handle drop")
+        });
     }
 }
