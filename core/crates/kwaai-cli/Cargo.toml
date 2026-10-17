@@ -72,6 +72,8 @@ tokio-stream = { version = "0.1", features = ["net"] }
 sha1 = "0.10"
 hex = "0.4"
 rmpv = "1.0"
+# Marker-level msgpack scanning; already in the tree via rmpv / rmp-serde.
+rmp = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 half = { workspace = true }
 unicode-width = "0.1"
@@ -124,6 +126,8 @@ tokio = { workspace = true, features = ["test-util"] }
 # `placement`'s keyspace test asserts that placement is *not* computed in
 # libp2p-kad's SHA256 space. Test-only: nothing in the binary hashes with it.
 sha2 = "0.10"
+# kwaai-rpc's prost line, to measure an encoded frame against the 4 MiB limit.
+prost-rpc = { package = "prost", version = "0.13" }
 
 [features]
 default = ["storage", "rag", "ipv6"]

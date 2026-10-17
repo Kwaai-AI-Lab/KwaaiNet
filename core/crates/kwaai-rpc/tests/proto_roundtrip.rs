@@ -15,8 +15,9 @@
 //!     to `None` (we are NOT silently widening absent-vs-empty).
 
 use kwaai_rpc::v1::{
-    client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtRole,
-    NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
+    client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtKnownKey,
+    DhtRecord, DhtRecordKind, DhtRecordsReply, DhtRecordsRequest, DhtRole, DhtSubkey, DhtValueView,
+    KadStatus, NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
     UpdateReason,
 };
 use prost::Message;
@@ -270,6 +271,7 @@ fn network_update_roundtrip_all_sections() {
                 connected: true,
                 is_bootstrap: false,
                 addrs: vec!["/ip4/198.18.0.10/tcp/8000".to_string()],
+                ..Default::default()
             },
             RoutingPeer {
                 peer_id: "12D3KooWExampleKnownButOffline".to_string(),
@@ -278,6 +280,7 @@ fn network_update_roundtrip_all_sections() {
                 // A routing entry keeps its addresses after the connection
                 // drops — that is what makes it dialable again later.
                 addrs: vec!["/ip4/198.18.0.99/tcp/8000".to_string()],
+                ..Default::default()
             },
         ],
         bootstrap_total: 2,
@@ -329,12 +332,46 @@ fn network_update_roundtrip_disjoint_peer_sets() {
             // the degenerate case a client has to be able to distinguish,
             // and an empty list must survive the wire as one.
             addrs: vec![],
+            ..Default::default()
         }],
         ..Default::default()
     };
     let decoded =
         NetworkUpdate::decode(known_not_connected.encode_to_vec().as_slice()).expect("must decode");
     assert_eq!(decoded, known_not_connected);
+}
+
+/// The k-bucket detail the DHT-entry dialog renders.
+///
+/// `last_contact_secs` is `optional`, and absent is a real state — a routing
+/// entry seeded from a configured address before any dial succeeded. Proto3
+/// erases a zero-valued scalar, so without the `optional` keyword "never
+/// connected" and "connected this very second" would arrive identical.
+#[test]
+fn routing_peer_roundtrip_kad_detail() {
+    let never_dialed = RoutingPeer {
+        peer_id: "12D3KooWExampleSeeded".to_string(),
+        connected: false,
+        kad_status: KadStatus::Disconnected as i32,
+        bucket: 255,
+        bucket_entries: 20,
+        bucket_capacity: 20,
+        bucket_pending: true,
+        distance: "f".repeat(64),
+        last_contact_secs: None,
+        ..Default::default()
+    };
+    let decoded = RoutingPeer::decode(never_dialed.encode_to_vec().as_slice())
+        .expect("RoutingPeer must decode from its own encoding");
+    assert_eq!(decoded, never_dialed);
+    assert_eq!(decoded.last_contact_secs, None);
+
+    let just_now = RoutingPeer {
+        last_contact_secs: Some(0),
+        ..never_dialed.clone()
+    };
+    let decoded = RoutingPeer::decode(just_now.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded.last_contact_secs, Some(0));
 }
 
 /// `UpdateReason::Tick` is the proto3 zero value, so it occupies no bytes on
@@ -408,4 +445,167 @@ fn network_frames_occupy_oneof_tag_17() {
         &[0x08, 0x01, 0x8a, 0x01, 0x00],
         "ServerFrame.network must serialise at proto tag 17"
     );
+}
+
+/// A dictionary record with its subkey breakdown — the shape every per-block
+/// key really has. The `optional` fields would lose meaning if widened to
+/// 0/empty: an unbounded dictionary would read as capped at zero.
+#[test]
+fn dht_record_roundtrip_dictionary_with_subkeys() {
+    let original = DhtRecord {
+        key_id: "5b7a1c0f".repeat(5),
+        key_name: "Qwen3-8B.0".to_string(),
+        kind: DhtRecordKind::Dictionary as i32,
+        in_cache: false,
+        // Three held, two returned: the third was withheld from the reply.
+        subkey_count: 3,
+        value_bytes: 413,
+        expiration: 1_788_000_000.5,
+        expires_in_secs: 317.25,
+        latest_expiration: Some(1_788_000_090.0),
+        dict_maxsize: Some(1_048_576),
+        value: None,
+        subkeys: vec![
+            DhtSubkey {
+                subkey: "\"12D3KooWExampleA\"".to_string(),
+                expiration: 1_788_000_000.5,
+                expires_in_secs: 317.25,
+                value_bytes: 206,
+                value: Some(DhtValueView {
+                    msgpack_type: "ext".to_string(),
+                    rendered: r#"{"$ext":64,"value":[2,1.5,{"start_block":0}]}"#.to_string(),
+                    raw_bytes: 206,
+                    ext_code: Some(64),
+                    decoded: true,
+                }),
+            },
+            DhtSubkey {
+                // Independent expiration: a subkey outliving its record is
+                // normal, and the countdown must be able to go negative.
+                subkey: "\"12D3KooWExampleB\"".to_string(),
+                expiration: 1_787_999_900.0,
+                expires_in_secs: -82.75,
+                value_bytes: 1,
+                value: Some(DhtValueView {
+                    msgpack_type: "undecodable".to_string(),
+                    rendered: "c1".to_string(),
+                    raw_bytes: 1,
+                    ext_code: None,
+                    decoded: false,
+                }),
+            },
+        ],
+        values_truncated: true,
+    };
+
+    let decoded = DhtRecord::decode(original.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, original);
+    assert!(decoded.values_truncated);
+    assert_eq!(decoded.subkeys[1].expires_in_secs, -82.75);
+    assert_eq!(
+        decoded.subkeys[0].value.as_ref().unwrap().ext_code,
+        Some(64)
+    );
+}
+
+/// A regular record must be distinguishable from a one-entry dictionary: the
+/// value lives on the record and the dictionary-only fields are absent.
+#[test]
+fn dht_record_roundtrip_regular_value_absent_optionals() {
+    let original = DhtRecord {
+        key_id: "00".repeat(20),
+        // Unnamed is the normal case for a record replicated onto us: the id
+        // is a hash and there is nothing to invert.
+        key_name: String::new(),
+        kind: DhtRecordKind::Regular as i32,
+        in_cache: true,
+        subkey_count: 0,
+        // msgpack bin8 of two non-UTF-8 bytes: c4 02 ff fe.
+        value_bytes: 4,
+        expiration: 1_788_000_000.0,
+        expires_in_secs: 5.0,
+        latest_expiration: None,
+        dict_maxsize: None,
+        value: Some(DhtValueView {
+            msgpack_type: "bin".to_string(),
+            rendered: r#"{"$hex":"fffe"}"#.to_string(),
+            raw_bytes: 4,
+            ext_code: None,
+            decoded: true,
+        }),
+        subkeys: vec![],
+        values_truncated: false,
+    };
+
+    let decoded = DhtRecord::decode(original.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, original);
+    assert!(decoded.latest_expiration.is_none());
+    assert!(decoded.dict_maxsize.is_none());
+    assert!(decoded.subkeys.is_empty());
+}
+
+/// The new body must serialise at tag 26, asserted as wire bytes:
+/// a decode-back-into-the-same-variant check passes for any tag protoc
+/// accepts, so only the bytes catch a renumbering.
+#[test]
+fn dht_frames_occupy_oneof_tag_26() {
+    // Tag 26, wire type 2 (LEN) => (26 << 3) | 2 = 210 => varint [0xd2, 0x01].
+    let records_req = ClientFrame {
+        id: 0,
+        body: Some(client_frame::Body::DhtRecords(DhtRecordsRequest::default())),
+    };
+    assert_eq!(
+        records_req.encode_to_vec().as_slice(),
+        &[0xd2, 0x01, 0x00],
+        "ClientFrame.dht_records must serialise at proto tag 26"
+    );
+
+    let records_reply = ServerFrame {
+        id: 1,
+        body: Some(server_frame::Body::DhtRecords(DhtRecordsReply::default())),
+    };
+    assert_eq!(
+        records_reply.encode_to_vec().as_slice(),
+        &[0x08, 0x01, 0xd2, 0x01, 0x00],
+        "ServerFrame.dht_records must serialise at proto tag 26"
+    );
+}
+
+/// `limit` bounds a listing and `total_records` says when it was cut short.
+#[test]
+fn dht_records_roundtrip_carries_the_listing_bounds() {
+    let req = ClientFrame {
+        id: 26,
+        body: Some(client_frame::Body::DhtRecords(DhtRecordsRequest {
+            include_values: true,
+            key_ids: vec!["ab".repeat(20)],
+            limit: 250,
+        })),
+    };
+    let decoded = ClientFrame::decode(req.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, req);
+
+    let reply = ServerFrame {
+        id: 26,
+        body: Some(server_frame::Body::DhtRecords(DhtRecordsReply {
+            server_time: "2026-09-03T12:00:00.000Z".to_string(),
+            records: vec![DhtRecord {
+                key_id: "cd".repeat(20),
+                ..Default::default()
+            }],
+            known_keys: vec![DhtKnownKey {
+                name: "_petals.models".to_string(),
+                key_id: "ab".repeat(20),
+            }],
+            // One row returned out of many matched: the truncation signal.
+            total_records: 12_043,
+            values_truncated: true,
+        })),
+    };
+    let decoded = ServerFrame::decode(reply.encode_to_vec().as_slice()).expect("must decode");
+    assert_eq!(decoded, reply);
+    let Some(server_frame::Body::DhtRecords(r)) = decoded.body else {
+        panic!("wrong arm");
+    };
+    assert!(r.records.len() < r.total_records as usize);
 }
