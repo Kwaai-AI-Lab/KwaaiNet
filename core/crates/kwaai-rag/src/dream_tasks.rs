@@ -304,6 +304,20 @@ fn parse_result(
     current_desc: &str,
     evidence_chunks: &[i64],
 ) -> EntityCompletion {
+    parse_result_with(raw, eid, current_desc, evidence_chunks, &|r: &str| {
+        RELATION_TYPES.contains(&r).then(|| r.to_string())
+    })
+}
+
+/// `parse_result` with the relation vocabulary as a parameter: `accept` maps a
+/// predicate the model wrote to the canonical one to store, or `None` to drop it.
+fn parse_result_with(
+    raw: &str,
+    eid: i64,
+    current_desc: &str,
+    evidence_chunks: &[i64],
+    accept: &dyn Fn(&str) -> Option<String>,
+) -> EntityCompletion {
     let cleaned = raw
         .trim()
         .trim_start_matches("```json")
@@ -359,12 +373,8 @@ fn parse_result(
     let relations: Vec<(String, String)> = payload
         .relations
         .into_iter()
-        .filter(|r| {
-            !r.target.is_empty()
-                && !r.relation_type.is_empty()
-                && RELATION_TYPES.contains(&r.relation_type.as_str())
-        })
-        .map(|r| (r.relation_type, r.target))
+        .filter(|r| !r.target.is_empty() && !r.relation_type.is_empty())
+        .filter_map(|r| accept(&r.relation_type).map(|t| (t, r.target)))
         .collect();
 
     EntityCompletion {
@@ -1083,5 +1093,295 @@ mod tests {
         assert!(result.description.is_none());
         assert!(result.relations.is_empty());
         assert!(!result.force_description);
+    }
+}
+
+// ── Ontology-driven completion ────────────────────────────────────────────────
+
+/// The predicates an entity of `entity_type` may be the subject of: those whose
+/// declared domain admits the type, or that declare no domain.
+pub fn applicable_relations<'a>(
+    ont: &'a crate::ontology::Ontology,
+    entity_type: &str,
+) -> Vec<&'a crate::ontology::RelationTypeDef> {
+    ont.relation_types
+        .iter()
+        .filter(|r| {
+            r.domain.is_empty() || r.domain.iter().any(|d| d.eq_ignore_ascii_case(entity_type))
+        })
+        .collect()
+}
+
+/// Whether the ontology task for this type asks for a prose description.
+///
+/// Matches the compiled tasks it replaces: Biography, Geography and OrgProfile
+/// (Person, Place, Organization) never asked for one, so their descriptions are
+/// built from fields and hand-fixed prose survives. Asking every type let dream
+/// replace a Person's description whenever the new one was a tier higher or 20
+/// characters longer (review of #248).
+pub fn ontology_task_asks_description(ont: &crate::ontology::Ontology, entity_type: &str) -> bool {
+    let schema_type = ont
+        .entity_type(entity_type)
+        .and_then(|e| e.schema_type.clone())
+        .or_else(|| crate::scorer::schema_type_for(entity_type).map(String::from));
+    !matches!(
+        task_for_schema_type(schema_type.as_deref()),
+        DreamTaskKind::Biography | DreamTaskKind::Geography | DreamTaskKind::OrgProfile
+    )
+}
+
+/// The completion prompt for a KB with an ontology. One prompt for every
+/// entity type, built from the ontology: the type's description, its fields
+/// (ontology first, compiled table as fallback), and the predicates its domain
+/// admits with their ranges. The six schema-type templates hard-code
+/// `located_in`, `belongs_to`, `works_at` and `associated_with` as examples,
+/// and in Eval v2 those four plus `part_of` were ~99% of every non-memoir
+/// corpus's dream relations.
+#[allow(clippy::too_many_arguments)]
+pub fn ontology_task_prompt(
+    ont: &crate::ontology::Ontology,
+    name: &str,
+    entity_type: &str,
+    evidence_text: &str,
+    document_titles: &[String],
+    no_relations: bool,
+) -> String {
+    let text = trim_evidence(evidence_text);
+    let type_desc = ont
+        .entity_type(entity_type)
+        .map(|e| {
+            e.description
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|d| !d.is_empty())
+        .map(|d| format!(" — {d}"))
+        .unwrap_or_default();
+    let description_schema = if ontology_task_asks_description(ont, entity_type) {
+        format!("\"description\":\"2-4 sentences from the text on what {name} is and why it matters here\",")
+    } else {
+        String::new()
+    };
+    let fields = crate::graph::expected_fields_for(entity_type, Some(ont));
+    let fields_json = fields
+        .iter()
+        .map(|(k, d)| format!("\"{k}\":\"{}\"", d.replace('"', "'")))
+        .collect::<Vec<_>>()
+        .join(",");
+    let rels = if no_relations {
+        vec![]
+    } else {
+        applicable_relations(ont, entity_type)
+    };
+    let (relations_schema, relation_block) = if rels.is_empty() {
+        (
+            "\"relations\":[]".to_string(),
+            "- relations must be an empty array []\n".to_string(),
+        )
+    } else {
+        let lines = rels
+            .iter()
+            .map(|r| {
+                let range = if r.range.is_empty() {
+                    "any entity".to_string()
+                } else {
+                    r.range.join(" or ")
+                };
+                format!("  - {} → {range}", r.name)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let fallback = match &ont.fallback_predicate {
+            Some(f) => format!("If no listed type fits, use `{f}` at most, or omit the relation."),
+            None => "If no listed type fits, omit the relation.".to_string(),
+        };
+        (
+            "\"relations\":[{\"type\":\"<one of the relation types below>\",\"target\":\"<exact name of the related entity>\"}]"
+                .to_string(),
+            format!(
+                "Relation types for a {entity_type} (type → what the target is):\n{lines}\n\
+                 - Only include relations the source text states, with {name} as the subject.\n\
+                 - A relation's target must be a specific named entity mentioned in the text.\n\
+                 - {fallback}\n{}",
+                ont.relation_rules.iter().map(|r| format!("- {r}\n")).collect::<String>()
+            ),
+        )
+    };
+    let doc_rule = doc_exclusion_rule(document_titles);
+    let doc_rule_line = if doc_rule.is_empty() {
+        String::new()
+    } else {
+        format!("- {doc_rule}\n")
+    };
+    format!(
+        "You are completing a knowledge-graph entry for \"{name}\", a {entity_type}{type_desc}.\n\
+         Return ONLY valid JSON — no markdown, no explanation.\n\n\
+         Source text:\n---\n{text}\n---\n\n\
+         JSON schema (omit any field or relation the text does not support):\n\
+         {{{description_schema}\"fields\":{{{fields_json}}},{relations_schema}}}\n\n\
+         Rules:\n\
+         - Use only facts stated in the source text. Do not use background knowledge.\n\
+         {relation_block}{doc_rule_line}"
+    )
+}
+
+/// Complete one entity with the KB's ontology (see `ontology_task_prompt`).
+#[allow(clippy::too_many_arguments)]
+pub async fn run_ontology_task(
+    ont: &crate::ontology::Ontology,
+    eid: i64,
+    name: &str,
+    entity_type: &str,
+    current_description: &str,
+    evidence_text: &str,
+    url: &str,
+    model: &str,
+    document_titles: &[String],
+    evidence_chunks: &[i64],
+    no_relations: bool,
+) -> EntityCompletion {
+    let prompt = ontology_task_prompt(
+        ont,
+        name,
+        entity_type,
+        evidence_text,
+        document_titles,
+        no_relations,
+    );
+    match call_llm(&prompt, url, model).await {
+        Some(raw) => {
+            let mut c = parse_result_with(
+                &raw,
+                eid,
+                current_description,
+                evidence_chunks,
+                &|r: &str| ont.declared_relation(r),
+            );
+            if c.failure.is_none() {
+                c.schema_type = ont
+                    .entity_type(entity_type)
+                    .and_then(|e| e.schema_type.clone());
+            }
+            if !ontology_task_asks_description(ont, entity_type) {
+                c.description = None; // returned unasked: never replaces prose
+            }
+            c
+        }
+        None => empty_failed(eid),
+    }
+}
+
+#[cfg(test)]
+mod ontology_task_tests {
+    use super::*;
+    use crate::ontology::Ontology;
+
+    /// Regression (review of #248): every ontology task asked for a prose
+    /// description, so dream replaced Person descriptions that the compiled
+    /// Biography task never touched.
+    #[test]
+    fn person_place_and_organization_tasks_ask_for_no_description() {
+        let ont = Ontology::from_yaml(
+            "ontology: { name: t }\n\
+             entity_types:\n  \
+             - { name: Person, schema_type: \"schema:Person\" }\n  \
+             - { name: Committee, schema_type: \"schema:Organization\" }\n  \
+             - { name: Test, schema_type: \"schema:Event\" }\n",
+        )
+        .unwrap();
+        for (ty, asks) in [("Person", false), ("Committee", false), ("Test", true)] {
+            assert_eq!(ontology_task_asks_description(&ont, ty), asks, "{ty}");
+            let p = ontology_task_prompt(&ont, "X", ty, "text", &[], true);
+            assert_eq!(p.contains("\"description\""), asks, "{ty}: {p}");
+        }
+    }
+
+    fn shipped(kb: &str) -> Ontology {
+        let p = format!(
+            "{}/../../../tests/kwaai-knowledge/ontologies/{kb}.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        Ontology::from_yaml(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    /// Eval v2's arm B, as a test: dream offered every corpus the same four
+    /// generic predicates. A Legal case must be offered Legal's.
+    #[test]
+    fn a_case_is_offered_legal_predicates_not_the_template_examples() {
+        let p = ontology_task_prompt(
+            &shipped("Legal"),
+            "Roe v. Wade",
+            "Case",
+            "Roe v. Wade was decided...",
+            &[],
+            false,
+        );
+        for want in ["cites", "overrules", "decided_by"] {
+            assert!(p.contains(&format!("- {want} → ")), "{want} missing:\n{p}");
+        }
+        for banned in [
+            "located_in",
+            "works_at",
+            "belongs_to",
+            "associated_with",
+            "spouse_of",
+        ] {
+            assert!(!p.contains(banned), "`{banned}` offered to a Case:\n{p}");
+        }
+        assert!(
+            p.contains("omit the relation"),
+            "Legal declares no fallback"
+        );
+    }
+
+    #[test]
+    fn only_predicates_whose_domain_admits_the_type_are_offered() {
+        let m = shipped("Manhattan");
+        let doc = ontology_task_prompt(&m, "Franck Report", "Document", "...", &[], false);
+        assert!(doc.contains("- addressed_to → ") && doc.contains("- recommends → "));
+        assert!(
+            !doc.contains("- worked_at → "),
+            "a Document does not work anywhere"
+        );
+    }
+
+    #[test]
+    fn no_relations_offers_none() {
+        let p = ontology_task_prompt(&shipped("Legal"), "Roe v. Wade", "Case", "...", &[], true);
+        assert!(p.contains("relations must be an empty array"));
+        assert!(!p.contains("- cites → "));
+    }
+
+    #[test]
+    fn invented_predicates_are_dropped_and_aliases_canonicalised() {
+        let m = shipped("Manhattan");
+        let raw = r#"{"description":"","fields":{},"relations":[
+            {"type":"wrote","target":"Franck Report"},
+            {"type":"associated_with","target":"Chicago"},
+            {"type":"sibling_of","target":"Teller"}]}"#;
+        let c = parse_result_with(raw, 1, "", &[1], &|r: &str| m.declared_relation(r));
+        assert_eq!(
+            c.relations,
+            vec![("authored".to_string(), "Franck Report".to_string())]
+        );
+    }
+
+    #[test]
+    fn an_explicit_fallback_is_kept_where_the_ontology_declares_one() {
+        // narrative-history declares `associated_with`; an ontology can drop it with
+        // `fallback_predicate: null`.
+        let nh =
+            Ontology::from_yaml("ontology: { name: m, extends: narrative-history }\n").unwrap();
+        assert_eq!(
+            nh.declared_relation("associated_with").as_deref(),
+            Some("associated_with")
+        );
+        assert_eq!(nh.declared_relation("frobnicates"), None);
+        assert_eq!(
+            crate::ontology::test_memoir().declared_relation("associated_with"),
+            None,
+            "an explicit null fallback is kept"
+        );
     }
 }

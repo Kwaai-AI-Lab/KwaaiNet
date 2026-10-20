@@ -952,6 +952,11 @@ pub struct GraphStore {
     /// Stores both the raw form ("j.m.h.") and trimmed form ("j.m.h") so query
     /// tokenizers that strip trailing punctuation still get a hit.
     pub alias_token_index: HashMap<String, Vec<i64>>,
+    /// The vocabulary relation writes are validated against, when it is not
+    /// the KB's ontology: per-document extraction sets it to the ontology the
+    /// chunk's document was extracted with (`None` inside = the compiled
+    /// defaults, no coercion). Unset, writes use `ontology`.
+    relation_vocab_override: Option<Option<crate::ontology::Ontology>>,
 }
 
 // rusqlite::Connection is !Send; safe to mark Send because GraphStore is always moved
@@ -998,6 +1003,7 @@ impl GraphStore {
             chunk_to_entities: HashMap::new(),
             entity_to_chunks: HashMap::new(),
             alias_token_index: HashMap::new(),
+            relation_vocab_override: None,
         };
         store.rebuild()?;
         store.load_ontology();
@@ -1337,7 +1343,7 @@ impl GraphStore {
         // corpus's fallback, or are dropped where it admits none.
         let coerced;
         let emitted = relation_type;
-        let relation_type = match self.ontology.as_ref() {
+        let relation_type = match self.relation_vocab() {
             Some(ont) => match ont.coerce_relation(relation_type) {
                 Some(r) => {
                     coerced = r;
@@ -1356,7 +1362,7 @@ impl GraphStore {
         // declares an ontology, a predicate whose endpoints violate its declared
         // domain or range is dropped here, for any predicate — not just the
         // familial ones. Unknown endpoints pass, matching the leniency below.
-        if let Some(ont) = self.ontology.as_ref() {
+        if let Some(ont) = self.relation_vocab() {
             let ty = |id: &i64| self.nodes.get(id).map(|n| n.entity_type.as_str());
             if !ont.relation_endpoints_valid(relation_type, ty(&src_id), ty(&dst_id)) {
                 return Ok(());
@@ -1707,7 +1713,7 @@ impl GraphStore {
             .map(|v| v.iter().map(|(_, r, _)| r.clone()).collect())
             .unwrap_or_default();
         let score = if let Some(node) = self.nodes.get(&id) {
-            crate::scorer::score_entity(node, &rels).overall
+            crate::scorer::score_entity_with(node, &rels, self.ontology.as_ref()).overall
         } else {
             return 0.0;
         };
@@ -1914,7 +1920,7 @@ impl GraphStore {
                 .map(|v| v.iter().map(|(_, r, _)| r.clone()).collect())
                 .unwrap_or_default();
             if let Some(node) = self.nodes.get_mut(id) {
-                let score = crate::scorer::score_entity(node, &rels);
+                let score = crate::scorer::score_entity_with(node, &rels, self.ontology.as_ref());
                 node.confidence = score.overall;
                 let val = serde_json::to_vec(node)?;
                 txn.execute(
@@ -4760,6 +4766,28 @@ impl GraphStore {
         self.ontology.as_ref()
     }
 
+    /// The vocabulary relation writes are validated against: the override set
+    /// by `set_relation_vocabulary`, else the KB's ontology.
+    fn relation_vocab(&self) -> Option<&crate::ontology::Ontology> {
+        match &self.relation_vocab_override {
+            Some(v) => v.as_ref(),
+            None => self.ontology.as_ref(),
+        }
+    }
+
+    /// Validate the relations written next against `vocab` rather than the
+    /// KB's ontology, until called again with `None`.
+    ///
+    /// The KB's ontology under per-document selection is the union of every
+    /// document's. A document is extracted with its own ontology (or with the
+    /// compiled defaults when it has none and the KB no base), and its
+    /// relations must be checked against that same vocabulary: against the
+    /// union, an unselected memo's `parent_of` was coerced into a court
+    /// opinion's predicates or dropped.
+    pub fn set_relation_vocabulary(&mut self, vocab: Option<Option<crate::ontology::Ontology>>) {
+        self.relation_vocab_override = vocab;
+    }
+
     /// Persist an ontology for this KB, and adopt it immediately.
     pub fn set_ontology(&mut self, ont: &crate::ontology::Ontology) -> Result<()> {
         let json = serde_json::to_string(ont)?;
@@ -4772,6 +4800,88 @@ impl GraphStore {
         self.set_kb_entity_schemas(&ont.to_kb_schemas())?;
         self.ontology = Some(ont.clone());
         self.load_narrator_gender();
+        Ok(())
+    }
+
+    /// Store per-document ontology choices, and their union (with the base) as
+    /// the KB's ontology, which write-time validation and query scope use.
+    ///
+    /// The KB's current hand-loaded ontology, if it is not already a union, is
+    /// kept as the base. It used to be overwritten by the union.
+    pub fn set_doc_ontologies(
+        &mut self,
+        docs: &crate::ontology_select::DocOntologies,
+        kb: &str,
+    ) -> Result<()> {
+        let mut docs = docs.clone();
+        if docs.base.is_none() {
+            docs.base = self
+                .ontology
+                .clone()
+                .filter(|o| !o.is_empty() && o.ontology.extends.as_deref() != Some("union"));
+        }
+        let json = serde_json::to_string(&docs)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            params!["kb_doc_ontologies", json.as_str()],
+        )?;
+        match docs.union(kb) {
+            Some(u) => self.set_ontology(&u)?,
+            // Nothing chosen and no base: a union stored by an earlier selection
+            // must not outlive it, or relations keep being coerced into the
+            // vocabulary of an ontology no document uses any more.
+            None if self
+                .ontology
+                .as_ref()
+                .is_some_and(|o| o.ontology.extends.as_deref() == Some("union")) =>
+            {
+                self.conn.execute(
+                    "DELETE FROM metadata WHERE key IN ('kb_ontology', 'kb_entity_schemas')",
+                    [],
+                )?;
+                self.ontology = None;
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    /// Per-document ontology choices, if a selection has been stored and reads
+    /// back. A record that fails to parse is logged and treated as absent; use
+    /// `doc_ontologies_checked` before writing, so it is not overwritten.
+    pub fn doc_ontologies(&self) -> Option<crate::ontology_select::DocOntologies> {
+        match self.doc_ontologies_checked() {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("per-document ontologies unreadable, ignored: {e}");
+                None
+            }
+        }
+    }
+
+    /// As `doc_ontologies`, but an unreadable record is an error.
+    pub fn doc_ontologies_checked(&self) -> Result<Option<crate::ontology_select::DocOntologies>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM metadata WHERE key = 'kb_doc_ontologies'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        match raw {
+            None => Ok(None),
+            Some(v) => Ok(Some(
+                serde_json::from_str(&v).context("parsing stored per-document ontologies")?,
+            )),
+        }
+    }
+
+    /// Forget per-document ontology choices (`graph schema load` does this, so
+    /// a newly loaded ontology is not shadowed by stale choices).
+    pub fn clear_doc_ontologies(&mut self) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM metadata WHERE key = 'kb_doc_ontologies'", [])?;
         Ok(())
     }
 
@@ -5556,6 +5666,180 @@ fn normalize_underscores(s: &str) -> String {
     clean_entity_name(s)
 }
 
+/// The relation gate for a KB with an ontology: the compiled lexical gate,
+/// widened by the ontology's own declared trigger phrases. An ontology that
+/// declares none keeps the compiled gate; relation extraction is never
+/// unfiltered (8B precision there is 0–17%).
+pub fn ontology_relation_trigger(text: &str, ont: &crate::ontology::Ontology) -> bool {
+    // Always at least the compiled lexical gate. An ontology's trigger phrases
+    // widen it to the corpus's own predicates; they never replace it. Replacing
+    // it dropped the membership and marriage keywords for ontologies that
+    // declare only "X of" phrases, and an ontology declaring no triggers at all
+    // (Climate, DeepSea) ran relation extraction on every chunk, the unfiltered
+    // 8B path that measures 0–17% precision.
+    if lexical_relation_trigger(text) {
+        return true;
+    }
+    let lower = text.to_lowercase();
+    ont.triggers().iter().any(|t| lower.contains(&t.phrase))
+}
+
+pub struct OntologyPromptParts<'a> {
+    pub ont: &'a crate::ontology::Ontology,
+    pub preamble: String,
+    pub entity_cap: usize,
+    pub hints_block: &'a str,
+    pub candidates_block: &'a str,
+    pub kb_type_context: &'a str,
+    pub entity_types: &'a [&'a str],
+    /// `None` = entity-only prompt.
+    pub relation_list: Option<String>,
+    pub stop_word_list: &'a str,
+    pub text: &'a str,
+}
+
+/// The extraction prompt for a KB with an ontology.
+///
+/// Only rules that hold for any corpus are written here. Everything that
+/// describes one corpus — which names are cited authors rather than actors,
+/// which group nouns occur, which relations need which evidence words — comes
+/// from the ontology's `extraction_rules` / `relation_rules`, inherited through
+/// `extends:`. The compiled prompt that KBs without an ontology still get is
+/// deliberately left untouched.
+pub fn ontology_extraction_prompt(p: &OntologyPromptParts) -> String {
+    let bullets =
+        |rules: &[String]| -> String { rules.iter().map(|r| format!("- {r}\n")).collect() };
+    let entity_list = p.entity_types.join(", ");
+    let field_lines: Vec<String> = p
+        .entity_types
+        .iter()
+        .filter_map(|t| {
+            let f = expected_fields_for(t, Some(p.ont));
+            (!f.is_empty()).then(|| {
+                let keys: Vec<String> = f.into_iter().map(|(k, _)| k).collect();
+                format!("               {t}: {}", keys.join(", "))
+            })
+        })
+        .collect();
+    let fields_block = if field_lines.is_empty() || p.relation_list.is_some() {
+        String::new()
+    } else {
+        format!(
+            "Field keys by entity type — include ONLY keys whose values are a specific date, name, \
+             or place literally present in this passage (no inference, no background knowledge):\n{}\n\n",
+            field_lines.join("\n")
+        )
+    };
+    let corpus_rules = bullets(&p.ont.extraction_rules);
+    // Verbatim types (document titles, quotations) are exempt from the length
+    // cap: "Science Panel's Report to the Interim Committee" is seven words and
+    // "prompt and utter destruction" is a quotation, and the cap discarded both.
+    let verbatim: Vec<&str> = p
+        .ont
+        .entity_types
+        .iter()
+        .filter(|e| {
+            e.irreducible
+                && p.entity_types
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(&e.name))
+        })
+        .map(|e| e.name.as_str())
+        .collect();
+    let length_rule = if verbatim.is_empty() {
+        "- Entity names must be ≤ 5 words. If a candidate contains multiple names \
+         separated by commas or 'and', extract each as its own entity.\n"
+            .to_string()
+    } else {
+        format!(
+            "- Entity names must be ≤ 5 words, except {} names, which are kept verbatim at \
+             any length. If a candidate contains multiple names separated by commas or 'and', \
+             extract each as its own entity.\n",
+            verbatim.join(" and ")
+        )
+    };
+    let common_rules = format!(
+        "- Never create an entity whose name is a pronoun or generic role.\n\
+         - Only keep candidates that are real proper names, organisations, places or \
+         named things of a listed type.\n\
+         - Entity names must exactly match a candidate from the list above. Do NOT append \
+         dates, page numbers, volume references, or citation details to entity names.\n\
+         {length_rule}\
+         - If a candidate is contained within a longer candidate, prefer ONLY the \
+         longer/more-specific form and discard the shorter substring.\n\
+         - Descriptions must contain at least one specific fact (date, place, role, or \
+         relationship) drawn from this passage. Do not use background knowledge or generic definitions.\n\
+         - Collective nouns (\"the committee\", \"the family\") and bare titles \
+         (\"the Doctor\") are NOT entities.\n\
+         - Do NOT extract group nouns (ethnic, national, religious or political labels) \
+         as Person entities.\n\
+         - Do NOT extract common English words or sentence fragments as entity names: {}.\n\
+         - Do NOT fuse a list of names into one entity, or a fictional character with its author.\n",
+        p.stop_word_list
+    );
+    let head = "You are a precise knowledge extraction engine.\n\
+                The following proper noun candidates were identified in the text.\n";
+    match &p.relation_list {
+        None => format!(
+            "{pre}{head}\
+             Classify each as a named entity (keep) or discard it if it is not a real entity.\n\
+             For kept entities output: name, type, a description, and structured fields.\n\
+             List AT MOST {cap} entities.\n\
+             Return ONLY valid JSON (no markdown, no explanation):\n\
+             {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences from the text about who/what this entity is and why it matters here\",\"fields\":{{...}},\"extraction_confidence\":0.9}},...]}}\n\n\
+             {hints}Candidates:\n{cands}\n\n\
+             {kbctx}Entity types: {entity_list}\n\n\
+             {fields_block}\
+             extraction_confidence: 1.0 = entity is explicitly named and described in the text; \
+             0.5 = inferred from context or partially described; 0.2 = uncertain, might be a hallucination.\n\n\
+             IMPORTANT RULES:\n{common_rules}{corpus_rules}\n\
+             If no candidates are real entities, return {{\"entities\":[]}}.\n\n\
+             Text:\n{text}",
+            pre = p.preamble,
+            cap = p.entity_cap,
+            hints = p.hints_block,
+            cands = p.candidates_block,
+            kbctx = p.kb_type_context,
+            text = p.text,
+        ),
+        Some(relation_list) => {
+            let fallback = match &p.ont.fallback_predicate {
+                Some(f) => format!(
+                    "- If no listed relation type fits, use `{f}` at most — or omit the relation.\n"
+                ),
+                None => "- If no listed relation type fits, omit the relation.\n".to_string(),
+            };
+            let relation_rules = bullets(&p.ont.relation_rules);
+            format!(
+                "{pre}{head}\
+                 Classify each as a named entity (keep) or discard it if it is not a real entity,\n\
+                 then extract relationships between kept entities.\n\
+                 List AT MOST {cap} entities.\n\
+                 Return ONLY valid JSON (no markdown, no explanation):\n\
+                 {{\"entities\":[{{\"name\":\"...\",\"type\":\"...\",\"description\":\"1-2 sentences\",\"extraction_confidence\":0.9}},...],\
+                 \"relations\":[{{\"from\":\"entity name\",\"to\":\"entity name\",\"relation\":\"relation_type\"}},...]}}\n\n\
+                 {hints}Candidates:\n{cands}\n\n\
+                 {kbctx}Entity types: {entity_list}\n\
+                 Relation types: {relation_list}\n\n\
+                 extraction_confidence: 1.0 = entity is explicitly named and described in the text; \
+                 0.5 = inferred from context or partially described; 0.2 = uncertain, might be a hallucination.\n\n\
+                 IMPORTANT RULES:\n{common_rules}{corpus_rules}\
+                 - Only assert a relation when the text EXPLICITLY STATES IT. Do not infer \
+                 relations from two entities being mentioned in the same paragraph.\n\
+                 {fallback}{relation_rules}\n\
+                 If no candidates are real entities, return {{\"entities\":[],\"relations\":[]}}.\n\n\
+                 Text:\n{text}",
+                pre = p.preamble,
+                cap = p.entity_cap,
+                hints = p.hints_block,
+                cands = p.candidates_block,
+                kbctx = p.kb_type_context,
+                text = p.text,
+            )
+        }
+    }
+}
+
 /// Returns `true` when the chunk text contains at least one lexical trigger indicating a
 /// relation worth extracting (kinship, membership, founding, etc.).
 ///
@@ -5673,6 +5957,10 @@ pub async fn extract_from_text(
     no_relations: bool,
     gliner_hints: Option<&[String]>,
     kb_schemas: &[KBEntityTypeSchema],
+    // The KB's ontology. When present the prompt is built from it (generic
+    // rules + its rules + its fields); when absent the compiled prompt below
+    // is used unchanged.
+    ontology: Option<&crate::ontology::Ontology>,
 ) -> Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)> {
     // Skip the LLM entirely when the local pre-screener found no proper nouns.
     // Avoids inference cost on boilerplate, numeric, or table-heavy chunks.
@@ -5681,10 +5969,13 @@ pub async fn extract_from_text(
         return Ok((vec![], vec![]));
     }
 
-    let effective_types = if entity_types.is_empty() {
-        ENTITY_TYPES
-    } else {
+    let ont_types: Vec<&str> = ontology.map(|o| o.entity_type_names()).unwrap_or_default();
+    let effective_types = if !entity_types.is_empty() {
         entity_types
+    } else if !ont_types.is_empty() {
+        &ont_types[..]
+    } else {
+        ENTITY_TYPES
     };
     let entity_list = effective_types.join(", ");
 
@@ -5749,7 +6040,11 @@ pub async fn extract_from_text(
     // On 8B models, unconstrained relation extraction on purely narrative text produces
     // 0–17% precision.  The trigger check costs ~O(n) string scans on each chunk and
     // avoids a full second LLM call on non-relational passages.
-    let effective_no_relations = no_relations || !lexical_relation_trigger(text);
+    let effective_no_relations = no_relations
+        || !match ontology {
+            Some(o) => ontology_relation_trigger(text, o),
+            None => lexical_relation_trigger(text),
+        };
 
     // KB-specific type guidance: examples/anti-examples from the loaded schema.
     // Empty string when no schemas are loaded (most KBs, new projects).
@@ -5787,7 +6082,13 @@ pub async fn extract_from_text(
     // D6's: a comics roster ("Tarzan, Flash, Buck Rogers … even if the memoir
     // mentions reading/watching them") and a word list containing "Hatless",
     // who is a District Six character. Both were being sent to all 16 KBs.
-    let stop_words = effective_stop_words(kb_schemas, &[]);
+    let no_extra: Vec<String> = Vec::new();
+    let stop_words = effective_stop_words(
+        kb_schemas,
+        ontology
+            .map(|o| &o.text_rules.stop_words)
+            .unwrap_or(&no_extra),
+    );
     let stop_word_list = stop_words.join(", ");
 
     // Anti-examples are attached to their own type in `kb_type_context` above.
@@ -5795,7 +6096,29 @@ pub async fn extract_from_text(
     // "not an entity".
     let anti_example_line = String::new();
 
-    let prompt = if effective_no_relations {
+    let prompt = if let Some(ont) = ontology {
+        ontology_extraction_prompt(&OntologyPromptParts {
+            ont,
+            preamble: format!("{section_context}{pronoun_context}"),
+            entity_cap,
+            hints_block: &hints_block,
+            candidates_block: &candidates_block,
+            kb_type_context: &kb_type_context,
+            entity_types: effective_types,
+            // With an ontology and no explicit list, offer the ontology's own
+            // predicates: `effective_relation_types` falls back to the compiled
+            // list, which starts with the kinship predicates.
+            relation_list: (!effective_no_relations).then(|| {
+                if relation_types.is_empty() {
+                    ont.relation_type_names().join(", ")
+                } else {
+                    relation_types.join(", ")
+                }
+            }),
+            stop_word_list: &stop_word_list,
+            text,
+        })
+    } else if effective_no_relations {
         format!(
             "{section_context}\
              {pronoun_context}\
@@ -7153,5 +7476,248 @@ mod extraction_temperature_tests {
         unsafe { std::env::set_var("KWAAI_EXTRACTION_TEMPERATURE", "99") };
         assert_eq!(extraction_temperature(), 0.1);
         unsafe { std::env::remove_var("KWAAI_EXTRACTION_TEMPERATURE") };
+    }
+}
+
+#[cfg(test)]
+mod ontology_prompt_tests {
+    use super::*;
+    use crate::ontology::Ontology;
+
+    fn shipped(name: &str) -> Ontology {
+        let path = format!(
+            "{}/../../../tests/kwaai-knowledge/ontologies/{name}.yaml",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        Ontology::from_yaml(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn prompt(ont: &Ontology, relations: bool) -> String {
+        let types = ont.entity_type_names();
+        let rels = ont.relation_type_names();
+        ontology_extraction_prompt(&OntologyPromptParts {
+            ont,
+            preamble: String::new(),
+            entity_cap: 20,
+            hints_block: "",
+            candidates_block: "- AMOC",
+            kb_type_context: "",
+            entity_types: &types,
+            relation_list: relations.then(|| rels.join(", ")),
+            stop_word_list: "the, and",
+            text: "The AMOC is weakening.",
+        })
+    }
+
+    /// Eval v2's defect, as a test: a climate corpus was sent the memoir's
+    /// rules and kinship vocabulary. With its ontology it must get neither.
+    #[test]
+    fn a_climate_prompt_carries_no_memoir_or_kinship_text() {
+        let climate = shipped("Climate");
+        for relations in [false, true] {
+            let p = prompt(&climate, relations);
+            // The compiled no-ontology prompt's corpus-specific rules (a family-role
+            // roster, an author roster) must not reach an ontology prompt.
+            for banned in [
+                "NEVER extract generic family roles as entity names",
+                "ONLY as the author of a literary work",
+                "Chekhov",
+                "memoir",
+                "spouse_of",
+                "child_of",
+                "sibling_of",
+                "parent_of",
+            ] {
+                assert!(
+                    !p.contains(banned),
+                    "`{banned}` in climate prompt (relations={relations})"
+                );
+            }
+            assert!(
+                p.contains("TippingElement"),
+                "the ontology's own types are offered"
+            );
+        }
+        let with_rel = prompt(&climate, true);
+        assert!(
+            with_rel.contains("causes"),
+            "scholarly relations arrive via extends"
+        );
+        assert!(
+            with_rel.contains("omit the relation"),
+            "fallback_predicate: null"
+        );
+        assert!(!with_rel.contains("associated_with"));
+    }
+
+    #[test]
+    fn a_memoir_prompt_keeps_its_own_rules_and_kinship_evidence_rules() {
+        let memoir = crate::ontology::test_memoir();
+        let entities_only = prompt(&memoir, false);
+        assert!(
+            entities_only.contains("Uncle Bram"),
+            "the corpus's own rule"
+        );
+        let with_rel = prompt(&memoir, true);
+        assert!(
+            with_rel.contains("Use `spouse_of` ONLY when the text says"),
+            "from genealogy"
+        );
+        // No fallback declared: relations that fit no predicate are omitted.
+        assert!(with_rel.contains("omit the relation"), "{with_rel}");
+        assert!(!with_rel.contains("`associated_with` at most"));
+    }
+
+    #[test]
+    fn field_keys_come_from_the_ontology_then_the_compiled_table() {
+        let p = prompt(&crate::ontology::test_memoir(), false);
+        assert!(p.contains("Field keys by entity type"));
+        assert!(p.contains("Person: "), "{p}");
+    }
+
+    /// The ≤ 5-word name cap discarded document titles ("Science Panel's
+    /// Report to the Interim Committee") and every quotation. Verbatim types
+    /// are exempt; everything else keeps the cap.
+    #[test]
+    fn verbatim_types_are_exempt_from_the_name_length_cap() {
+        let p = prompt(&shipped("Manhattan"), false);
+        assert!(p.contains("except Document and Quotation names"), "{p}");
+        let plain = Ontology::from_yaml("ontology: { name: p }\nentity_types:\n  - name: Person\n")
+            .unwrap();
+        let p = prompt(&plain, false);
+        assert!(
+            p.contains("- Entity names must be ≤ 5 words. If a candidate"),
+            "{p}"
+        );
+    }
+
+    fn union_store(dir: &std::path::Path) -> GraphStore {
+        // A union whose vocabulary has no kinship predicates and no fallback.
+        let law = Ontology::from_yaml(
+            "ontology: { name: law }\n\
+             entity_types: [{ name: Person }]\n\
+             relation_types: [{ name: overrules }]\n\
+             fallback_predicate: null\n",
+        )
+        .unwrap();
+        let u = Ontology::union("k (per-document union)", &[law]);
+        assert_eq!(u.ontology.extends.as_deref(), Some("union"));
+        let mut g = GraphStore::open(dir, uuid::Uuid::nil()).unwrap();
+        g.set_ontology(&u).unwrap();
+        for n in ["Pieter Vos", "Jan Vos"] {
+            g.upsert_entity(EntityNode {
+                id: entity_id(n, "Person"),
+                name: n.into(),
+                entity_type: "Person".into(),
+                description: String::new(),
+                embedding: vec![],
+                mention_count: 1,
+                first_chunk_id: 1,
+                aliases: vec![],
+                schema_type: None,
+                gender: None,
+                evidence: vec![],
+                fields: HashMap::new(),
+                confidence: 0.0,
+                extraction_confidence: 0.0,
+            })
+            .unwrap();
+        }
+        g
+    }
+
+    /// Review finding: a chunk extracted with the compiled defaults (its
+    /// document has no ontology and the KB no base) had its relations coerced
+    /// into the KB-wide union, which is other documents' vocabulary.
+    #[test]
+    fn relations_are_validated_against_the_chunks_own_vocabulary() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g = union_store(dir.path());
+        let (a, b) = (
+            entity_id("Pieter Vos", "Person"),
+            entity_id("Jan Vos", "Person"),
+        );
+        g.upsert_relation(a, b, "child_of", 1).unwrap();
+        assert!(g.neighbors_of(a).is_empty(), "the union admits no child_of");
+        g.set_relation_vocabulary(Some(None));
+        g.upsert_relation(a, b, "child_of", 1).unwrap();
+        g.set_relation_vocabulary(None);
+        assert!(
+            g.neighbors_of(a)
+                .iter()
+                .any(|(n, t, _)| *n == b && t == "child_of"),
+            "the compiled-defaults chunk keeps its own predicate"
+        );
+        // Cleared: an undeclared predicate is dropped by the union again. (Not
+        // `parent_of`: the child_of write above records its inverse.)
+        let before = g.relation_count();
+        g.upsert_relation(b, a, "mentor_of", 2).unwrap();
+        assert_eq!(
+            g.relation_count(),
+            before,
+            "after the override, writes use the union again"
+        );
+    }
+
+    /// Review finding: when no document has an ontology any more and there is
+    /// no base, the union stored by an earlier selection stayed the KB's
+    /// ontology and kept coercing relations.
+    #[test]
+    fn a_stale_union_is_cleared_when_nothing_is_chosen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut g = union_store(dir.path());
+        assert!(g.ontology().is_some());
+        g.set_doc_ontologies(&crate::ontology_select::DocOntologies::default(), "k")
+            .unwrap();
+        assert!(g.ontology().is_none(), "the stale union is dropped");
+        drop(g);
+        let g = GraphStore::open(dir.path(), uuid::Uuid::nil()).unwrap();
+        assert!(g.ontology().is_none(), "and stays dropped on reopen");
+    }
+
+    #[test]
+    #[ignore]
+    fn print_climate_prompt() {
+        println!("{}", prompt(&shipped("Climate"), true));
+    }
+
+    #[test]
+    fn an_ontology_without_triggers_keeps_the_lexical_gate() {
+        // Regression (review of #248): no triggers meant no gate at all, so an
+        // 8B model was asked for relations on every chunk.
+        let climate = shipped("Climate");
+        assert!(climate.triggers().is_empty());
+        assert!(!ontology_relation_trigger(
+            "The AMOC drives regional cooling.",
+            &climate
+        ));
+        assert!(ontology_relation_trigger(
+            "She was a member of the panel.",
+            &climate
+        ));
+    }
+
+    #[test]
+    fn an_ontologys_triggers_widen_the_lexical_gate_never_narrow_it() {
+        // Regression (review of #248): the ontology's phrases replaced the
+        // compiled ones, so "married " and "widow" chunks lost relations.
+        let memoir = crate::ontology::test_memoir();
+        for kept in ["He married Anna in the spring.", "The widow ran the shop."] {
+            assert!(lexical_relation_trigger(kept), "{kept}");
+            assert!(ontology_relation_trigger(kept, &memoir), "{kept}");
+        }
+    }
+
+    #[test]
+    fn an_ontology_with_triggers_gates_on_them() {
+        let memoir = crate::ontology::test_memoir();
+        assert!(ontology_relation_trigger(
+            "Pieter was the son of Jan.",
+            &memoir
+        ));
+        assert!(!ontology_relation_trigger(
+            "The wind blew across the square.",
+            &memoir
+        ));
     }
 }

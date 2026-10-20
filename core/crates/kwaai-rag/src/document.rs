@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 /// - `.pdf` — extracted via pdf-extract (requires the "pdf" feature)
 /// - `.docx` — extracted from the embedded XML (no extra tools needed)
 /// - `.doc`  — extracted via `antiword` or `libreoffice --headless` (must be installed)
+/// - `.html`, `.htm` — markup, scripts, styles and page chrome stripped (`html_to_text`)
 pub fn extract_text(path: &Path) -> Result<String> {
     let ext = path
         .extension()
@@ -17,19 +18,307 @@ pub fn extract_text(path: &Path) -> Result<String> {
         .unwrap_or("")
         .to_lowercase();
 
+    // Trust the content over the name: Manhattan's "Handy to Spaatz.html" is a
+    // scanned PDF, and read as text it became 225 chunks of binary junk.
+    let ext = match sniff_format(path) {
+        Some(real) if real != ext => {
+            tracing::warn!(file = %path.display(), named = %ext, content = real, "file content does not match its extension; using the content");
+            real.to_string()
+        }
+        _ => ext,
+    };
+
     match ext.as_str() {
         "pdf" => extract_pdf(path),
         "docx" => extract_docx(path),
         "doc" => extract_doc_legacy(path),
+        "html" | "htm" | "xhtml" => {
+            let raw = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+            Ok(html_to_text(&String::from_utf8_lossy(&raw)))
+        }
         _ => std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display())),
+    }
+}
+
+/// The format a file's first bytes declare, when they declare one.
+fn sniff_format(path: &Path) -> Option<&'static str> {
+    let mut head = [0u8; 8];
+    let n = std::fs::File::open(path)
+        .and_then(|mut f| f.read(&mut head))
+        .ok()?;
+    format_of(&head[..n])
+}
+
+fn format_of(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(b"%PDF-") {
+        Some("pdf")
+    } else {
+        None
     }
 }
 
 /// Returns the file extensions this module can handle, for use as sync defaults.
 pub fn supported_extensions() -> &'static [&'static str] {
     &[
-        "txt", "md", "rst", "csv", "json", "yaml", "toml", "pdf", "docx", "doc",
+        "txt", "md", "rst", "csv", "json", "yaml", "toml", "pdf", "docx", "doc", "html", "htm",
+        "xhtml",
     ]
+}
+
+// ── HTML ──────────────────────────────────────────────────────────────────────
+
+/// Elements whose whole content is dropped: code, styling, and page chrome.
+const HTML_DROP: &[&str] = &[
+    "script", "style", "head", "noscript", "svg", "template", "iframe", "nav", "header", "footer",
+    "aside", "button",
+];
+/// Elements that end a line of text.
+const HTML_BLOCK: &[&str] = &[
+    "p",
+    "div",
+    "br",
+    "li",
+    "tr",
+    "td",
+    "th",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "blockquote",
+    "pre",
+    "section",
+    "article",
+    "table",
+    "ul",
+    "ol",
+    "dd",
+    "dt",
+    "hr",
+    "title",
+];
+
+/// Plain text from HTML.
+///
+/// `.html` used to fall through to the plain-text reader, so pages were ingested
+/// as raw source: the Einstein–Szilard page became 103 chunks of CSS, and
+/// PythonDocs 80% markup. HTML was also missing from `supported_extensions`, so
+/// folder sync skipped it: WarPeace's 12 HTML companion works were never
+/// ingested at all.
+pub fn html_to_text(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let b = html.as_bytes();
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut i = 0;
+    let mut text_start = 0;
+    while i < b.len() {
+        if b[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        out.push_str(&decode_entities(&html[text_start..i]));
+        if lower[i..].starts_with("<!--") {
+            i = lower[i..].find("-->").map_or(b.len(), |e| i + e + 3);
+            text_start = i;
+            continue;
+        }
+        let end = match lower[i..].find('>') {
+            Some(e) => i + e + 1,
+            None => b.len(),
+        };
+        // An unclosed `<` takes the rest of the text as its tag: `end - 1` could
+        // land inside a trailing multibyte character.
+        let tag = if end <= b.len() && lower[i..].contains('>') {
+            &lower[i + 1..end - 1]
+        } else {
+            &lower[i + 1..]
+        };
+        let closing = tag.starts_with('/');
+        let name: String = tag
+            .trim_start_matches('/')
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        i = end;
+        if !closing && HTML_DROP.contains(&name.as_str()) && !tag.ends_with('/') {
+            // Skip to the matching close tag (these elements do not nest in practice).
+            // A close tag HTML lets authors omit must not swallow the rest of the
+            // page: `<head>` ends at `<body>`, and anything else unclosed is kept.
+            let close = format!("</{name}");
+            // The close tag itself, not a longer name it prefixes (`</head` is
+            // also the start of `</header`).
+            let close_at = lower[i..].match_indices(&close).map(|(e, _)| e).find(|&e| {
+                lower[i + e + close.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| c == '>' || c.is_whitespace())
+            });
+            let end = close_at
+                .map(|e| lower[i + e..].find('>').map_or(b.len(), |g| i + e + g + 1))
+                .or_else(|| {
+                    (name == "head")
+                        .then(|| lower[i..].find("<body"))
+                        .flatten()
+                        .map(|e| i + e)
+                });
+            if let Some(end) = end {
+                i = end;
+            }
+        } else if HTML_BLOCK.contains(&name.as_str()) {
+            out.push('\n');
+        }
+        text_start = i;
+    }
+    if text_start < b.len() {
+        out.push_str(&decode_entities(&html[text_start..]));
+    }
+    // Collapse runs of spaces within lines and of blank lines.
+    let mut clean = String::with_capacity(out.len());
+    let mut blank = 0;
+    for line in out.lines() {
+        let l = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        if l.is_empty() {
+            blank += 1;
+            if blank == 1 && !clean.is_empty() {
+                clean.push('\n');
+            }
+            continue;
+        }
+        blank = 0;
+        clean.push_str(&l);
+        clean.push('\n');
+    }
+    clean.trim().to_string()
+}
+
+fn decode_entities(s: &str) -> String {
+    if !s.contains('&') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        let semi = after.find(';').filter(|&n| n <= 10);
+        let decoded = semi.and_then(|n| {
+            let ent = &after[..n];
+            let ch = if let Some(num) = ent.strip_prefix("#x").or_else(|| ent.strip_prefix("#X")) {
+                u32::from_str_radix(num, 16).ok().and_then(char::from_u32)
+            } else if let Some(num) = ent.strip_prefix('#') {
+                num.parse::<u32>().ok().and_then(char::from_u32)
+            } else {
+                match ent {
+                    "amp" => Some('&'),
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    "nbsp" => Some(' '),
+                    "mdash" => Some('—'),
+                    "ndash" => Some('–'),
+                    "lsquo" => Some('‘'),
+                    "rsquo" => Some('’'),
+                    "ldquo" => Some('“'),
+                    "rdquo" => Some('”'),
+                    "hellip" => Some('…'),
+                    "shy" => Some('\u{AD}'),
+                    _ => None,
+                }
+            };
+            ch.map(|c| (c, n))
+        });
+        match decoded {
+            Some((c, n)) => {
+                out.push(c);
+                rest = &after[n + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+#[cfg(test)]
+mod html_tests {
+    use super::*;
+
+    #[test]
+    fn scripts_styles_head_and_chrome_are_dropped() {
+        let t = html_to_text(
+            "<html><head><title>T</title><style>.a{color:red}</style></head><body>\
+             <nav><a href='/'>Home</a> · Site Map</nav>\
+             <script>var x = 1; function f(){}</script>\
+             <p>Some recent work by E. Fermi and L. Szilard &mdash; communicated to me.</p>\
+             <footer>Privacy · Support Our Site</footer></body></html>",
+        );
+        assert_eq!(
+            t,
+            "Some recent work by E. Fermi and L. Szilard — communicated to me."
+        );
+    }
+
+    #[test]
+    fn block_tags_break_lines_and_inline_tags_do_not() {
+        // Adjacent paragraphs keep one blank line between them: paragraph structure survives.
+        let t = html_to_text("<p>War is <i>merely</i> the continuation</p><p>of policy.</p>");
+        assert_eq!(t, "War is merely the continuation\n\nof policy.");
+        assert_eq!(html_to_text("one<br>two"), "one\ntwo");
+    }
+
+    #[test]
+    fn entities_are_decoded_and_unknown_ones_kept() {
+        assert_eq!(
+            decode_entities("A &amp; B &#8212; C &#x2019;s &bogus; D"),
+            "A & B — C ’s &bogus; D"
+        );
+    }
+
+    /// Regression: an unclosed `<` before a multibyte tail panicked.
+    #[test]
+    fn an_unclosed_tag_before_a_multibyte_tail_does_not_panic() {
+        let _ = html_to_text("price < 5 €");
+        let _ = html_to_text("<p>a</p><é");
+    }
+
+    #[test]
+    fn comments_are_dropped() {
+        assert_eq!(html_to_text("<p>a<!-- hidden <p>x</p> -->b</p>"), "ab");
+    }
+
+    #[test]
+    fn an_unclosed_head_or_dropped_element_keeps_the_body() {
+        // `</head>` is optional in HTML; the body must survive its absence.
+        let t = html_to_text("<head><title>T</title><body><p>kept</p></body>");
+        assert!(t.contains("kept") && !t.contains('T'), "{t:?}");
+        // An unclosed dropped element drops only its tag, not the page.
+        assert!(html_to_text("<nav>menu<p>kept</p>").contains("kept"));
+        // Forms wrap the body text of many archival pages.
+        assert!(html_to_text("<form><p>kept</p></form>").contains("kept"));
+    }
+
+    #[test]
+    fn a_pdf_is_recognised_by_its_content() {
+        assert_eq!(format_of(b"%PDF-1.4\n%"), Some("pdf"));
+        assert_eq!(format_of(b"<!DOCTYPE"), None);
+        let dir = std::env::temp_dir().join(format!("sniff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("orders.html");
+        std::fs::write(&f, b"%PDF-1.4 binary").unwrap();
+        assert_eq!(sniff_format(&f), Some("pdf"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn html_is_a_supported_extension() {
+        assert!(supported_extensions().contains(&"html"));
+    }
 }
 
 // ── PDF ───────────────────────────────────────────────────────────────────────
@@ -483,6 +772,20 @@ fn extract_doc_legacy(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression (review of #248): the close-tag search matched a prefix, so
+    /// with `</head>` omitted, `</header` ended the head and dropped the body's
+    /// header and everything before it.
+    #[test]
+    fn an_unclosed_head_is_not_closed_by_a_header_element() {
+        let t = super::html_to_text(
+            "<html><head><title>T</title><body><p>Intro before the header.</p><header>Site</header><p>Body text here.</p></body></html>",
+        );
+        assert!(t.contains("Intro before the header."), "{t:?}");
+        assert!(t.contains("Body text here."), "{t:?}");
+        assert!(!t.contains("Site"), "<header> is still dropped: {t:?}");
+    }
+
     use super::*;
 
     #[test]

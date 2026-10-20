@@ -144,6 +144,83 @@ fn is_sentence_initial(words: &[&str], idx: usize) -> bool {
         )
 }
 
+/// Candidates the capitalised-span scanner cannot see, drawn from the KB's
+/// ontology: its closed-vocabulary `markers.exact` terms found in the text
+/// (plutonium, heavy water, international control), and quoted spans of 3–12
+/// words when the ontology declares a verbatim (`irreducible`) type with no
+/// closed vocabulary (a Quotation type).
+///
+/// Without these, types whose members are written lowercase never received a
+/// single candidate, so the extractor could not produce them at all.
+pub fn ontology_candidates(text: &str, ont: &crate::ontology::Ontology) -> Vec<String> {
+    let lower = text.to_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |s: String| {
+        if !out.iter().any(|o| o.eq_ignore_ascii_case(&s)) {
+            out.push(s);
+        }
+    };
+    for et in &ont.entity_types {
+        for term in &et.markers.exact {
+            let t = term.trim().to_lowercase();
+            if t.is_empty() {
+                continue;
+            }
+            let mut from = 0;
+            while let Some(pos) = lower[from..].find(&t) {
+                let start = from + pos;
+                let end = start + t.len();
+                let boundary = |i: usize, before: bool| -> bool {
+                    let ch = if before {
+                        lower[..i].chars().next_back()
+                    } else {
+                        lower[i..].chars().next()
+                    };
+                    ch.is_none_or(|c| !c.is_alphanumeric())
+                };
+                if boundary(start, true) && boundary(end, false) {
+                    // The surface form as written, when the byte offsets line up
+                    // (they do unless lowercasing changed the length).
+                    let surface = text.get(start..end).unwrap_or(term.as_str());
+                    push(surface.to_string());
+                    break;
+                }
+                from = end;
+            }
+        }
+    }
+    let wants_quotes = ont.entity_types.iter().any(|e| {
+        e.irreducible && e.markers.exact.is_empty() && e.name.eq_ignore_ascii_case("quotation")
+    });
+    if wants_quotes {
+        let mut rest = text;
+        while let Some(open) = rest.find(['\u{201C}', '"']) {
+            // A straight quote glued to the word before it closes a quotation
+            // that began before this chunk: skip it, or every pair after it is
+            // inverted and the narrative between quotations becomes a candidate.
+            let glued = rest[..open]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace() && !matches!(c, '(' | '['));
+            if rest[open..].starts_with('"') && glued {
+                rest = &rest[open + 1..];
+                continue;
+            }
+            let after = &rest[open + rest[open..].chars().next().unwrap().len_utf8()..];
+            let Some(close) = after.find(['\u{201D}', '"']) else {
+                break;
+            };
+            let inner = after[..close].trim().trim_end_matches([',', '.', ';', ':']);
+            let words = inner.split_whitespace().count();
+            if (3..=12).contains(&words) {
+                push(inner.to_string());
+            }
+            rest = &after[close + after[close..].chars().next().unwrap().len_utf8()..];
+        }
+    }
+    out
+}
+
 /// Extract proper noun candidate phrases from `text`.
 ///
 /// Scans all capitalised word sequences (not just mid-sentence ones), merges
@@ -1010,6 +1087,100 @@ mod tests {
         assert!(
             results.is_empty(),
             "narrator must not resolve via third-person pronouns even alone: {results:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ontology_candidate_tests {
+    use super::ontology_candidates;
+    use crate::ontology::Ontology;
+
+    fn manhattan() -> Ontology {
+        let p = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/kwaai-knowledge/ontologies/Manhattan.yaml"
+        );
+        Ontology::from_yaml(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    /// Lowercase members of a type were never proposed: the scanner only sees
+    /// capitalised spans, so Material and Policy could not be extracted.
+    #[test]
+    fn closed_vocabulary_terms_become_candidates() {
+        let c = ontology_candidates(
+            "Hanford produced plutonium for the bomb; the report urged international control.",
+            &manhattan(),
+        );
+        assert!(c.iter().any(|x| x == "plutonium"), "{c:?}");
+        assert!(c.iter().any(|x| x == "international control"), "{c:?}");
+    }
+
+    #[test]
+    fn terms_match_on_word_boundaries_only() {
+        let c = ontology_candidates("The demonstrations were postponed.", &manhattan());
+        assert!(
+            !c.iter().any(|x| x.eq_ignore_ascii_case("demonstration")),
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_spans_become_candidates_for_a_quotation_type() {
+        let c = ontology_candidates(
+            "Japan faced \u{201C}prompt and utter destruction,\u{201D} and \u{201C}no\u{201D} was the answer.",
+            &manhattan(),
+        );
+        assert!(
+            c.iter().any(|x| x == "prompt and utter destruction"),
+            "{c:?}"
+        );
+        assert!(
+            !c.iter().any(|x| x == "no"),
+            "too short to be a quotation: {c:?}"
+        );
+    }
+
+    #[test]
+    fn an_ontology_without_vocabulary_adds_nothing() {
+        let o = Ontology::from_yaml("ontology: { name: x }\nentity_types:\n  - name: Person\n")
+            .unwrap();
+        assert!(
+            ontology_candidates("He said \"this is a quote here\" about plutonium.", &o).is_empty()
+        );
+    }
+
+    #[test]
+    fn interrupted_speech_ending_in_a_dash_is_a_closer() {
+        // Review of #248: a quote glued to a dash closes a quotation that began
+        // before the chunk; treating it as an opener inverted the pairing.
+        let c = ontology_candidates(
+            "and then\u{2014}\" she stopped and looked back at us \"we leave for the site tonight\" again.",
+            &manhattan(),
+        );
+        assert!(!c.iter().any(|x| x.starts_with("she stopped")), "{c:?}");
+        assert!(
+            c.iter().any(|x| x == "we leave for the site tonight"),
+            "{c:?}"
+        );
+    }
+
+    /// Regression (review of #248): a chunk that opens inside a quotation
+    /// inverted the pairing of straight quotes, proposing the narrative between
+    /// two quotations as a verbatim Quotation.
+    #[test]
+    fn a_chunk_opening_mid_quotation_does_not_invert_the_pairing() {
+        let c = ontology_candidates(
+            "ended there.\" He walked to the station and said \"we leave for the site tonight\" quietly.",
+            &manhattan(),
+        );
+        assert!(
+            !c.iter().any(|x| x.starts_with("He walked")),
+            "narrative proposed as a quotation: {c:?}"
+        );
+        assert!(
+            c.iter().any(|x| x == "we leave for the site tonight"),
+            "{c:?}"
         );
     }
 }

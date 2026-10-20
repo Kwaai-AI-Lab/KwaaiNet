@@ -411,7 +411,7 @@ pub struct KwaaiNetConfig {
 
     // ── RAG (Bob role) ────────────────────────────────────────────────────────
     /// Named RAG knowledge bases. Key = KB name (e.g. "default", "work", "research").
-    /// Use `kwaainet rag init --name <name>` to create additional KBs.
+    /// Use `kwaainet rag init --kb <name>` to create additional KBs.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub rag_kbs: std::collections::HashMap<String, RagConfig>,
 

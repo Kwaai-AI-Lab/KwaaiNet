@@ -43,6 +43,10 @@ pub struct GraphIngestConfig {
     /// entities from a chunk. 0 = current chunk only (legacy). 1 = include one chunk
     /// before and after (recommended; +7pp recall in experiments). Default: 1.
     pub context_window: usize,
+    /// Extract only chunks with these ids, while still reading every chunk's
+    /// real neighbours as context. `None` = all chunks. For pilots that must
+    /// run two arms on exactly the same sample.
+    pub only_chunk_ids: Option<std::collections::HashSet<i64>>,
     /// Optional GLiNER NER client. When set, person spans are detected before each LLM
     /// call and injected as high-confidence hints into the extraction prompt.
     pub gliner_client: Option<GliNERClient>,
@@ -251,6 +255,9 @@ pub async fn ingest_text(
 /// Internal result type carrying one chunk's extraction output back to the drain task.
 struct ChunkResult {
     chunk_id: i64,
+    /// The chunk's document, when the result carries relations to write:
+    /// they are validated against that document's extraction ontology.
+    doc_name: Option<String>,
     chunk_text: String,
     entities: Vec<ExtractedEntity>,
     relations: Vec<ExtractedRelation>,
@@ -299,6 +306,10 @@ pub async fn extract_and_store_entities_pub(
         return None;
     }
     let total = chunks.len();
+    // What the progress line counts: only the selected chunks under --chunk-ids.
+    let to_process = graph_cfg.only_chunk_ids.as_ref().map_or(total, |ids| {
+        chunk_ids.iter().filter(|c| ids.contains(c)).count()
+    });
     let build_start = std::time::Instant::now();
     let urls = Arc::new(graph_cfg.effective_urls());
     let url_counter = Arc::new(AtomicUsize::new(0));
@@ -351,6 +362,46 @@ pub async fn extract_and_store_entities_pub(
             o.ontology().ontology.version
         );
     }
+    // Per-document ontologies (`graph schema select`): each chunk is extracted
+    // with its own document's ontology; documents without one use the KB's.
+    let doc_ontology: HashMap<String, Arc<Option<crate::ontology::OntologyIndex>>> = {
+        let g = store.lock().unwrap_or_else(|e| e.into_inner());
+        match g.doc_ontologies() {
+            Some(d) => {
+                let built: HashMap<&String, Arc<Option<crate::ontology::OntologyIndex>>> = d
+                    .ontologies
+                    .iter()
+                    .map(|(name, o)| {
+                        (
+                            name,
+                            Arc::new(Some(crate::ontology::OntologyIndex::build(o.clone()))),
+                        )
+                    })
+                    .collect();
+                let map: HashMap<String, _> = d
+                    .docs
+                    .iter()
+                    .filter_map(|(doc, c)| {
+                        Some((doc.clone(), built.get(c.ontology.as_ref()?)?.clone()))
+                    })
+                    .collect();
+                info!(
+                    documents = map.len(),
+                    ontologies = built.len(),
+                    "extraction uses per-document ontologies"
+                );
+                map
+            }
+            None => HashMap::new(),
+        }
+    };
+    // Once a selection exists, a document with no choice uses the KB's base
+    // (hand-loaded) ontology, or none. Never the union of other documents'.
+    let doc_fallback: Option<Arc<Option<crate::ontology::OntologyIndex>>> = {
+        let g = store.lock().unwrap_or_else(|e| e.into_inner());
+        g.doc_ontologies()
+            .map(|d| Arc::new(d.base.map(crate::ontology::OntologyIndex::build)))
+    };
 
     // Snapshot entity names and aliases for axiomatic KnownEntity lookup.
     // Taken once so async tasks never need to hold the graph lock.
@@ -374,7 +425,7 @@ pub async fn extract_and_store_entities_pub(
     let axio_accum: Option<Arc<std::sync::Mutex<crate::axiom_extract::AxiomaticMetricsAccum>>> =
         if axiomatic_threshold > 0.0 {
             Some(Arc::new(std::sync::Mutex::new(
-                crate::axiom_extract::AxiomaticMetricsAccum::new(axiomatic_threshold, total),
+                crate::axiom_extract::AxiomaticMetricsAccum::new(axiomatic_threshold, to_process),
             )))
         } else {
             None
@@ -393,6 +444,10 @@ pub async fn extract_and_store_entities_pub(
     // for a task to finish; the task blocks trying to send into a full channel;
     // the channel is never drained because the drain hasn't started yet.
     let drain_store = store.clone();
+    let drain_doc_onts = store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .doc_ontologies();
     let drain_handle = tokio::spawn(async move {
         let mut done = 0usize;
         while let Some(res) = rx.recv().await {
@@ -403,7 +458,7 @@ pub async fn extract_and_store_entities_pub(
                         .lock()
                         .map(|g| (g.node_count(), g.relation_count()))
                         .unwrap_or((0, 0));
-                    prog(done, total, nc, rc);
+                    prog(done, to_process, nc, rc);
                 }
                 continue;
             }
@@ -469,13 +524,26 @@ pub async fn extract_and_store_entities_pub(
                 entity_ids_for_chunk.push(eid);
             }
 
+            // Validate against the vocabulary this chunk was extracted with, not
+            // the KB-wide union of every document's ontology.
+            if let (Some(d), Some(doc)) = (drain_doc_onts.as_ref(), res.doc_name.as_deref()) {
+                graph.set_relation_vocabulary(Some(d.extraction_ontology(doc).cloned()));
+            }
             for rel in &res.relations {
-                let src = resolve_entity_id(&rel.from, &res.entities, &graph);
-                let dst = resolve_entity_id(&rel.to, &res.entities, &graph);
+                // An endpoint that is not an entity makes an edge nothing can
+                // traverse; it was written with an `Unknown`-typed id before.
+                let (Some(src), Some(dst)) = (
+                    resolve_entity_id(&rel.from, &res.entities, &graph),
+                    resolve_entity_id(&rel.to, &res.entities, &graph),
+                ) else {
+                    debug!(from = %rel.from, to = %rel.to, "relation skipped: endpoint is not an entity");
+                    continue;
+                };
                 if let Err(e) = graph.upsert_relation(src, dst, &rel.relation, res.chunk_id) {
                     warn!("upsert_relation: {e}");
                 }
             }
+            graph.set_relation_vocabulary(None);
             if let Err(e) = graph.link_chunk(res.chunk_id, &entity_ids_for_chunk) {
                 warn!("link_chunk: {e}");
             }
@@ -508,7 +576,7 @@ pub async fn extract_and_store_entities_pub(
             }
 
             if let Some(ref prog) = progress {
-                prog(done, total, graph.node_count(), graph.relation_count());
+                prog(done, to_process, graph.node_count(), graph.relation_count());
             }
         }
     });
@@ -535,6 +603,14 @@ pub async fn extract_and_store_entities_pub(
         let chunk = &chunks[i];
         let chunk_id = chunk_ids[i];
 
+        if graph_cfg
+            .only_chunk_ids
+            .as_ref()
+            .is_some_and(|ids| !ids.contains(&chunk_id))
+        {
+            i += chunk_batch;
+            continue;
+        }
         // Skip entire batch if the leading chunk is flagged (index/appendix sections).
         if chunk.skip_extraction {
             debug!(
@@ -557,7 +633,11 @@ pub async fn extract_and_store_entities_pub(
             let center_type = &chunk.section_type;
             chunks[start..end]
                 .iter()
-                .filter(|c| center_type.same_window_zone(&c.section_type))
+                // Never across a document boundary: chunks are in reading order, so
+                // the last chunk of one document neighbours the first of the next.
+                .filter(|c| {
+                    c.doc_name == chunk.doc_name && center_type.same_window_zone(&c.section_type)
+                })
                 .map(|c| c.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n[...]\n\n")
@@ -576,8 +656,13 @@ pub async fn extract_and_store_entities_pub(
         let gliner = gliner.clone();
         let kb_schemas = kb_schemas.clone();
         let entity_snapshot = entity_snapshot.clone();
-        let ontology = ontology.clone();
+        let ontology = doc_ontology
+            .get(&chunk.doc_name)
+            .cloned()
+            .or_else(|| doc_fallback.clone())
+            .unwrap_or_else(|| ontology.clone());
         let axio_accum = axio_accum.clone();
+        let doc_name_own = chunk.doc_name.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len();
@@ -632,6 +717,13 @@ pub async fn extract_and_store_entities_pub(
             for span in &gliner_hints {
                 if !candidates.contains(span) {
                     candidates.push(span.clone());
+                }
+            }
+            if let Some(o) = ontology.as_ref().as_ref() {
+                for c in ner::ontology_candidates(&text, o.ontology()) {
+                    if !candidates.iter().any(|x| x.eq_ignore_ascii_case(&c)) {
+                        candidates.push(c);
+                    }
                 }
             }
 
@@ -770,7 +862,13 @@ pub async fn extract_and_store_entities_pub(
                     &rt,
                     no_relations,
                     hints_opt,
-                    &kb_schemas,
+                    // Type guidance from this document's ontology, not the KB union.
+                    &ontology
+                        .as_ref()
+                        .as_ref()
+                        .map(|o| o.ontology().to_kb_schemas())
+                        .unwrap_or_else(|| kb_schemas.as_ref().clone()),
+                    ontology.as_ref().as_ref().map(|o| o.ontology()),
                 )
                 .await
                 {
@@ -780,6 +878,7 @@ pub async fn extract_and_store_entities_pub(
                         let _ = tx
                             .send(ChunkResult {
                                 chunk_id,
+                                doc_name: Some(doc_name_own.clone()),
                                 chunk_text: chunk_text_own,
                                 entities: axio_entities,
                                 relations: vec![],
@@ -869,6 +968,7 @@ pub async fn extract_and_store_entities_pub(
             let _ = tx
                 .send(ChunkResult {
                     chunk_id,
+                    doc_name: Some(doc_name_own),
                     chunk_text: chunk_text_own,
                     entities,
                     relations,
@@ -950,6 +1050,17 @@ pub async fn extract_and_store_entities_pub(
     result_metrics
 }
 
+/// The KB's stored ontology, if it has a non-empty one. The ingest-time,
+/// entity-centric and refine paths used to ignore it entirely.
+fn stored_ontology(cfg: &GraphIngestConfig) -> Option<crate::ontology::Ontology> {
+    cfg.store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .ontology()
+        .filter(|o| !o.is_empty())
+        .cloned()
+}
+
 /// Extract entities from all chunks and persist them to the GraphStore.
 /// Errors are logged and swallowed so they never block document ingestion.
 async fn extract_and_store_entities(
@@ -958,9 +1069,23 @@ async fn extract_and_store_entities(
     embed: &EmbedClient,
     graph_cfg: &GraphIngestConfig,
 ) {
+    let ontology = stored_ontology(graph_cfg);
+    // Per-document ontologies (chosen at ingest or by `graph schema select`).
+    let doc_onts = graph_cfg
+        .store
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .doc_ontologies();
     let total = chunks.len();
     let context_window = graph_cfg.context_window;
     for (i, (chunk, &chunk_id)) in chunks.iter().zip(chunk_ids.iter()).enumerate() {
+        let chunk_ont: Option<&crate::ontology::Ontology> = match doc_onts.as_ref() {
+            Some(d) => d.extraction_ontology(&chunk.doc_name),
+            None => ontology.as_ref(),
+        };
+        let ont_rt: Vec<&str> = chunk_ont
+            .map(|o| o.relation_type_names())
+            .unwrap_or_default();
         if chunk.skip_extraction {
             debug!(
                 chunk_id,
@@ -975,7 +1100,11 @@ async fn extract_and_store_entities(
             let center_type = &chunk.section_type;
             chunks[start..end]
                 .iter()
-                .filter(|c| center_type.same_window_zone(&c.section_type))
+                // Never across a document boundary: chunks are in reading order, so
+                // the last chunk of one document neighbours the first of the next.
+                .filter(|c| {
+                    c.doc_name == chunk.doc_name && center_type.same_window_zone(&c.section_type)
+                })
                 .map(|c| c.text.as_str())
                 .collect::<Vec<_>>()
                 .join("\n\n[...]\n\n")
@@ -983,12 +1112,23 @@ async fn extract_and_store_entities(
             chunk.text.clone()
         };
         let et: Vec<&str> = graph_cfg.entity_types.iter().map(|s| s.as_str()).collect();
-        let rt: Vec<&str> = graph_cfg
-            .relation_types
-            .iter()
-            .map(|s| s.as_str())
-            .collect();
-        let candidates = ner::extract_proper_noun_candidates(&text);
+        let rt: Vec<&str> = if graph_cfg.relation_types.is_empty() {
+            ont_rt.clone()
+        } else {
+            graph_cfg
+                .relation_types
+                .iter()
+                .map(|s| s.as_str())
+                .collect()
+        };
+        let mut candidates = ner::extract_proper_noun_candidates(&text);
+        if let Some(o) = chunk_ont {
+            for c in ner::ontology_candidates(&text, o) {
+                if !candidates.iter().any(|x| x.eq_ignore_ascii_case(&c)) {
+                    candidates.push(c);
+                }
+            }
+        }
         let gliner_hints: Vec<String> = match &graph_cfg.gliner_client {
             Some(client) => client.person_spans(&text).await,
             None => vec![],
@@ -1010,6 +1150,7 @@ async fn extract_and_store_entities(
             graph_cfg.no_relations,
             hints_opt,
             &[],
+            chunk_ont,
         )
         .await
         {
@@ -1112,13 +1253,24 @@ async fn extract_and_store_entities(
             entity_ids_for_chunk.push(eid);
         }
 
+        // Validate against the vocabulary this chunk was extracted with, not the
+        // KB-wide union of every document's ontology.
+        if doc_onts.is_some() {
+            graph.set_relation_vocabulary(Some(chunk_ont.cloned()));
+        }
         for rel in &relations {
-            let src = resolve_entity_id(&rel.from, &entities, &graph);
-            let dst = resolve_entity_id(&rel.to, &entities, &graph);
+            let (Some(src), Some(dst)) = (
+                resolve_entity_id(&rel.from, &entities, &graph),
+                resolve_entity_id(&rel.to, &entities, &graph),
+            ) else {
+                debug!(from = %rel.from, to = %rel.to, "relation skipped: endpoint is not an entity");
+                continue;
+            };
             if let Err(e) = graph.upsert_relation(src, dst, &rel.relation, chunk_id) {
                 warn!("upsert_relation failed: {e}");
             }
         }
+        graph.set_relation_vocabulary(None);
 
         if let Err(e) = graph.link_chunk(chunk_id, &entity_ids_for_chunk) {
             warn!("link_chunk failed: {e}");
@@ -1137,17 +1289,28 @@ async fn extract_and_store_entities(
 /// Priority: (1) current-chunk extraction, (2) existing graph node by name, (3) Unknown fallback.
 /// This prevents dangling adjacency entries when a cross-chunk relation references an entity
 /// that was extracted in an earlier chunk under a non-Unknown type.
-fn resolve_entity_id(name: &str, current_entities: &[ExtractedEntity], graph: &GraphStore) -> i64 {
+fn resolve_entity_id(
+    name: &str,
+    current_entities: &[ExtractedEntity],
+    graph: &GraphStore,
+) -> Option<i64> {
+    // Resolve through the same cleaning the drain applies before storing an
+    // entity: it stores `entity_id(clean(name), type)`, and resolving the raw
+    // name instead pointed the edge at an id that was never written. In the
+    // 2026-09-27 pilot, 23–43% of relations had an endpoint that was not an
+    // entity, and so could never be traversed.
+    let cleaned = clean_extracted_name(name)?;
     if let Some(e) = current_entities
         .iter()
-        .find(|e| e.name.to_lowercase() == name.to_lowercase())
+        .find(|e| clean_extracted_name(&e.name).is_some_and(|c| c.eq_ignore_ascii_case(&cleaned)))
     {
-        return entity_id(&e.name, &e.entity_type);
+        let stored = clean_extracted_name(&e.name)?;
+        return Some(entity_id(&stored, &e.entity_type));
     }
-    if let Some(node) = graph.find_by_name(name) {
-        return node.id;
-    }
-    entity_id(name, "Unknown")
+    graph
+        .find_by_name(&cleaned)
+        .or_else(|| graph.find_by_name(name))
+        .map(|node| node.id)
 }
 
 /// Prepend doc-level metadata to each chunk's text if the doc_name matches any key.
@@ -1638,6 +1801,7 @@ async fn extract_entity_centric(
     progress: Option<Arc<dyn Fn(usize, usize, usize, usize) + Send + Sync>>,
 ) {
     const MAX_SOURCE_CHUNKS: usize = 3;
+    let ontology = Arc::new(stored_ontology(graph_cfg));
 
     let gliner = match graph_cfg.gliner_client.as_ref() {
         Some(g) => g,
@@ -1787,6 +1951,7 @@ async fn extract_entity_centric(
             .join("\n\n[...]\n\n");
         let ctx_len = context.len();
 
+        let ontology = ontology.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let url = &urls[url_counter.fetch_add(1, Ordering::Relaxed) % urls.len()];
@@ -1810,6 +1975,7 @@ async fn extract_entity_centric(
                 no_relations,
                 Some(&hints),
                 &[],
+                ontology.as_ref().as_ref(),
             )
             .await
             {
@@ -1819,6 +1985,7 @@ async fn extract_entity_centric(
                     let _ = tx
                         .send(ChunkResult {
                             chunk_id: 0,
+                            doc_name: None,
                             chunk_text: String::new(),
                             entities: vec![],
                             relations: vec![],
@@ -1850,6 +2017,7 @@ async fn extract_entity_centric(
             let _ = tx
                 .send(ChunkResult {
                     chunk_id: 0,
+                    doc_name: None,
                     chunk_text: String::new(),
                     entities,
                     relations: vec![],
@@ -1894,6 +2062,7 @@ async fn refine_low_confidence_entities(
     cfg: &GraphIngestConfig,
 ) {
     const MAX_SOURCE_CHUNKS: usize = 3;
+    let ontology = stored_ontology(cfg);
 
     // Build chunk-db-id → index map for context window lookup.
     let id_to_index: std::collections::HashMap<i64, usize> = chunk_ids
@@ -2014,6 +2183,7 @@ async fn refine_low_confidence_entities(
             true, // no_relations — refinement is field-enrichment only
             Some(&hints),
             &[],
+            ontology.as_ref(),
         )
         .await
         {
@@ -2357,4 +2527,51 @@ async fn validate_entities_against_schemas(
         "  Validation pass: {confirmed} confirmed, {rejected} rejected (→0.1), \
          {skipped_no_schema} skipped (no schema for type)"
     );
+}
+
+#[cfg(test)]
+mod endpoint_resolution_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn ent(name: &str, ty: &str) -> ExtractedEntity {
+        serde_json::from_value(serde_json::json!({"name": name, "type": ty})).unwrap()
+    }
+
+    /// The drain stores "Stafford Warren wrote" as "Stafford Warren"; the edge
+    /// must point at that id, not at `entity_id("Stafford Warren wrote", ...)`.
+    #[test]
+    fn an_endpoint_resolves_to_the_cleaned_stored_id() {
+        let dir = std::env::temp_dir().join(format!("resolve-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = GraphStore::open(&dir, Uuid::new_v4()).unwrap();
+        let current = vec![ent("Stafford Warren wrote", "Person")];
+        assert_eq!(
+            resolve_entity_id("Stafford Warren wrote", &current, &g),
+            Some(entity_id("Stafford Warren", "Person"))
+        );
+        assert_eq!(
+            resolve_entity_id("stafford warren", &current, &g),
+            Some(entity_id("Stafford Warren", "Person")),
+            "the relation may name the entity in its cleaned form"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_endpoint_that_is_no_entity_resolves_to_nothing() {
+        let dir = std::env::temp_dir().join(format!("resolve-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = GraphStore::open(&dir, Uuid::new_v4()).unwrap();
+        assert_eq!(
+            resolve_entity_id("Nobody Mentioned", &[ent("Groves", "Person")], &g),
+            None
+        );
+        assert_eq!(
+            resolve_entity_id("he", &[], &g),
+            None,
+            "a pronoun is never an endpoint"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -7,7 +7,7 @@
 //!
 //! The overall score is the unweighted average of the three pillars (0.0–1.0).
 
-use crate::graph::{expected_fields, EntityNode, GraphStore};
+use crate::graph::{EntityNode, GraphStore};
 use crate::ontology::Ontology;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -181,28 +181,45 @@ pub struct GraphHealthReport {
 // ── Scoring functions ─────────────────────────────────────────────────────────
 
 pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> EntityScore {
+    score_entity_with(node, neighbor_relation_types, None)
+}
+
+/// `score_entity` against the KB's ontology: its type mapping, its fields and
+/// the predicates it declares for the type. Without one, the compiled tables,
+/// whose Person expectations are the 14 kinship predicates, so `graph score`
+/// measured how memoir-like a graph was. Scores from different ontologies are
+/// not comparable (GLOSSARY: `graph score`).
+pub fn score_entity_with(
+    node: &EntityNode,
+    neighbor_relation_types: &[String],
+    ont: Option<&Ontology>,
+) -> EntityScore {
+    let ont = ont.filter(|o| !o.is_empty());
     // Resolve schema.org type: prefer the stored schema_type, fall back to map.
     let resolved = node
         .schema_type
         .as_deref()
-        .or_else(|| schema_type_for(&node.entity_type));
+        .or_else(|| schema_type_for_ontology(&node.entity_type, ont));
 
     // Pillar 1: type
+    // A type the ontology declares is a specific type, mapped or not.
+    let declared = ont.is_some_and(|o| o.entity_type(&node.entity_type).is_some());
     let type_score: f32 = match resolved {
+        _ if declared => 1.0,
         None => 0.0,                 // Unknown — must be completed
         Some("schema:Thing") => 0.4, // vague but valid
         Some(_) => 1.0,
     };
 
     // Pillar 2: field completeness (or description quality for unschematised types)
-    let schema = expected_fields(&node.entity_type);
+    let schema = crate::graph::expected_fields_for(&node.entity_type, ont);
     let summary_score: f32 = if !schema.is_empty() {
         // Field-based scoring: fraction of expected fields that have a non-empty value.
         let filled = schema
             .iter()
             .filter(|(key, _)| {
                 node.fields
-                    .get(*key)
+                    .get(key.as_str())
                     .map(|fv| !fv.value.is_empty())
                     .unwrap_or(false)
             })
@@ -235,23 +252,27 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
     // 1 relation group instead of all groups; they're supporting cast and the
     // source text rarely gives enough context for full biographical data.
     let relation_score: f32 = match resolved {
+        // With an ontology, its predicates are the expectation for every
+        // declared type, whatever schema.org type it maps to.
+        _ if declared => {
+            let groups = expected_relation_groups_for(&node.entity_type, "", ont);
+            relation_fraction(&groups, neighbor_relation_types, node.mention_count)
+        }
         None | Some("schema:Thing") => {
             // No expectations defined — neutral, not penalised
             0.5
         }
         Some(st) => {
-            let groups = expected_relation_groups(st);
+            let groups = expected_relation_groups_for(&node.entity_type, st, ont);
             if groups.is_empty() {
                 0.5
             } else {
                 let matched = groups
                     .iter()
                     .filter(|group| {
-                        group.iter().any(|expected| {
-                            neighbor_relation_types
-                                .iter()
-                                .any(|r| r.as_str() == *expected)
-                        })
+                        group
+                            .iter()
+                            .any(|expected| neighbor_relation_types.iter().any(|r| r == expected))
                     })
                     .count();
                 // Scale expectations down for peripheral entities so one
@@ -280,6 +301,25 @@ pub fn score_entity(node: &EntityNode, neighbor_relation_types: &[String]) -> En
     }
 }
 
+/// Fraction of expectation groups with at least one matching relation;
+/// peripheral entities (≤ 2 mentions) need only one group. Neutral 0.5 when
+/// nothing is expected.
+fn relation_fraction(groups: &[Vec<String>], rels: &[String], mentions: u32) -> f32 {
+    if groups.is_empty() {
+        return 0.5;
+    }
+    let matched = groups
+        .iter()
+        .filter(|g| g.iter().any(|e| rels.iter().any(|r| r == e)))
+        .count();
+    let required = if mentions <= 2 {
+        1usize.min(groups.len())
+    } else {
+        groups.len()
+    };
+    (matched as f32 / required as f32).min(1.0)
+}
+
 pub fn score_graph(store: &GraphStore) -> GraphHealthReport {
     let mut entity_scores: Vec<EntityScore> = store
         .all_entities()
@@ -289,7 +329,7 @@ pub fn score_graph(store: &GraphStore) -> GraphHealthReport {
                 .into_iter()
                 .map(|(_, rel, _)| rel)
                 .collect();
-            score_entity(node, &neighbor_rels)
+            score_entity_with(node, &neighbor_rels, store.ontology())
         })
         .collect();
 
@@ -368,4 +408,64 @@ pub fn resolved_schema_type(node: &EntityNode) -> Option<&str> {
     node.schema_type
         .as_deref()
         .or_else(|| schema_type_for(&node.entity_type))
+}
+
+#[cfg(test)]
+mod ontology_score_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn node(name: &str, ty: &str, mentions: u32) -> EntityNode {
+        EntityNode {
+            id: crate::graph::entity_id(name, ty),
+            name: name.into(),
+            entity_type: ty.into(),
+            description: "A case decided by the Court in 1973 on privacy.".into(),
+            embedding: vec![],
+            mention_count: mentions,
+            first_chunk_id: 1,
+            aliases: vec![],
+            schema_type: None,
+            gender: None,
+            evidence: vec![],
+            fields: HashMap::new(),
+            confidence: 1.0,
+            extraction_confidence: 1.0,
+        }
+    }
+
+    fn legal() -> Ontology {
+        let p = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../tests/kwaai-knowledge/ontologies/Legal.yaml"
+        );
+        Ontology::from_yaml(&std::fs::read_to_string(p).unwrap()).unwrap()
+    }
+
+    /// A Case with a `cites` edge satisfies Legal's expectations. Under the
+    /// compiled tables a Case is untyped and no legal predicate counts.
+    #[test]
+    fn relations_are_scored_against_the_ontologys_predicates() {
+        let o = legal();
+        let n = node("Roe v. Wade", "Case", 5);
+        let with = score_entity_with(&n, &["cites".to_string()], Some(&o));
+        let without = score_entity_with(&n, &[], Some(&o));
+        assert!(
+            with.relation_score > without.relation_score,
+            "{with:?} vs {without:?}"
+        );
+        assert_eq!(with.relation_score, 1.0);
+        assert!(with.type_score > 0.0, "a declared type is not Unknown");
+    }
+
+    #[test]
+    fn without_an_ontology_scoring_is_unchanged() {
+        let n = node("Tomas", "Person", 5);
+        let a = score_entity(&n, &["parent_of".to_string()]);
+        let b = score_entity_with(&n, &["parent_of".to_string()], None);
+        assert_eq!(
+            (a.type_score, a.summary_score, a.relation_score),
+            (b.type_score, b.summary_score, b.relation_score)
+        );
+    }
 }

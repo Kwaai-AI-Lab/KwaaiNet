@@ -22,6 +22,7 @@ pub mod meta_store;
 pub mod ner;
 pub mod obsidian;
 pub mod ontology;
+pub mod ontology_select;
 pub mod prompt;
 pub mod query_understand;
 pub mod query_understanding;

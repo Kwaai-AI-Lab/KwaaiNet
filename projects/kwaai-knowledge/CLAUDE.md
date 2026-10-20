@@ -122,7 +122,7 @@ kwaainet rag graph build --kb D6 \
 cargo build -p kwaai-rag
 
 # Full pipeline test
-kwaainet rag ingest --kb D6 --file "docs/LEST WE FORGET -rev25.pdf" \
+kwaainet rag ingest --kb D6 "<D6 manuscript, private copy>" \
   --doc-schema tests/kwaai-knowledge/d6_doc_schema.yaml
 kwaainet rag graph build --kb D6 --model llama3.1:8b --no-relations --graph-window 1
 kwaainet rag graph score --kb D6
