@@ -5666,10 +5666,10 @@ fn normalize_underscores(s: &str) -> String {
     clean_entity_name(s)
 }
 
-/// The relation gate for a KB with an ontology: does the text contain any of
-/// its declared trigger phrases? An ontology that declares none is not gated,
-/// since the compiled keyword list is kinship and membership vocabulary and
-/// would block, say, every `causes` edge in a climate corpus.
+/// The relation gate for a KB with an ontology: the compiled lexical gate,
+/// widened by the ontology's own declared trigger phrases. An ontology that
+/// declares none keeps the compiled gate; relation extraction is never
+/// unfiltered (8B precision there is 0–17%).
 pub fn ontology_relation_trigger(text: &str, ont: &crate::ontology::Ontology) -> bool {
     // Always at least the compiled lexical gate. An ontology's trigger phrases
     // widen it to the corpus's own predicates; they never replace it. Replacing

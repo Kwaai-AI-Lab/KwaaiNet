@@ -1112,14 +1112,6 @@ pub fn applicable_relations<'a>(
         .collect()
 }
 
-/// The completion prompt for a KB with an ontology. One prompt for every
-/// entity type, built from the ontology: the type's description, its fields
-/// (ontology first, compiled table as fallback), and the predicates its domain
-/// admits with their ranges. The six schema-type templates hard-code
-/// `located_in`, `belongs_to`, `works_at` and `associated_with` as examples,
-/// and in Eval v2 those four plus `part_of` were ~99% of every non-memoir
-/// corpus's dream relations.
-#[allow(clippy::too_many_arguments)]
 /// Whether the ontology task for this type asks for a prose description.
 ///
 /// Matches the compiled tasks it replaces: Biography, Geography and OrgProfile
@@ -1138,6 +1130,14 @@ pub fn ontology_task_asks_description(ont: &crate::ontology::Ontology, entity_ty
     )
 }
 
+/// The completion prompt for a KB with an ontology. One prompt for every
+/// entity type, built from the ontology: the type's description, its fields
+/// (ontology first, compiled table as fallback), and the predicates its domain
+/// admits with their ranges. The six schema-type templates hard-code
+/// `located_in`, `belongs_to`, `works_at` and `associated_with` as examples,
+/// and in Eval v2 those four plus `part_of` were ~99% of every non-memoir
+/// corpus's dream relations.
+#[allow(clippy::too_many_arguments)]
 pub fn ontology_task_prompt(
     ont: &crate::ontology::Ontology,
     name: &str,

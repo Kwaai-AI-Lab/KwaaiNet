@@ -201,7 +201,7 @@ pub fn ontology_candidates(text: &str, ont: &crate::ontology::Ontology) -> Vec<S
             let glued = rest[..open]
                 .chars()
                 .next_back()
-                .is_some_and(|c| !c.is_whitespace() && !matches!(c, '(' | '[' | '\u{2014}' | '-'));
+                .is_some_and(|c| !c.is_whitespace() && !matches!(c, '(' | '['));
             if rest[open..].starts_with('"') && glued {
                 rest = &rest[open + 1..];
                 continue;
@@ -1147,6 +1147,21 @@ mod ontology_candidate_tests {
             .unwrap();
         assert!(
             ontology_candidates("He said \"this is a quote here\" about plutonium.", &o).is_empty()
+        );
+    }
+
+    #[test]
+    fn interrupted_speech_ending_in_a_dash_is_a_closer() {
+        // Review of #248: a quote glued to a dash closes a quotation that began
+        // before the chunk; treating it as an opener inverted the pairing.
+        let c = ontology_candidates(
+            "and then\u{2014}\" she stopped and looked back at us \"we leave for the site tonight\" again.",
+            &manhattan(),
+        );
+        assert!(!c.iter().any(|x| x.starts_with("she stopped")), "{c:?}");
+        assert!(
+            c.iter().any(|x| x == "we leave for the site tonight"),
+            "{c:?}"
         );
     }
 
