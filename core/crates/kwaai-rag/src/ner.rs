@@ -195,6 +195,17 @@ pub fn ontology_candidates(text: &str, ont: &crate::ontology::Ontology) -> Vec<S
     if wants_quotes {
         let mut rest = text;
         while let Some(open) = rest.find(['\u{201C}', '"']) {
+            // A straight quote glued to the word before it closes a quotation
+            // that began before this chunk: skip it, or every pair after it is
+            // inverted and the narrative between quotations becomes a candidate.
+            let glued = rest[..open]
+                .chars()
+                .next_back()
+                .is_some_and(|c| !c.is_whitespace() && !matches!(c, '(' | '[' | '\u{2014}' | '-'));
+            if rest[open..].starts_with('"') && glued {
+                rest = &rest[open + 1..];
+                continue;
+            }
             let after = &rest[open + rest[open..].chars().next().unwrap().len_utf8()..];
             let Some(close) = after.find(['\u{201D}', '"']) else {
                 break;
@@ -1136,6 +1147,25 @@ mod ontology_candidate_tests {
             .unwrap();
         assert!(
             ontology_candidates("He said \"this is a quote here\" about plutonium.", &o).is_empty()
+        );
+    }
+
+    /// Regression (review of #248): a chunk that opens inside a quotation
+    /// inverted the pairing of straight quotes, proposing the narrative between
+    /// two quotations as a verbatim Quotation.
+    #[test]
+    fn a_chunk_opening_mid_quotation_does_not_invert_the_pairing() {
+        let c = ontology_candidates(
+            "ended there.\" He walked to the station and said \"we leave for the site tonight\" quietly.",
+            &manhattan(),
+        );
+        assert!(
+            !c.iter().any(|x| x.starts_with("He walked")),
+            "narrative proposed as a quotation: {c:?}"
+        );
+        assert!(
+            c.iter().any(|x| x == "we leave for the site tonight"),
+            "{c:?}"
         );
     }
 }

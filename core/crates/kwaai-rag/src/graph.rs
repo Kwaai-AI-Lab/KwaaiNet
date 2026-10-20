@@ -5671,12 +5671,17 @@ fn normalize_underscores(s: &str) -> String {
 /// since the compiled keyword list is kinship and membership vocabulary and
 /// would block, say, every `causes` edge in a climate corpus.
 pub fn ontology_relation_trigger(text: &str, ont: &crate::ontology::Ontology) -> bool {
-    let triggers = ont.triggers();
-    if triggers.is_empty() {
+    // Always at least the compiled lexical gate. An ontology's trigger phrases
+    // widen it to the corpus's own predicates; they never replace it. Replacing
+    // it dropped the membership and marriage keywords for ontologies that
+    // declare only "X of" phrases, and an ontology declaring no triggers at all
+    // (Climate, DeepSea) ran relation extraction on every chunk, the unfiltered
+    // 8B path that measures 0–17% precision.
+    if lexical_relation_trigger(text) {
         return true;
     }
     let lower = text.to_lowercase();
-    triggers.iter().any(|t| lower.contains(&t.phrase))
+    ont.triggers().iter().any(|t| lower.contains(&t.phrase))
 }
 
 pub struct OntologyPromptParts<'a> {
@@ -7677,16 +7682,30 @@ mod ontology_prompt_tests {
     }
 
     #[test]
-    fn an_ontology_without_triggers_is_not_gated() {
+    fn an_ontology_without_triggers_keeps_the_lexical_gate() {
+        // Regression (review of #248): no triggers meant no gate at all, so an
+        // 8B model was asked for relations on every chunk.
         let climate = shipped("Climate");
         assert!(climate.triggers().is_empty());
-        assert!(ontology_relation_trigger(
+        assert!(!ontology_relation_trigger(
             "The AMOC drives regional cooling.",
             &climate
         ));
-        assert!(!lexical_relation_trigger(
-            "The AMOC drives regional cooling."
+        assert!(ontology_relation_trigger(
+            "She was a member of the panel.",
+            &climate
         ));
+    }
+
+    #[test]
+    fn an_ontologys_triggers_widen_the_lexical_gate_never_narrow_it() {
+        // Regression (review of #248): the ontology's phrases replaced the
+        // compiled ones, so "married " and "widow" chunks lost relations.
+        let memoir = crate::ontology::test_memoir();
+        for kept in ["He married Anna in the spring.", "The widow ran the shop."] {
+            assert!(lexical_relation_trigger(kept), "{kept}");
+            assert!(ontology_relation_trigger(kept, &memoir), "{kept}");
+        }
     }
 
     #[test]

@@ -147,8 +147,15 @@ pub fn html_to_text(html: &str) -> String {
             // A close tag HTML lets authors omit must not swallow the rest of the
             // page: `<head>` ends at `<body>`, and anything else unclosed is kept.
             let close = format!("</{name}");
-            let end = lower[i..]
-                .find(&close)
+            // The close tag itself, not a longer name it prefixes (`</head` is
+            // also the start of `</header`).
+            let close_at = lower[i..].match_indices(&close).map(|(e, _)| e).find(|&e| {
+                lower[i + e + close.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| c == '>' || c.is_whitespace())
+            });
+            let end = close_at
                 .map(|e| lower[i + e..].find('>').map_or(b.len(), |g| i + e + g + 1))
                 .or_else(|| {
                     (name == "head")
@@ -765,6 +772,20 @@ fn extract_doc_legacy(path: &Path) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+
+    /// Regression (review of #248): the close-tag search matched a prefix, so
+    /// with `</head>` omitted, `</header` ended the head and dropped the body's
+    /// header and everything before it.
+    #[test]
+    fn an_unclosed_head_is_not_closed_by_a_header_element() {
+        let t = super::html_to_text(
+            "<html><head><title>T</title><body><p>Intro before the header.</p><header>Site</header><p>Body text here.</p></body></html>",
+        );
+        assert!(t.contains("Intro before the header."), "{t:?}");
+        assert!(t.contains("Body text here."), "{t:?}");
+        assert!(!t.contains("Site"), "<header> is still dropped: {t:?}");
+    }
+
     use super::*;
 
     #[test]
