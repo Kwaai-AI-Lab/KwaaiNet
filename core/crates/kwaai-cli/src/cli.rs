@@ -1263,6 +1263,16 @@ pub enum RagAction {
         #[arg(long, value_name = "YAML_FILE")]
         doc_schema: Option<std::path::PathBuf>,
 
+        /// Choose this document's ontology from a library of ontology YAMLs before
+        /// ingesting it (as `graph schema select` does for a whole KB). Other
+        /// documents' choices are kept.
+        #[arg(long, value_name = "DIR")]
+        ontology_library: Option<std::path::PathBuf>,
+
+        /// With --ontology-library: the corpus-scoped ontology that is this KB's own
+        #[arg(long, value_name = "NAME", requires = "ontology_library")]
+        own_corpus: Option<String>,
+
         /// Knowledge base name (default: "default")
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
@@ -1947,7 +1957,9 @@ pub enum GraphAction {
         #[arg(long, default_value = "1", value_name = "N")]
         graph_window: usize,
 
-        /// Wipe the graph before building (entities + relations cleared, chunks preserved).
+        /// Wipe the graph before building: entities, relations, mentions and timeline
+        /// are cleared; chunks and the KB's ontology, entity schemas and document
+        /// metadata are kept.
         #[arg(long)]
         reset_graph: bool,
 
@@ -1955,6 +1967,12 @@ pub enum GraphAction {
         /// Example: --sample 10 processes the first 10% of chunks.
         #[arg(long, value_name = "PERCENT")]
         sample_pct: Option<u8>,
+
+        /// Extract only the chunks whose ids are listed in FILE (one per line,
+        /// `#` comments allowed). Neighbouring chunks are still read as context
+        /// for --graph-window. Every id must belong to the KB.
+        #[arg(long, value_name = "FILE")]
+        chunk_ids: Option<std::path::PathBuf>,
 
         /// Base URL of a running GLiNER NER server (e.g. http://localhost:8080).
         /// When set, Person spans are detected before each LLM call and injected as
@@ -2473,6 +2491,46 @@ pub enum SchemaAction {
         /// Knowledge base name
         #[arg(long, default_value = "default", value_name = "NAME")]
         kb: String,
+    },
+
+    /// Choose an ontology for each document from a library of ontology YAMLs.
+    ///
+    /// Each document is scored against every ontology in the library by
+    /// coverage: the share of its chunks that carry the ontology's vocabulary.
+    /// The best one is chosen if it clears --min-share and beats the runner-up;
+    /// otherwise the document gets none. Choices are stored per document, and
+    /// their union becomes the KB's ontology. Extraction then uses each chunk's
+    /// own document's ontology.
+    Select {
+        /// Directory of ontology YAML files to choose from
+        #[arg(long, value_name = "DIR")]
+        library: std::path::PathBuf,
+
+        /// Knowledge base name
+        #[arg(long, default_value = "default", value_name = "NAME")]
+        kb: String,
+
+        /// Print the choices without storing them
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Chunks sampled per document
+        #[arg(long, default_value = "60", value_name = "N")]
+        sample: usize,
+
+        /// Minimum share of sampled chunks an ontology must cover to be chosen
+        #[arg(long, default_value = "0.15", value_name = "F")]
+        min_share: f32,
+
+        /// Also print the terms that matched for the top two candidates
+        #[arg(long)]
+        explain: bool,
+
+        /// The corpus-scoped ontology that is this KB's own. Default: the KB's
+        /// stored ontology when it is corpus-scoped. Other corpus-scoped
+        /// ontologies are never chosen.
+        #[arg(long, value_name = "NAME")]
+        own_corpus: Option<String>,
     },
 
     /// Load entity type schemas from a YAML file into the KB.

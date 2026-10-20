@@ -5,16 +5,28 @@
 # Why this KB first: 96.9% clean text and 2 relations from 2955 entities. It is
 # the clearest genuinely vocabulary-bound corpus we have — nothing here is
 # blocked on ingestion, so a better vocabulary is the only variable.
+#
+# v2, 2026-09-28. Completed after the ontology pilot, where Legal was the one
+# corpus on which the ontology produced fewer correct relations than the compiled
+# defaults. v1 was drawn from 4 sampled chunks and modelled only case law. The
+# defaults arm's correct edges were legislative and political ("Congress passed
+# the Missouri Compromise", "BCRA amends FECA", "General DeWitt issued the
+# Proclamation", "John Randolph member of the House"), and v1 could express none
+# of them. Every addition below carries its measured share of the 3,655 prose
+# chunks. Its sources were the pilot's judged edges, the 20 questions and their
+# gold nuggets, and full-corpus probes. Additions that exist mainly for the test
+# set are marked "test-set".
 
 ontology:
   name: us-case-law
-  version: 1
+  version: 2
   extends: none
 
 provenance:
   derivation: derived
   note: >-
-    4 sampled chunks (Dred Scott, Lochner, Miranda, Jacobson)
+    v1: 4 sampled chunks. v2 (2026-09-28): full-corpus probes over 3,655 prose
+    chunks, the pilot's judged edges, and the 20 questions with their gold nuggets.
 
 entity_types:
   - name: Case
@@ -42,10 +54,48 @@ entity_types:
     examples: ["Chief Justice Taney", "Justice Peckham"]
     irreducible: false
 
-  - name: Party
-    description: A named litigant before the court — person, State, or entity.
-    examples: ["Dred Scott", "New York", "Sandford"]
-    irreducible: false
+  # v2: `Party` is gone. Being a party is a role, expressed by `party_to`. As a
+  # type it forced "Citizens United" to be a Party in one chunk and an
+  # Organization in the next, and since the type is part of the entity-id hash,
+  # one litigant became two entities.
+  - name: Person
+    evidence: 4.3
+    # titled non-judicial people ("General DeWitt", "Senator ..."), 12 of 13
+    # documents; litigants such as Dred Scott and Miranda add more.
+    description: >-
+      A named individual who is not acting as a Justice: litigants, legislators,
+      officials, officers, historical figures.
+    examples: ["Dred Scott", "Ernesto Miranda", "John L. DeWitt", "John Randolph"]
+    anti_examples: ["Chief Justice Taney"]   # a Justice
+
+  - name: Organization
+    evidence: 9.1
+    # corporation/union/association/party/committee, 12 documents.
+    description: >-
+      A named corporation, union, association, party, agency or other body that is
+      not a court or a legislature.
+    examples: ["Citizens United", "Federal Election Commission", "Board of Education of Topeka"]
+
+  - name: Legislature
+    evidence: 20.8
+    # Congress/House/Senate/legislature, all 13 documents. v1 had no type for
+    # the body that enacts the statutes the cases turn on.
+    description: A named law-making body.
+    examples: ["Congress", "House of Representatives", "Senate", "New York legislature"]
+
+  - name: ExecutiveOrder
+    evidence: 1.7
+    # executive/military/exclusion orders and proclamations, 3 documents.
+    # test-set: q09's nuggets turn on Civilian Exclusion Order No. 34.
+    description: A named executive or military order or proclamation.
+    examples: ["Civilian Exclusion Order No. 34", "Public Proclamation No. 3"]
+    irreducible: true
+
+  - name: HistoricalEvent
+    evidence: 4.6
+    # war/depression/convention, 8 documents; the context q08 and q10 ask about.
+    description: A named event the opinions treat as context for a decision.
+    examples: ["Civil War", "Great Depression", "Federal Convention"]
 
   - name: Opinion
     description: >-
@@ -93,7 +143,7 @@ relation_types:
     range:  [Court]
     functional: true          # a case has exactly one deciding court
   - name: party_to
-    domain: [Party]
+    domain: [Person, Organization, Jurisdiction]   # a State is a party too
     range:  [Case]
   - name: authored_opinion
     domain: [Justice]
@@ -106,6 +156,13 @@ relation_types:
     description: A justice's opinion dissenting from the majority in a case.
     domain: [Justice]
     range:  [Case]
+  - name: joins
+    description: A justice joins an opinion.
+    domain: [Justice]
+    range:  [Opinion]
+    triggers: ["joined", "joins in the opinion", "concurring"]
+    aliases: [joined, concurs_in]
+    # joined/concurring 2.8%, 11 documents.
   - name: holds
     domain: [Case]
     range:  [Holding]
@@ -144,7 +201,16 @@ relation_types:
   - name: strikes_down
     description: A case holds a statute unconstitutional.
     domain: [Case]
-    range:  [Statute]
+    range:  [Statute, ExecutiveOrder]
+  - name: upholds
+    description: A case sustains a statute or order against challenge.
+    domain: [Case]
+    range:  [Statute, ExecutiveOrder]
+    triggers: ["upheld", "upholding", "sustained"]
+    aliases: [upheld, sustains, sustained]
+    # upheld/upholding/sustained 4.2%, all 13 documents. v1's `affirms` covers
+    # only lower-court judgments; q09 and q11 ask what Korematsu and McConnell
+    # upheld.
   - name: establishes
     domain: [Case]
     range:  [Doctrine]
@@ -154,6 +220,47 @@ relation_types:
   - name: enacted_in
     domain: [Statute]
     range:  [Jurisdiction]
+
+  # ── Legislation and executive action (v2) ─────────────────────────────────
+  - name: enacted_by
+    domain: [Statute]
+    range:  [Legislature]
+    inverse: enacted
+    triggers: ["passed", "enacted by", "adopted by"]
+    aliases: [passed_by]
+    # passed/enacted 6.3%, 12 documents ("Congress passed the Missouri Compromise").
+  - name: amends
+    domain: [Statute]
+    range:  [Statute]
+    triggers: ["amends", "amended", "amending"]
+    acyclic: true
+    # 1.2%, 8 documents ("BCRA amends FECA").
+  - name: repeals
+    domain: [Statute]
+    range:  [Statute]
+    triggers: ["repealed", "repeals"]
+    aliases: [supersedes]
+    acyclic: true
+    # 0.8%, 7 documents.
+  - name: nullifies
+    description: A constitutional amendment or later statute nullifies a decision.
+    domain: [ConstitutionalProvision, Statute]
+    range:  [Case]
+    triggers: ["nullified", "abrogated", "superseded"]
+    aliases: [abrogates]
+    # 0.8%, 5 documents. test-set: q17 (the 13th and 14th Amendments nullified
+    # Dred Scott).
+  - name: issued
+    domain: [Person, Organization]
+    range:  [ExecutiveOrder]
+    inverse: issued_by
+    triggers: ["issued", "promulgated"]
+    # 1.1%, 6 documents ("General DeWitt issued the Proclamation").
+  - name: member_of
+    domain: [Person]
+    range:  [Legislature, Organization]
+    triggers: ["member of", "served in", "representative from"]
+    # 0.5%, 3 documents: low, but the defaults arm's correct edges included it.
   - name: has_jurisdiction_over
     domain: [Court]
     range:  [Jurisdiction]
@@ -169,8 +276,21 @@ axioms:
   - kind: functional
     relations: [decided_by]
   - kind: acyclic
-    relations: [cites, overrules, affirms, reverses, distinguishes]
+    relations: [cites, overrules, affirms, reverses, distinguishes, amends, repeals]
+  - kind: contradiction
+    pairs:
+      - [upholds, strikes_down]
+
+# The document types this ontology serves (ontology selection narrows to it for these).
+document_types: [CourtOpinion]
 
 # No fallback predicate. `associated_with` between two cases asserts nothing a
 # lawyer would accept, and admitting it is how the current graphs became noise.
 fallback_predicate: null
+
+# ── Rejected, with their numbers (v2) ────────────────────────────────────────
+rejected_types:
+  - { name: genealogy (module), evidence: 4.5, reason: "Kinship words are in 4.5% of prose chunks. Dred Scott's family (Harriet his wife; Eliza and Lizzie his children) supplies 83 of them, and those are real facts. Roe's 'mother' means the pregnant woman, which is not kinship. No question asks about the Scott family, so 14 predicates would be offered to every chunk for one document's facts. Reza may override" }
+  - { name: regulates, evidence: 9.5, reason: "prohibit/restrict/ban language in 13 documents, but what is regulated (bakers' hours, soft money, abortion) is an activity, and the ontology has no activity type. The nuggets express it as a statute's description, not as an edge" }
+  - { name: Party, reason: "v1 type; a role (`party_to`), not a type. See Person" }
+

@@ -75,6 +75,8 @@ pub async fn run(args: RagArgs) -> Result<()> {
             surr_mode,
             doc_meta,
             doc_schema,
+            ontology_library,
+            own_corpus,
             kb,
         } => {
             cmd_ingest(
@@ -90,6 +92,7 @@ pub async fn run(args: RagArgs) -> Result<()> {
                 surr_mode,
                 doc_meta,
                 doc_schema,
+                ontology_library.map(|l| (l, own_corpus)),
                 kb,
             )
             .await
@@ -371,7 +374,7 @@ async fn cmd_init(
                     "Embedding model '{}' is not available in Ollama.\n\
                      Pull it first:  ollama pull {}\n\
                      Other supported models: ollama pull mxbai-embed-large\n\
-                     Then re-run:    kwaainet rag init --name {} --embed-model {}",
+                     Then re-run:    kwaainet rag init --kb {} --embed-model {}",
                     embed_model,
                     embed_model,
                     name,
@@ -525,9 +528,7 @@ async fn cmd_connect_eve(peer_id: String, url: Option<String>, kb: String) -> Re
         } else {
             None
         })
-        .with_context(|| {
-            format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}")
-        })?;
+        .with_context(|| format!("KB '{kb}' not initialised. Run: kwaainet rag init --kb {kb}"))?;
 
     rag.eve_peer_id = Some(peer_id);
     // url = Some("http://...") for HTTP transport, None for P2P RPC.
@@ -550,6 +551,68 @@ async fn cmd_connect_eve(peer_id: String, url: Option<String>, kb: String) -> Re
 
 // ── ingest ────────────────────────────────────────────────────────────────────
 
+/// Choose one document's ontology from a library, before it is ingested, and
+/// store it beside the KB's other per-document choices.
+#[cfg(feature = "storage")]
+fn select_document_ontology(
+    rag_cfg: &RagConfig,
+    tenant_id: uuid::Uuid,
+    kb: &str,
+    doc_name: &str,
+    text: &str,
+    library: &std::path::Path,
+    own_corpus: Option<String>,
+) -> Result<()> {
+    use kwaai_rag::ontology_select::{select, windows, Library, SelectConfig};
+    let (lib, errors) = Library::load_dir(library)
+        .with_context(|| format!("reading ontology library {}", library.display()))?;
+    for e in &errors {
+        print_warning(&format!("ontology library: {e}"));
+    }
+    let mut store =
+        GraphStore::open(&rag_cfg.data_dir(), tenant_id).context("opening graph store")?;
+    // An unreadable stored record is an error here: starting from an empty map
+    // would overwrite every other document's choice.
+    let existing = store.doc_ontologies_checked().context(
+        "reading this KB's per-document ontologies (fix or clear them before selecting)",
+    )?;
+    let own_corpus = own_corpus.or_else(|| {
+        let corpus = |o: &kwaai_rag::ontology::Ontology| {
+            (o.scope.as_deref() == Some("corpus")).then(|| o.ontology.name.clone())
+        };
+        store
+            .ontology()
+            .and_then(corpus)
+            .or_else(|| existing.as_ref()?.own_corpus())
+    });
+    let cfg = SelectConfig {
+        own_corpus,
+        ..Default::default()
+    };
+    let choice = select(&lib, doc_name, &windows(text, 800), &cfg);
+    match (&choice.ontology, choice.scores.first()) {
+        (_, None) => print_warning(
+            "No ontology in the library is eligible here (none loaded, or all corpus-scoped); the document uses the KB's ontology, if any.",
+        ),
+        (Some(name), Some(best)) => print_info(&format!(
+            "Ontology for this document: {name} (covers {:.0}% of sampled text{})",
+            best.share * 100.0,
+            choice.doc_type.as_deref().map(|t| format!("; {t}")).unwrap_or_default()
+        )),
+        (None, Some(best)) => print_warning(&format!(
+            "No ontology fits this document (best: {} at {:.0}%); it uses the KB's ontology, if any.",
+            best.ontology,
+            best.share * 100.0
+        )),
+    }
+    let mut docs = existing.unwrap_or_default();
+    docs.record(doc_name, choice, &lib);
+    store
+        .set_doc_ontologies(&docs, kb)
+        .context("storing the document's ontology")?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_ingest(
     file: std::path::PathBuf,
@@ -564,6 +627,9 @@ async fn cmd_ingest(
     surr_mode: String,
     doc_meta_path: Option<std::path::PathBuf>,
     doc_schema_path: Option<std::path::PathBuf>,
+    // (ontology library dir, own corpus ontology): choose this document's
+    // ontology before ingesting it.
+    ontology_select: Option<(std::path::PathBuf, Option<String>)>,
     kb: String,
 ) -> Result<()> {
     #[cfg(not(feature = "storage"))]
@@ -581,6 +647,17 @@ async fn cmd_ingest(
         });
 
         let text = document::extract_text(&file)?;
+        if let Some((library, own_corpus)) = &ontology_select {
+            select_document_ontology(
+                &rag_cfg,
+                tenant_id,
+                &kb,
+                &doc_name,
+                &text,
+                library,
+                own_corpus.clone(),
+            )?;
+        }
         print_info(&format!(
             "Ingesting '{}' ({} chars, {} byte file)",
             doc_name,
@@ -679,6 +756,7 @@ async fn cmd_ingest(
                 relation_types: vec![],
                 no_relations: false,
                 context_window: 1,
+                only_chunk_ids: None,
                 gliner_client: None,
                 entity_centric: false,
                 chunk_batch: 1,
@@ -2539,9 +2617,10 @@ fn open_bm25(rag_cfg: &RagConfig, meta: &MetaStore, label: &str) -> Option<Arc<B
 
 fn load_rag_config_for(kb: &str) -> Result<(RagConfig, Uuid)> {
     let cfg = KwaaiNetConfig::load_or_create()?;
-    let rag = cfg.get_rag_kb(kb).cloned().with_context(|| {
-        format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}")
-    })?;
+    let rag = cfg
+        .get_rag_kb(kb)
+        .cloned()
+        .with_context(|| format!("KB '{kb}' not initialised. Run: kwaainet rag init --kb {kb}"))?;
 
     let tenant_id: Uuid = rag
         .tenant_id
@@ -2697,6 +2776,7 @@ async fn cmd_rebuild(
             "truncated".to_string(),
             doc_meta,
             doc_schema,
+            None,
             kb.clone(),
         )
         .await?;
@@ -2750,6 +2830,7 @@ async fn cmd_rebuild(
                 reset_graph: false,
                 graph_window,
                 sample_pct,
+                chunk_ids: None,
                 gliner_url: None,
                 entity_centric: false,
                 chunk_batch: 1,
@@ -2955,7 +3036,7 @@ async fn cmd_destroy(yes: bool, kb: String) -> Result<()> {
     cfg.save()?;
 
     print_success(&format!("Knowledge base '{}' destroyed.", kb));
-    println!("  Run  kwaainet rag init --name {kb}  to start fresh.");
+    println!("  Run  kwaainet rag init --kb {kb}  to start fresh.");
     Ok(())
 }
 
@@ -3305,6 +3386,7 @@ async fn run_sync_pass(
                     relation_types: vec![],
                     no_relations: false,
                     context_window: 1,
+                    only_chunk_ids: None,
                     gliner_client: None,
                     entity_centric: false,
                     chunk_batch: 1,
@@ -3533,6 +3615,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 graph_window,
                 reset_graph,
                 sample_pct,
+                chunk_ids,
                 gliner_url,
                 entity_centric,
                 chunk_batch,
@@ -3610,14 +3693,25 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     })
                     .unwrap_or_default();
 
-                // Optionally wipe the graph before rebuilding.
+                // Optionally wipe the graph before rebuilding. The KB's
+                // configuration (ontology, entity schemas, document metadata)
+                // is kept: deleting the file used to destroy it, so every
+                // `--reset-graph` build silently ran without its ontology.
                 if reset_graph {
                     let graph_path = rag_cfg.data_dir().join(format!("graph-{}.db", tenant_id));
                     if graph_path.exists() {
-                        std::fs::remove_file(&graph_path).with_context(|| {
-                            format!("clearing graph at {}", graph_path.display())
-                        })?;
-                        print_info("Graph cleared — rebuilding from scratch.");
+                        GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                            .and_then(|mut g| g.clear_graph_data())
+                            .with_context(|| {
+                                format!(
+                                    "clearing graph at {} (if it is corrupt, `rag graph clear --all` \
+                                     or delete the file; both drop the ontology)",
+                                    graph_path.display()
+                                )
+                            })?;
+                        print_info(
+                            "Graph cleared (ontology and document metadata kept) — rebuilding from scratch.",
+                        );
                     }
                 }
 
@@ -3626,6 +3720,15 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 // Windows are built from list neighbours, and --limit/--sample-pct keep a
                 // prefix of the list: both need reading order, not key order.
                 kwaai_rag::meta_store::sort_document_order(&mut all_chunks);
+                // --chunk-ids is checked against every chunk in the KB, before
+                // --docs/--limit/--sample filter the list.
+                let kb_chunk_ids: std::collections::HashSet<i64> =
+                    all_chunks.iter().map(|(id, _)| *id).collect();
+                if chunk_ids.is_some() && chunk_batch > 1 {
+                    anyhow::bail!(
+                        "--chunk-ids cannot be combined with --chunk-batch > 1: a batch is skipped or taken by its leading chunk alone"
+                    );
+                }
 
                 // Filter by document name patterns if --docs is set
                 if let Some(ref patterns) = docs {
@@ -3650,6 +3753,35 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     all_chunks.truncate(n);
                 }
                 let total = all_chunks.len();
+                let only_chunk_ids: Option<std::collections::HashSet<i64>> = match &chunk_ids {
+                    Some(path) => {
+                        let ids: std::collections::HashSet<i64> = std::fs::read_to_string(path)
+                            .with_context(|| format!("reading {}", path.display()))?
+                            .lines()
+                            .map(str::trim)
+                            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                            .map(|l| l.parse::<i64>().with_context(|| format!("chunk id `{l}`")))
+                            .collect::<Result<_>>()?;
+                        let in_kb = ids.iter().filter(|id| kb_chunk_ids.contains(id)).count();
+                        if in_kb != ids.len() {
+                            anyhow::bail!(
+                                "--chunk-ids: {} of {} ids are not chunks of this KB",
+                                ids.len() - in_kb,
+                                ids.len()
+                            );
+                        }
+                        let kept = all_chunks.iter().filter(|(id, _)| ids.contains(id)).count();
+                        if kept != ids.len() {
+                            print_warning(&format!(
+                                "--chunk-ids: {} of {} listed chunks are excluded by --docs/--limit/--sample and will not be extracted",
+                                ids.len() - kept,
+                                ids.len()
+                            ));
+                        }
+                        Some(ids)
+                    }
+                    None => None,
+                };
 
                 if total == 0 {
                     print_warning(
@@ -3665,7 +3797,13 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 if let Some(pct) = sample_pct {
                     println!("  Sample:            {pct}% of corpus");
                 }
-                println!("  Chunks to process: {total}");
+                match &only_chunk_ids {
+                    Some(ids) => println!(
+                        "  Chunks to process: {} of {total} (--chunk-ids; neighbours read as context)",
+                        ids.len()
+                    ),
+                    None => println!("  Chunks to process: {total}"),
+                }
                 if !extra_urls.is_empty() {
                     println!("  Inference URLs:    {}", extra_urls.join(", "));
                     println!("  Workers:           {effective_workers}");
@@ -3696,6 +3834,20 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                         .context("opening graph store")?,
                 ));
+                {
+                    let g = store.lock().unwrap();
+                    for (warn, line) in vocabulary_report(
+                        g.ontology(),
+                        &parsed_entity_types,
+                        &parsed_relation_types,
+                    ) {
+                        if warn {
+                            print_warning(&line);
+                        } else {
+                            println!("  {line}");
+                        }
+                    }
+                }
                 let gliner_client = gliner_url.as_deref().map(|url| {
                     println!("  GLiNER NER:        {url}");
                     kwaai_rag::gliner::GliNERClient::new(url, 0.4)
@@ -3728,6 +3880,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     relation_types: parsed_relation_types,
                     no_relations,
                     context_window: graph_window,
+                    only_chunk_ids: only_chunk_ids.clone(),
                     gliner_client,
                     entity_centric,
                     chunk_batch,
@@ -10786,6 +10939,14 @@ async fn cmd_graph_schema(action: SchemaAction, kb: &str) -> Result<()> {
                 let mut store = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
                     .context("opening graph store")?;
                 store.set_ontology(&ont).context("storing ontology")?;
+                if store.doc_ontologies_checked().ok().flatten().is_some() {
+                    store
+                        .clear_doc_ontologies()
+                        .context("clearing per-document ontologies")?;
+                    print_warning(
+                        "Cleared this KB's per-document ontology choices: they would shadow the ontology just loaded. Re-run `graph schema select` to choose again.",
+                    );
+                }
                 print_success(&format!(
                     "Loaded ontology '{}' v{} into KB '{kb}'",
                     ont.ontology.name, ont.ontology.version
@@ -10804,6 +10965,164 @@ async fn cmd_graph_schema(action: SchemaAction, kb: &str) -> Result<()> {
                 match ont.fallback_predicate.as_deref() {
                     Some(p) => println!("  Fallback:        {p}"),
                     None => println!("  Fallback:        none — a vague edge is a bug here"),
+                }
+            }
+
+            SchemaAction::Select {
+                library,
+                kb: _,
+                dry_run,
+                sample,
+                min_share,
+                explain,
+                own_corpus,
+            } => {
+                use kwaai_rag::ontology_select::{select, DocOntologies, Library, SelectConfig};
+                let (lib, errors) = Library::load_dir(&library)
+                    .with_context(|| format!("reading ontology library {}", library.display()))?;
+                for e in &errors {
+                    print_warning(&format!("library: {e}"));
+                }
+                if lib.candidates.is_empty() {
+                    anyhow::bail!("no ontologies in {}", library.display());
+                }
+                let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
+                let mut chunks = meta.all_chunks()?;
+                kwaai_rag::meta_store::sort_document_order(&mut chunks);
+                let mut by_doc: std::collections::BTreeMap<String, Vec<String>> =
+                    Default::default();
+                for (_, cm) in chunks {
+                    if !cm.skip_extraction {
+                        by_doc.entry(cm.doc_name).or_default().push(cm.text);
+                    }
+                }
+                // The KB's own corpus ontology: named, or already stored (loaded by
+                // hand, or kept from an earlier selection).
+                let (existing, current) = {
+                    let g = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                        .context("opening graph store")?;
+                    let existing = g.doc_ontologies_checked().context(
+                        "reading this KB's per-document ontologies (fix or clear them before selecting)",
+                    )?;
+                    (existing, g.ontology().cloned())
+                };
+                let own_corpus = own_corpus.or_else(|| {
+                    let corpus = |o: &kwaai_rag::ontology::Ontology| {
+                        (o.scope.as_deref() == Some("corpus")).then(|| o.ontology.name.clone())
+                    };
+                    current
+                        .as_ref()
+                        .and_then(corpus)
+                        .or_else(|| existing.as_ref()?.own_corpus())
+                });
+                let cfg = SelectConfig {
+                    sample,
+                    min_share,
+                    own_corpus: own_corpus.clone(),
+                    ..Default::default()
+                };
+                print_box_header(&format!("Ontology selection ({kb})"));
+                println!(
+                    "  Library: {} ({} ontologies)  ·  documents: {}  ·  min share {:.2}\n",
+                    library.display(),
+                    lib.candidates.len(),
+                    by_doc.len(),
+                    min_share
+                );
+                let excluded: Vec<&str> = lib
+                    .candidates
+                    .iter()
+                    .filter(|c| {
+                        c.ontology.scope.as_deref() == Some("corpus")
+                            && own_corpus.as_deref() != Some(c.name.as_str())
+                    })
+                    .map(|c| c.name.as_str())
+                    .collect();
+                if !excluded.is_empty() {
+                    println!(
+                        "  Other corpora's ontologies, never chosen here: {}",
+                        excluded.join(", ")
+                    );
+                }
+                if let Some(o) = &own_corpus {
+                    println!("  This KB's own corpus ontology: {o}");
+                }
+                let silent: Vec<&str> = lib
+                    .candidates
+                    .iter()
+                    .filter(|c| c.term_count() == 0)
+                    .map(|c| c.name.as_str())
+                    .collect();
+                if !silent.is_empty() {
+                    println!(
+                        "  No distinctive vocabulary, cannot be chosen: {}",
+                        silent.join(", ")
+                    );
+                }
+                println!();
+                // A re-selection keeps the KB's hand-loaded base ontology.
+                let mut out = DocOntologies {
+                    base: existing.as_ref().and_then(|d| d.base.clone()),
+                    ..Default::default()
+                };
+                for (doc, texts) in &by_doc {
+                    let choice = select(&lib, doc, texts, &cfg);
+                    let Some(best) = choice.scores.first() else {
+                        anyhow::bail!(
+                            "no ontology in {} is eligible for KB '{kb}' (all corpus-scoped, and none is this KB's own)",
+                            library.display()
+                        );
+                    };
+                    let runner = choice.scores.get(1);
+                    let short: String = doc.chars().take(46).collect();
+                    println!(
+                        "  {:<46}  {:<28}  {:>4.0}%  next: {} {:.0}%  {}",
+                        short,
+                        choice.ontology.as_deref().unwrap_or("— none —"),
+                        best.share * 100.0,
+                        runner.map_or("-", |r| r.ontology.as_str()),
+                        runner.map_or(0.0, |r| r.share * 100.0),
+                        choice.doc_type.as_deref().unwrap_or("")
+                    );
+                    if explain {
+                        for sc in choice.scores.iter().take(2) {
+                            println!("      {:<26} {}", sc.ontology, sc.top_terms.join(" · "));
+                        }
+                    }
+                    if let Some(name) = &choice.ontology {
+                        if let Some(c) = lib.get(name) {
+                            out.ontologies.insert(name.clone(), c.ontology.clone());
+                        }
+                    }
+                    out.docs.insert(doc.clone(), choice);
+                }
+                let chosen = out.docs.values().filter(|d| d.ontology.is_some()).count();
+                println!();
+                if dry_run {
+                    print_info(&format!(
+                        "Dry run: {chosen} of {} documents would get an ontology; nothing stored.",
+                        out.docs.len()
+                    ));
+                } else {
+                    let mut store =
+                        kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                            .context("opening graph store")?;
+                    store
+                        .set_doc_ontologies(&out, kb)
+                        .context("storing ontology choices")?;
+                    let union = out.union(kb);
+                    print_success(&format!(
+                        "Stored ontologies for {chosen} of {} documents ({} distinct).",
+                        out.docs.len(),
+                        out.ontologies.len()
+                    ));
+                    if let Some(u) = union {
+                        println!(
+                            "  KB ontology (union): {} entity types, {} relation types",
+                            u.entity_types.len(),
+                            u.relation_types.len()
+                        );
+                    }
                 }
             }
 
@@ -10832,5 +11151,126 @@ async fn cmd_graph_schema(action: SchemaAction, kb: &str) -> Result<()> {
         }
 
         Ok(())
+    }
+}
+
+/// What vocabulary a graph build will use, for its header: the stored
+/// ontology (with its inherited modules) or the compiled defaults, plus a
+/// warning for each CLI flag that overrides the ontology. Eval v2 built five
+/// corpora on the compiled defaults and nothing in any log said so.
+fn vocabulary_report(
+    ont: Option<&kwaai_rag::ontology::Ontology>,
+    cli_entity_types: &[String],
+    cli_relation_types: &[String],
+) -> Vec<(bool, String)> {
+    let Some(o) = ont.filter(|o| !o.is_empty()) else {
+        return vec![(
+            false,
+            "Ontology:          none stored — compiled default vocabulary".to_string(),
+        )];
+    };
+    let chain = if o.ontology.inherited.is_empty() {
+        String::new()
+    } else if o.ontology.extends.as_deref() == Some("union") {
+        format!(
+            " (union of {}; each document uses its own)",
+            o.ontology.inherited.join(", ")
+        )
+    } else {
+        format!(" (extends {})", o.ontology.inherited.join(" → "))
+    };
+    let mut out = Vec::new();
+    // An ontology stored before `extends:` was resolved (or before rules moved
+    // into the ontology) is missing its module and its extraction rules.
+    if o.ontology.inherited.is_empty()
+        && o.ontology
+            .extends
+            .as_deref()
+            .is_some_and(|e| e != "none" && e != "union")
+    {
+        out.push((
+            true,
+            format!(
+                "stored ontology '{}' names `extends: {}` but was never resolved; re-run `graph schema load` so its module and rules apply",
+                o.ontology.name,
+                o.ontology.extends.as_deref().unwrap_or_default()
+            ),
+        ));
+    }
+    out.push((
+        false,
+        format!(
+            "Ontology:          {}{chain} — {} entity types, {} relation types",
+            o.ontology.name,
+            o.entity_types.len(),
+            o.relation_types.len()
+        ),
+    ));
+    let overridden = |cli: &[String], declared: Vec<&str>| -> Vec<String> {
+        declared
+            .into_iter()
+            .filter(|d| !cli.iter().any(|c| c.eq_ignore_ascii_case(d)))
+            .map(str::to_string)
+            .collect()
+    };
+    if !cli_entity_types.is_empty() {
+        let dropped = overridden(cli_entity_types, o.entity_type_names());
+        if !dropped.is_empty() {
+            out.push((
+                true,
+                format!(
+                    "--entity-types overrides the stored ontology; not extracted: {}",
+                    dropped.join(", ")
+                ),
+            ));
+        }
+    }
+    if !cli_relation_types.is_empty() {
+        let dropped = overridden(cli_relation_types, o.relation_type_names());
+        if !dropped.is_empty() {
+            out.push((
+                true,
+                format!(
+                    "--relation-types overrides the stored ontology; not offered: {}",
+                    dropped.join(", ")
+                ),
+            ));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod vocabulary_report_tests {
+    use super::vocabulary_report;
+    use kwaai_rag::ontology::Ontology;
+
+    #[test]
+    fn a_build_without_an_ontology_says_so() {
+        let r = vocabulary_report(None, &[], &[]);
+        assert_eq!(r.len(), 1);
+        assert!(!r[0].0 && r[0].1.contains("compiled default"), "{r:?}");
+    }
+
+    #[test]
+    fn the_ontology_and_its_modules_are_named() {
+        let o = Ontology::from_yaml("ontology: { name: climate, extends: scholarly }\n").unwrap();
+        let r = vocabulary_report(Some(&o), &[], &[]);
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert!(r[0].1.contains("climate (extends scholarly)"), "{r:?}");
+    }
+
+    /// The eval drivers passed `--entity-types` on every build, which would
+    /// have replaced a stored ontology's types without a word.
+    #[test]
+    fn a_cli_override_is_a_warning_naming_what_it_drops() {
+        let o = Ontology::from_yaml("ontology: { name: climate, extends: scholarly }\n").unwrap();
+        let r = vocabulary_report(Some(&o), &["Person".into(), "Publication".into()], &[]);
+        let warn = r.iter().find(|(w, _)| *w).expect("a warning");
+        assert!(warn.1.contains("Finding"), "{warn:?}");
+        assert!(
+            !warn.1.contains("Publication"),
+            "a kept type is not reported: {warn:?}"
+        );
     }
 }

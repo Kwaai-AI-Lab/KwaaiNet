@@ -65,7 +65,7 @@ pub async fn run(port: u16, inference_url: String, top_k: usize, kb: String) -> 
 
         let cfg = KwaaiNetConfig::load_or_create()?;
         let rag = cfg.get_rag_kb(&kb).cloned().with_context(|| {
-            format!("KB '{kb}' not initialised. Run: kwaainet rag init --name {kb}")
+            format!("KB '{kb}' not initialised. Run: kwaainet rag init --kb {kb}")
         })?;
 
         let tenant_id: Uuid = rag.tenant_id.as_deref().context("no tenant_id")?.parse()?;

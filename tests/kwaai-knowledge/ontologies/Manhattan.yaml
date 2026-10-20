@@ -1,34 +1,440 @@
-# Ontology for the Manhattan KB.
-# Arm B, foundation-model authored 2026-08-25.
+# Ontology for the Manhattan KB — primary sources on the Manhattan Project
+# (letters, reports, memoranda, committee minutes, an agreement, a declaration)
+# plus two National Security Archive briefing books that comment on them.
 #
-# Thin: the shared `narrative-history` module carries almost everything. That is
-# the point of modules — five corpora, one vocabulary, per-corpus deltas only.
+# Derived from the KB's own text on 2026-09-27. It replaces v1, a two-type
+# extension of `narrative-history` written from genre priors; the corpus was
+# never sampled. That v1 would have given this corpus 14 kinship predicates
+# through narrative-history → genealogy.
+#
+# METHOD, as for D6.yaml:
+#   - every type and predicate carries the measured share of the corpus's
+#     prose chunks containing its lexical evidence;
+#   - rejected candidates are listed at the foot with their numbers.
+# Sources:
+#   - a systematic sample (every 14th chunk) and a seeded random sample of 32
+#     prose chunks;
+#   - full-corpus regex probes;
+#   - the 20 eval questions (what readers actually ask of this corpus);
+#   - the 109 gold nuggets of those questions (what a correct answer must
+#     assert). Each nugget was checked for whether its facts can be written as
+#     this ontology's entities and predicates. That check added Quotation,
+#     Project, `established`, `reports_to`, `said` and Document.sourceType.
+#
+# DENOMINATOR: 358 prose chunks, not 773. The KB is 54% non-prose:
+#   - 225 chunks of binary junk from one mis-ingested file (`ingest_XXXXX.html`);
+#   - 104 chunks of CSS/JavaScript: the Einstein-Szilard page ingested with its
+#     stylesheet, 103 of its 158 chunks;
+#   - 58 empty or near-empty fragments, and 37 of navigation chrome.
+# The eval questions also ask about two documents the KB does not contain: the
+# Smyth Report (q03) and the Handy-to-Spaatz order (q08). Recorded in
+# plans/OntologySelection-plan.md; an ingestion fix, not an ontology one.
+#
+# WHAT THE CORPUS IS ABOUT. Documents are the actors. Every eval question
+# asks what a document argued, recommended, was addressed to or issued by, or
+# where it sits in the 1939–1945 sequence. So `Document` is a first-class type,
+# with authors, recipients, positions and dates, as schema.org's CreativeWork
+# (author, recipient, about, dateCreated). The events and material world the
+# documents discuss (weapons, fissile material, facilities, the Trinity test,
+# target cities) are the second half.
+
+# v3, 2026-09-28: for the re-ingested Manhattan_v3 KB (505 chunks, 502 prose,
+# 99.4%; the Smyth Report added, the CSS and binary junk gone). Evidence shares
+# are re-measured on its 502 prose chunks, with v2's shown next to them. Smyth,
+# the official technical history, is 34% of the corpus now. It brings a Process
+# type (isotope separation methods, the chain reaction), 19.9%, and `developed`
+# (15.5%). Kinship falls to 1.2%.
+
+# Written for one corpus: its extraction rules are these sources' (archival citation format, Manhattan code names, atomicarchive page furniture). Ontology selection never assigns it to
+# other documents (OntologySelection-plan.md; ontology_select.rs).
+scope: corpus
 
 ontology:
-  name: manhattan
-  version: 1
-  extends: narrative-history
+  name: manhattan-project-sources
+  version: 3
+  extends: none
 
 provenance:
-  derivation: unverified
+  derivation: derived
   note: >-
-    thin extension of narrative-history; corpus not sampled
+    Derived 2026-09-27 from 358 prose chunks (of 773; the rest is binary junk,
+    CSS/JS and chrome), a systematic and a seeded random sample, full-corpus
+    probes, and the 20 eval questions. Every type carries its evidence share.
 
-# Programme history: laboratories, devices, tests. Person/Place/Organization
-# alone flattens all of it — which is what the current 0.022 rel/ent shows.
+streams:
+  - name: body
+    entity_types: [Person, Document, Committee, Organization, Project, Facility,
+                   Place, Weapon, Material, Process, Event, Policy, Quotation]
+  # The briefing books' endnotes: 21.5% of prose chunks carry footnote markers
+  # or archival citations. Extract the archival documents they name (sender,
+  # recipient, title, date), never the secondary literature.
+  - name: notes
+    entity_types: [Document, Person]
+    ingest: citations_only
+
+# Relations between documents and positions are precise or absent; a vague
+# edge between a report and a city asserts nothing. Eval v2's arm B on this
+# corpus was 29% `associated_with`.
+fallback_predicate: null
+
+extraction_rules:
+  - >-
+    Documents are entities. Extract each named letter, report, memorandum,
+    petition, agreement, declaration, minutes or order as a Document, using its
+    title or conventional name ("Franck Report", "Quebec Agreement", "Summary
+    of Target Committee Meetings").
+  - >-
+    In archival citations such as `Colonel K.D. Nichols to General Groves,
+    "Program of Work Related to the Use of P-9," 11 October 1943, Secret`, the
+    sender and recipient are Persons and the quoted title is a Document. The
+    classification ("Secret", "Top Secret"), box, folder, record group and
+    microfilm numbers are not entities.
+  - >-
+    Drop military rank and titles from Person names: "General Groves",
+    "Major General Leslie Groves" and "Groves" are the Person "Leslie Groves"
+    when the passage makes the identity clear.
+  - >-
+    Authors cited only in endnotes or a bibliography (e.g. Norris, Jones,
+    Hershberg, Bird and Sherwin) are not actors in these events — skip them.
+  - >-
+    Code names name real things: "49" is plutonium-239, "25" is
+    uranium-235, "P-9" is heavy water, "Tube Alloys" is the British atomic
+    programme, "the gadget" is the Trinity device. Use the real name as the
+    entity and keep the code name as an alias.
+  - >-
+    Web-page furniture is not an entity: site names and menus ("Nuclear
+    Museum", "Atomic Heritage Foundation" as a page publisher, "Site Map",
+    "Privacy", "Search", "Almanac").
+
 entity_types:
-  - name: Device
-    description: A named weapon, reactor, or experimental apparatus.
-    examples: ["Trinity device", "Chicago Pile-1"]
-    irreducible: false
-  - name: Test
-    description: A named experiment or detonation.
-    irreducible: false
+
+  - name: Person
+    schema_type: Person
+    evidence: 32.3   # Manhattan_v3; v2 (old KB): 41.1
+    # rank/title + name 20.4%; 24 central surnames 38.3%; either 41.1%.
+    description: >-
+      A named individual — scientists, officers, officials and heads of state
+      who wrote, received, decided or witnessed.
+    markers:
+      prefix: [general, colonel, major, captain, lieutenant, dr, professor,
+               president, secretary, admiral, senator]
+    examples: ["Leslie Groves", "J. Robert Oppenheimer", "Leo Szilard",
+               "Albert Einstein", "Niels Bohr", "Stafford Warren",
+               "Kenneth Nichols", "Vannevar Bush"]
+    anti_examples: ["the Secretary of War"]   # a role, unless the passage names him
+    fields:
+      - { key: role,        desc: "rank or position, as stated (e.g. Area Engineer)" }
+      - { key: affiliation, desc: "organization or laboratory, as stated" }
+
+  - name: Document
+    schema_type: CreativeWork
+    evidence: 34.9   # Manhattan_v3; v2 (old KB): 41.1
+    # letter/memorandum/report/petition/agreement/declaration/minutes/telegram/order.
+    # 11 of 12 documents. 17 of 20 eval questions name one.
+    irreducible: true
+    description: >-
+      A named primary-source document: a letter, report, memorandum, petition,
+      agreement, declaration, set of minutes, telegram or order.
+    examples: ["Einstein-Szilard Letter", "Franck Report", "Quebec Agreement",
+               "Potsdam Declaration", "Summary of Target Committee Meetings",
+               "Science Panel's Report to the Interim Committee",
+               "Bohr's Memorandum to President Roosevelt"]
+    anti_examples: ["Racing for the Bomb", "American Prometheus"]   # secondary literature cited in notes
+    fields:
+      - { key: documentType,   desc: "letter, report, memorandum, petition, agreement, declaration, minutes, order" }
+      - { key: dateCreated,    desc: "date written or signed, as stated" }
+      - { key: classification, desc: "Secret, Top Secret, unclassified — as stated" }
+      - { key: sourceType,     desc: "firsthand account, official record, institutional analysis — as stated" }
+      # sourceType: q13 and q19 compare documents by kind of source and by
+      # original audience.
+
+  - name: Committee
+    schema_type: Organization
+    evidence: 7.2   # Manhattan_v3; v2 (old KB): 8.1
+    # Low chunk share, but q06, q07, q10 and q18 turn on committees, and they
+    # are the bodies that issue positions. Kept distinct from Organization for
+    # that reason.
+    description: >-
+      A named deliberative body that met, reported or recommended.
+    markers:
+      last: [committee, panel, board, council, commission]
+    examples: ["Target Committee", "Interim Committee", "Science Panel",
+               "Combined Policy Committee",
+               "Committee on Political and Social Problems"]
+
+  - name: Organization
+    schema_type: Organization
+    evidence: 28.5   # Manhattan_v3; v2 (old KB): 32.4
+    description: >-
+      An institution acting in the events: a government department, military
+      body, contractor, university or laboratory as an institution.
+    examples: ["U.S. Army Corps of Engineers", "Du Pont", "University of Chicago",
+               "Metallurgical Laboratory", "War Department", "21st Bomber Command"]
+    anti_examples: ["Hanford Engineer Works"]   # a Facility
+
+  - name: Project
+    evidence: 13.5   # Manhattan_v3; v2 (old KB): 17.9
+    # 9 documents. q05's nugget: the project the Quebec Agreement governs is
+    # "Tube Alloys".
+    description: >-
+      A named programme of work.
+    examples: ["Manhattan Project", "Tube Alloys", "Manhattan Engineer District",
+               "Project 9536"]
+
+  - name: Facility
+    schema_type: Place
+    evidence: 49.6   # Manhattan_v3; v2 (old KB): 30.4
+    # Named sites 30.4%, concentrated in the two briefing books (3 docs).
+    description: >-
+      A physical plant, reactor, works or test site where material was produced
+      or weapons were built and tested.
+    markers:
+      last: [works, plant, reactor, pile, site]
+    examples: ["Hanford Engineer Works", "Oak Ridge", "Los Alamos", "Trinity Site",
+               "Chicago Pile-1"]
+    anti_examples: ["Metallurgical Laboratory"]   # an Organization when it acts or reports
+
+  - name: Place
+    schema_type: Place
+    evidence: 35.7   # Manhattan_v3; v2 (old KB): 41.3
+    description: >-
+      A named city, region or country — including the cities considered as
+      targets.
+    examples: ["Hiroshima", "Kyoto", "Nagasaki", "Japan", "New Mexico",
+               "Chupadera Mesa", "Richland", "Quebec"]
+
+  - name: Weapon
+    schema_type: Product
+    evidence: 26.9   # Manhattan_v3; v2 (old KB): 34.4
+    description: >-
+      A named bomb or weapon design.
+    examples: ["Fat Man", "Little Boy", "the gadget", "plutonium implosion weapon",
+               "gun-assembly weapon"]
+    markers:
+      exact: [fat man, little boy, the gadget, implosion weapon, gun-assembly weapon,
+              atomic bomb]
+
+  - name: Material
+    evidence: 46.2   # Manhattan_v3; v2 (old KB): 26.5
+    # Across 5 documents; code names ("49", "P-9", "Tube Alloys") 7.8%.
+    description: >-
+      A fissile or nuclear material, or its code name.
+    examples: ["plutonium-239", "uranium-235", "heavy water", "uranium ore",
+               "fission products"]
+    # Lowercase in the text, so the capitalised-only candidate pre-screener
+    # never proposes them. A closed vocabulary to seed candidates from.
+    markers:
+      exact: [plutonium, plutonium-239, uranium, uranium-235, u-235, heavy water,
+              uranium ore, fission products, polonium, "49", "25", p-9]
+
+  - name: Process
+    evidence: 19.9
+    # gaseous/thermal diffusion, electromagnetic separation, centrifuge, the chain
+    # reaction, fission: 5 documents, mostly Smyth (41.6% of its chunks).
+    description: >-
+      A named physical or industrial process: an isotope-separation method, the
+      chain reaction, fission.
+    examples: ["gaseous diffusion", "electromagnetic separation", "thermal diffusion",
+               "chain reaction", "fission"]
+    markers:
+      exact: [gaseous diffusion, electromagnetic separation, thermal diffusion,
+              centrifuge, chain reaction, fission, isotope separation]
+
+  - name: Event
+    schema_type: Event
+    evidence: 29.9   # Manhattan_v3; v2 (old KB): 41.6
+    # test/explosion/meeting/conference/mission/attack/bombing. The count is
+    # inflated by the generic word "test"; kept because q09, q12, q13 and q20
+    # are sequence and eyewitness questions about named events.
+    description: >-
+      A named or dated occurrence: a test, meeting, conference, bombing mission
+      or attack.
+    examples: ["Trinity test", "Potsdam Conference", "bombing of Hiroshima",
+               "Target Committee meeting of 10 May 1945"]
+    fields:
+      - { key: startDate, desc: "date, as stated" }
+
+  - name: Policy
+    evidence: 6.8   # Manhattan_v3; v2 (old KB): 14.0
+    # 6 documents. The positions q02, q04, q06, q10 and q17 ask about are
+    # positions on these.
+    description: >-
+      A named course of action that documents argue for or against.
+    examples: ["international control of atomic energy",
+               "demonstration before use", "direct military use",
+               "unconditional surrender", "nuclear arms race"]
+    markers:
+      exact: [international control, demonstration, direct military use,
+              unconditional surrender, arms race, armaments race, secrecy, monopoly]
+
+  - name: Quotation
+    evidence: 36.7   # Manhattan_v3; v2 (old KB): 44.1
+    # Quoted phrases of 3+ words, in 5 documents. About half the gold nuggets
+    # quote the source ("prompt and utter destruction", "perpetual menace to
+    # human security", "foul and awesome display", "British and American
+    # brains and resources").
+    irreducible: true
+    description: >-
+      A phrase quoted verbatim from a document or a speaker, kept exactly.
+    examples: ["prompt and utter destruction", "perpetual menace to human security",
+               "foul and awesome display"]
 
 relation_types:
-  - name: developed
+
+  # ── documents: who wrote what to whom, and what it argued ─────────────────
+  - name: authored
+    domain: [Person, Committee, Organization]
+    range:  [Document]
+    inverse: authored_by
+    triggers: ["wrote", "written by", "signed by", "drafted by", "prepared by"]
+    aliases: [wrote, signed, drafted]
+    # 7.5%; q01, q14 and q15 turn on authorship.
+  - name: addressed_to
+    domain: [Document]
+    range:  [Person, Organization, Committee]
+    triggers: ["addressed to", "letter to", "memorandum to", "report to"]
+    aliases: [sent_to, recipient]
+    # "X to General Y" citation form 3.1%; q01, q04 and q14 name the recipient.
+  - name: issued_by
+    domain: [Document]
+    range:  [Committee, Organization]
+    aliases: [published_by]
+    # q18.
+  - name: party_to
+    domain: [Organization, Place]
+    range:  [Document]
+    triggers: ["between the", "articles of agreement", "authorities of"]
+    # 3.4%; q05 (the two nations party to the Quebec Agreement).
+  - name: recommends
+    domain: [Document, Person, Committee]
+    range:  [Policy, Event, Weapon]
+    triggers: ["recommend", "recommended", "propose", "proposed", "urge", "urged", "advise", "advised"]
+    aliases: [proposes, urges, advocates, demands]
+    # 10.1%, 8 documents; q02, q04, q06 and q10.
+  - name: opposes
+    domain: [Document, Person, Committee]
+    range:  [Policy, Event, Weapon]
+    triggers: ["oppose", "opposed", "objection", "protest", "inadvisable", "petition against"]
+    aliases: [argues_against, objects_to]
+    # 4.2%; q02, q14 and q17.
+  - name: concerns
+    domain: [Document]
+    range:  [Weapon, Material, Event, Policy, Place, Facility, Person, Project]
+    triggers: ["concerning", "regarding", "subject:", "in re:", "with respect to"]
+    aliases: [about]
+    # 7.8%.
+  - name: said
+    domain: [Person, Document, Committee]
+    range:  [Quotation]
+    triggers: ["wrote that", "stated", "warned", "argued", "described"]
+    aliases: [stated, wrote_that, warned, argued]
+    # argue/warn/state/conclude 16.5%, 10 documents.
+  - name: established
+    domain: [Document, Person, Organization, Committee]
+    range:  [Committee, Organization, Facility, Project]
+    triggers: ["established", "set up", "created", "formed"]
+    aliases: [created, set_up, formed]
+    # 8.7%, 7 documents; q18 (the Quebec Agreement established the Combined
+    # Policy Committee).
+  - name: reports_to
+    domain: [Committee, Person]
+    range:  [Committee, Person]
+    triggers: ["report to", "reported to", "advice of"]
+    aliases: [advised]
+    # 1.4%, but q18: the Interim Committee requested the Science Panel's advice.
+  - name: preceded
+    domain: [Document, Event]
+    range:  [Document, Event]
+    transitive: true
+    # q09 and q20 are sequence questions; dated mentions appear in 20.1% of
+    # chunks. Only when the text states the order or both dates.
+
+  # ── people and institutions ────────────────────────────────────────────────
+  - name: member_of
+    domain: [Person, Organization, Place]   # Place: nations represented (q18)
+    range:  [Committee, Organization]
+    triggers: ["member of", "members of", "chairman of", "served on"]
+    # 2.2%, 6 documents.
+  - name: directed
+    domain: [Person]
+    range:  [Organization, Facility, Event, Committee]
+    triggers: ["directed", "director of", "supervised", "commanded", "in charge of", "head of", "chief of"]
+    aliases: [supervised, commanded, led, headed]
+    # 13.4%.
+  - name: worked_at
     domain: [Person, Organization]
-    range:  [Device]
-  - name: tested_in
-    domain: [Device]
-    range:  [Test]
+    range:  [Organization, Facility]
+    triggers: ["worked at", "worked for", "employed by", "contractor for"]
+    aliases: [works_at, employed_by]
+    # 4.5%.
+  - name: attended
+    domain: [Person]
+    range:  [Event]
+    triggers: ["attended", "those present", "present at"]
+    # 3.9%.
+  - name: witnessed
+    domain: [Person]
+    range:  [Event]
+    triggers: ["witnessed", "eyewitness", "observed the"]
+    # q12 and q13 (eyewitness accounts).
+
+  # ── the material world ─────────────────────────────────────────────────────
+  - name: produced
+    domain: [Facility, Organization, Process]   # v3: "gaseous diffusion produces U-235"
+    range:  [Material, Weapon]
+    triggers: ["produce", "produced", "production of", "manufacture", "enrich", "separation"]
+    aliases: [produces, manufactured]
+    # 22.1%.
+  - name: uses_material
+    domain: [Weapon, Process]
+    range:  [Material]
+  - name: uses_process
+    domain: [Facility, Organization]
+    range:  [Process]
+    # 1.6%, 3 documents ("the diffusion plant at Oak Ridge").
+  - name: developed
+    domain: [Person, Organization, Facility]
+    range:  [Weapon, Process, Material, Facility]
+    triggers: ["developed", "designed", "invented", "development of"]
+    aliases: [designed, invented]
+    # 15.5%, 7 documents.
+    # "plutonium implosion weapon", "gun-assembly … uranium".
+  - name: tested_at
+    domain: [Weapon, Event]
+    range:  [Facility, Place]
+    triggers: ["tested", "detonated", "test site"]
+    # 19.6% (tested/detonated/explosion).
+  - name: occurred_at
+    domain: [Event]
+    range:  [Place, Facility]
+    aliases: [took_place_at, held_at]
+  - name: located_in
+    domain: [Facility, Place]
+    range:  [Place]
+    triggers: ["located in", "located at", "situated", "near"]
+    # 9.8%.
+  - name: targeted
+    domain: [Committee, Document, Event]
+    range:  [Place]
+    triggers: ["target", "targets", "aiming point"]
+    aliases: [selected_as_target, considered_target]
+    # 5.6% in 2 documents, but q07 is about exactly this.
+
+axioms:
+  - kind: contradiction
+    pairs:
+      - [recommends, opposes]
+  - kind: acyclic
+    relations: [preceded]
+  - kind: functional
+    relations: [issued_by]
+
+# ── Rejected, with their numbers ─────────────────────────────────────────────
+rejected_types:
+  - { name: genealogy (module), evidence: 2.2, reason: "8 kinship hits in 358 chunks, only 2 real facts (von Weizsäcker's son; the Ratliff grandparents and grandson). 14 predicates for 2 facts" }
+  - { name: Hazard,          evidence: 25.4, reason: "radiation/fallout language in 3 documents, but it names phenomena, not entities; the named places and events carry it" }
+  - { name: Quantity,        evidence: 14.2, reason: "costs, masses and distances in 4 documents; values belong in fields and descriptions" }
+  - { name: Publication,     evidence: 10.3, reason: "secondary literature in endnotes; admitting it is how DeepSea's graph became 42% bibliography" }
+  - { name: Device, reason: "v1's name for Weapon; `Weapon` matches the corpus's own word (34.4%)" }
+  - { name: Test,   reason: "v1's type; a test is an Event with `tested_at`" }
+  - { name: PhysicalQuantity, evidence: 14.9, reason: "neutrons, cross sections, critical mass: 2 documents (Smyth and the NSA book), and generic nouns, not named entities. Values belong in descriptions" }

@@ -31,6 +31,11 @@ pub struct OntologyHeader {
     /// Name of a built-in module to inherit from, or "none".
     #[serde(default)]
     pub extends: Option<String>,
+    /// The resolved `extends:` chain, nearest first, e.g.
+    /// `["narrative-history", "genealogy"]`. Set by the loader; a stored
+    /// ontology with this set is already resolved and is never spliced again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inherited: Vec<String>,
 }
 fn one() -> u32 {
     1
@@ -180,6 +185,28 @@ pub struct Ontology {
     /// Gender of the narrator, when the corpus states one.
     #[serde(default)]
     pub narrator_gender: Option<String>,
+    /// Corpus-specific rules added to the entity-extraction prompt, one bullet
+    /// each. The compiled prompt used to carry one corpus's names and vocabulary
+    /// to every corpus; they now live in that corpus's ontology.
+    #[serde(default)]
+    pub extraction_rules: Vec<String>,
+    /// Rules added to the relation-extraction prompt. The kinship evidence rules
+    /// ("`spouse_of` only when the text says married…") belong to `genealogy`.
+    #[serde(default)]
+    pub relation_rules: Vec<String>,
+    /// The document types this ontology is for (`ontology_select::detect_doc_type`
+    /// names: CourtOpinion, Legislation, ScholarlyArticle, Book, Report). When a
+    /// document's type is detected, selection chooses among the ontologies that
+    /// declare it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub document_types: Vec<String>,
+    /// `"corpus"` for an ontology written for one corpus: it carries that
+    /// corpus's own rules (a memoir's family nicknames, Manhattan's archival citation
+    /// format), so it is never chosen automatically for other documents. It is
+    /// eligible only in a KB that already has it loaded. Absent = a domain
+    /// ontology, eligible everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// Built-in `genealogy` module: the 14 kinship predicates with their inverses,
@@ -273,6 +300,81 @@ fn genealogy_module() -> Vec<RelationTypeDef> {
     ]
 }
 
+/// Built-in modules an ontology may name in `extends:`.
+///
+/// `genealogy` is compiled. The others are the shared YAML modules in
+/// `tests/kwaai-knowledge/ontologies/`, embedded at build time so the binary
+/// and the analysis scripts read one copy.
+pub const BUILTIN_MODULES: &[&str] = &[
+    "genealogy",
+    "narrative-history",
+    "scholarly",
+    "software-docs",
+];
+
+fn builtin_module(name: &str, chain: &mut Vec<String>) -> anyhow::Result<Ontology> {
+    macro_rules! module_yaml {
+        ($file:literal) => {
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../tests/kwaai-knowledge/ontologies/",
+                $file
+            ))
+        };
+    }
+    let src = match name {
+        "genealogy" => {
+            let mut trig: HashMap<&str, Vec<String>> = HashMap::new();
+            for (phrase, rel) in genealogy_triggers() {
+                trig.entry(rel).or_default().push(phrase.to_string());
+            }
+            let relation_types = genealogy_module()
+                .into_iter()
+                .map(|mut r| {
+                    if let Some(ts) = trig.get(r.name.as_str()) {
+                        r.triggers = ts.clone();
+                    }
+                    r
+                })
+                .collect();
+            return Ok(Ontology {
+                ontology: OntologyHeader {
+                    name: "genealogy".into(),
+                    version: 1,
+                    ..Default::default()
+                },
+                relation_types,
+                relation_rules: genealogy_relation_rules(),
+                ..Default::default()
+            });
+        }
+        "narrative-history" => module_yaml!("_module_narrative_history.yaml"),
+        "scholarly" => module_yaml!("_module_scholarly.yaml"),
+        "software-docs" => module_yaml!("_module_software_docs.yaml"),
+        other => anyhow::bail!(
+            "unknown ontology module `extends: {other}` (known: {}, or `none`)",
+            BUILTIN_MODULES.join(", ")
+        ),
+    };
+    Ontology::from_yaml_resolving(src, chain)
+        .map_err(|e| anyhow::anyhow!("built-in ontology module `{name}`: {e}"))
+}
+
+/// Evidence rules for kinship edges, formerly compiled into every relation
+/// prompt. They are the reason 8B kinship precision is usable at all, and they
+/// mean nothing to a corpus without families.
+fn genealogy_relation_rules() -> Vec<String> {
+    [
+        "Use `spouse_of` ONLY when the text says \"married\", \"wife\", \"husband\", \"wed\", or \"betrothed\".",
+        "Use `child_of`/`parent_of` ONLY when the text says \"son of\", \"daughter of\", \"mother of\", \"father of\", or \"born to\".",
+        "Two people who share a common spouse are NOT `sibling_of` or `spouse_of` each other.",
+        "Do not create relations to generic family roles (\"Dad\", \"Granny\").",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// Trigger phrases for the genealogy module, mirroring the compiled
 /// FAMILY_RELATION_TRIGGERS so an inheriting ontology gets them too.
 fn genealogy_triggers() -> Vec<(&'static str, &'static str)> {
@@ -306,52 +408,160 @@ fn genealogy_triggers() -> Vec<(&'static str, &'static str)> {
 }
 
 impl Ontology {
+    /// Parse an ontology and resolve its `extends:` chain.
+    ///
+    /// An unknown module is an error. It used to be ignored silently, and
+    /// every ontology extending `narrative-history`, `scholarly` or
+    /// `software-docs` loaded without the module's types, relations and axioms.
     pub fn from_yaml(src: &str) -> anyhow::Result<Self> {
+        Self::from_yaml_resolving(src, &mut Vec::new())
+    }
+
+    fn from_yaml_resolving(src: &str, chain: &mut Vec<String>) -> anyhow::Result<Self> {
         let mut o: Self = serde_yaml::from_str(src)?;
-        o.resolve_extends();
+        // `fallback_predicate: null` and an absent key both deserialise to
+        // None; only an absent key inherits the module's.
+        let declares_fallback = serde_yaml::from_str::<serde_yaml::Value>(src)?
+            .get("fallback_predicate")
+            .is_some();
+        o.resolve_extends(chain, declares_fallback)?;
         Ok(o)
     }
 
-    /// Splice in a built-in module named by `extends`.
+    /// Splice in the module named by `extends`, recursively.
     ///
-    /// The KB's own declarations win: a predicate declared locally is left
-    /// alone, so an ontology can override an inherited one rather than being
-    /// stuck with it. Inherited predicates are appended, and their triggers
-    /// added only for predicates that gained no triggers of their own.
-    pub fn resolve_extends(&mut self) {
-        let module = match self.ontology.extends.as_deref() {
-            Some("genealogy") => genealogy_module(),
-            _ => return,
+    /// The KB's own declarations win: a type, predicate or stream declared
+    /// locally is left alone, so an ontology can override an inherited one
+    /// rather than being stuck with it. Inherited items are appended.
+    /// Resolution happens once: the stored form records the chain in
+    /// `ontology.inherited` and is not re-resolved.
+    fn resolve_extends(
+        &mut self,
+        chain: &mut Vec<String>,
+        declares_fallback: bool,
+    ) -> anyhow::Result<()> {
+        let name = match self.ontology.extends.as_deref() {
+            None | Some("none") => return Ok(()),
+            Some(n) => n.to_string(),
         };
-        let declared: std::collections::HashSet<String> = self
-            .relation_types
-            .iter()
-            .map(|r| r.name.to_lowercase())
-            .collect();
+        if !self.ontology.inherited.is_empty() {
+            return Ok(());
+        }
+        if chain.contains(&name) {
+            anyhow::bail!(
+                "ontology `extends:` cycle: {} -> {name}",
+                chain.join(" -> ")
+            );
+        }
+        chain.push(name.clone());
+        let module = builtin_module(&name, chain)?;
+        chain.pop();
 
-        let mut trig: HashMap<&str, Vec<String>> = HashMap::new();
-        for (phrase, rel) in genealogy_triggers() {
-            trig.entry(rel).or_default().push(phrase.to_string());
+        let had_types = !self.entity_types.is_empty();
+        let module_fallback = module.fallback_predicate.clone();
+        let module_chain = module.ontology.inherited.clone();
+        self.absorb(module);
+        if !declares_fallback {
+            self.fallback_predicate = module_fallback;
         }
-        for mut r in module {
-            if declared.contains(&r.name.to_lowercase()) {
-                continue; // local declaration wins
-            }
-            if let Some(ts) = trig.get(r.name.as_str()) {
-                r.triggers = ts.clone();
-            }
-            self.relation_types.push(r);
-        }
-        // Person must exist as a type for the inherited domain/range to admit
-        // anything; an ontology inheriting genealogy without it would reject
-        // every kinship edge it just gained.
-        if self.entity_type("Person").is_none() && !self.entity_types.is_empty() {
+
+        // A module that declares relations over Person but no types of its own
+        // (genealogy) would reject every edge it supplies unless Person exists.
+        if had_types && self.entity_type("Person").is_none() && name == "genealogy" {
             self.entity_types.push(EntityTypeDef {
                 name: "Person".into(),
                 description: "A named individual (inherited with the genealogy module).".into(),
                 ..Default::default()
             });
         }
+        self.ontology.inherited = std::iter::once(name).chain(module_chain).collect();
+        Ok(())
+    }
+
+    /// Merge `other` into `self`; declarations already in `self` win. Types,
+    /// predicates and streams are matched by name (case-insensitive); axioms,
+    /// rules and text rules are unioned. Used for `extends:` and for a KB's
+    /// union of per-document ontologies. The fallback predicate is left to the
+    /// caller: inheritance and union treat it differently.
+    pub fn absorb(&mut self, other: Ontology) {
+        let lc = |s: &str| s.to_lowercase();
+        let ents: std::collections::HashSet<String> =
+            self.entity_types.iter().map(|e| lc(&e.name)).collect();
+        let rels: std::collections::HashSet<String> =
+            self.relation_types.iter().map(|r| lc(&r.name)).collect();
+        let streams: std::collections::HashSet<String> =
+            self.streams.iter().map(|s| lc(&s.name)).collect();
+        self.entity_types.extend(
+            other
+                .entity_types
+                .into_iter()
+                .filter(|e| !ents.contains(&lc(&e.name))),
+        );
+        self.relation_types.extend(
+            other
+                .relation_types
+                .into_iter()
+                .filter(|r| !rels.contains(&lc(&r.name))),
+        );
+        self.streams.extend(
+            other
+                .streams
+                .into_iter()
+                .filter(|s| !streams.contains(&lc(&s.name))),
+        );
+        self.axioms.extend(other.axioms);
+        let tr = &mut self.text_rules;
+        tr.underscores_are_initials |= other.text_rules.underscores_are_initials;
+        for w in other.text_rules.stop_words {
+            if !tr.stop_words.contains(&w) {
+                tr.stop_words.push(w);
+            }
+        }
+        for (k, v) in other.text_rules.definite_descriptions {
+            tr.definite_descriptions.entry(k).or_insert(v);
+        }
+        if self.narrator_gender.is_none() {
+            self.narrator_gender = other.narrator_gender;
+        }
+        for (mine, theirs) in [
+            (&mut self.extraction_rules, other.extraction_rules),
+            (&mut self.relation_rules, other.relation_rules),
+        ] {
+            for r in theirs {
+                if !mine.contains(&r) {
+                    mine.push(r);
+                }
+            }
+        }
+    }
+
+    /// The union of several ontologies, for write-time validation and query
+    /// scope in a KB whose documents have different ontologies. Marked with
+    /// `extends: "union"` and its members in `inherited`; it is never
+    /// re-resolved, since `inherited` is set. It admits an
+    /// edge that any member declares, and has a fallback predicate only if
+    /// every member declares the same one.
+    pub fn union(name: &str, members: &[Ontology]) -> Ontology {
+        let mut u = Ontology {
+            ontology: OntologyHeader {
+                name: name.to_string(),
+                version: 1,
+                extends: Some("union".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for m in members {
+            u.absorb(m.clone());
+        }
+        let first = members.first().and_then(|m| m.fallback_predicate.clone());
+        u.fallback_predicate = first.filter(|f| {
+            members
+                .iter()
+                .all(|m| m.fallback_predicate.as_deref() == Some(f.as_str()))
+        });
+        u.ontology.inherited = members.iter().map(|m| m.ontology.name.clone()).collect();
+        u
     }
 
     pub fn is_empty(&self) -> bool {
@@ -507,6 +717,32 @@ impl Ontology {
         self.relation_type(relation).is_some_and(|r| r.functional)
     }
 
+    /// A predicate this ontology declares, by name, alias or inverse, in its
+    /// canonical form; or the fallback predicate when that is what was written.
+    /// Unlike `coerce_relation` an unknown name is `None`, not the fallback: a
+    /// filter must drop an invented predicate, not relabel it as a vague edge.
+    pub fn declared_relation(&self, relation: &str) -> Option<String> {
+        if self
+            .fallback_predicate
+            .as_deref()
+            .is_some_and(|f| f.eq_ignore_ascii_case(relation))
+        {
+            return self.fallback_predicate.clone();
+        }
+        let declared = self.relation_type(relation).is_some()
+            || self.relation_types.iter().any(|r| {
+                r.aliases.iter().any(|a| a.eq_ignore_ascii_case(relation))
+                    || r.inverse
+                        .as_deref()
+                        .is_some_and(|i| i.eq_ignore_ascii_case(relation))
+            });
+        if declared {
+            self.coerce_relation(relation)
+        } else {
+            None
+        }
+    }
+
     /// Coerce an extracted predicate into the declared vocabulary.
     ///
     /// Returns the canonical predicate to store, or `None` to drop the edge.
@@ -604,6 +840,34 @@ impl Ontology {
 fn is_reversed_phrase(phrase: &str) -> bool {
     let p = phrase.trim().to_lowercase();
     p.ends_with(" by") || p.ends_with(" as") || p.ends_with(" a") || p.starts_with("born to")
+}
+
+/// A corpus-scoped memoir ontology for tests: an invented family and invented
+/// places, shaped like a real one (`scope: corpus`, `extends: genealogy`, no
+/// fallback predicate, a corpus-specific extraction rule). Tests use it instead
+/// of any shipped corpus ontology, so they never depend on, or quote, a private
+/// corpus.
+#[cfg(test)]
+pub(crate) const TEST_MEMOIR_YAML: &str = r#"
+scope: corpus
+ontology: { name: test-memoir, version: 1, extends: genealogy }
+entity_types:
+  - name: Person
+    examples: ["Uncle Bram", "Granny Ilse", "Pieter Vos"]
+  - name: Place
+    examples: ["Vos Street", "the mill by the river"]
+relation_types:
+  - name: lived_at
+    domain: [Person]
+    range: [Place]
+fallback_predicate: null
+extraction_rules:
+  - "Treat the family nickname \"Uncle Bram\" as a Person, not a title."
+"#;
+
+#[cfg(test)]
+pub(crate) fn test_memoir() -> Ontology {
+    Ontology::from_yaml(TEST_MEMOIR_YAML).unwrap()
 }
 
 #[cfg(test)]
@@ -1177,6 +1441,58 @@ mod clear_preserves_schema_tests {
     use crate::graph::GraphStore;
     use uuid::Uuid;
 
+    /// The same bug came back in `graph build --reset-graph`, which still
+    /// deleted the file after `graph clear` had been fixed: Eval v2 built all
+    /// five corpora with no ontology. The reset now goes through
+    /// `clear_graph_data` too, which must keep all of the KB's configuration,
+    /// including a resolved module chain, across a reopen.
+    #[test]
+    fn clearing_the_graph_keeps_the_ontology_and_document_metadata() {
+        let dir = std::env::temp_dir().join(format!("reset-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let tenant = Uuid::new_v4();
+        let ont = Ontology::from_yaml("ontology: { name: c, extends: scholarly }\n").unwrap();
+        {
+            let mut g = GraphStore::open(&dir, tenant).unwrap();
+            g.set_ontology(&ont).unwrap();
+            g.set_doc_metadata(&std::collections::HashMap::from([(
+                "year".to_string(),
+                "1998".to_string(),
+            )]))
+            .unwrap();
+            g.set_document_titles(&["A Paper".to_string()]).unwrap();
+            g.upsert_entity(crate::graph::EntityNode {
+                id: crate::graph::entity_id("Tomas", "Person"),
+                name: "Tomas".into(),
+                entity_type: "Person".into(),
+                description: String::new(),
+                embedding: vec![],
+                mention_count: 1,
+                first_chunk_id: 1,
+                aliases: vec![],
+                schema_type: None,
+                gender: None,
+                evidence: vec![],
+                fields: Default::default(),
+                confidence: 1.0,
+                extraction_confidence: 1.0,
+            })
+            .unwrap();
+            g.clear_graph_data().unwrap();
+        }
+        let g = GraphStore::open(&dir, tenant).unwrap();
+        assert_eq!(g.node_count(), 0);
+        let kept = g.ontology().expect("ontology survives the reset");
+        assert_eq!(kept.ontology.inherited, vec!["scholarly"]);
+        assert_eq!(kept.relation_types.len(), ont.relation_types.len());
+        assert_eq!(
+            g.get_doc_metadata().get("year").map(String::as_str),
+            Some("1998")
+        );
+        assert_eq!(g.get_document_titles(), vec!["A Paper".to_string()]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Clearing a graph must not discard the schema that describes it.
     ///
     /// The old `graph clear` deleted the database file, so an ontology loaded
@@ -1518,44 +1834,37 @@ mod consistency_tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../../../tests/kwaai-knowledge/ontologies"
         );
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        let modules: Vec<Ontology> = std::fs::read_dir(dir)
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("_module_"))
-            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-            .filter_map(|s| Ontology::from_yaml(&s).ok())
-            .collect();
+        let entries = std::fs::read_dir(dir).expect("shipped ontologies directory");
         let mut failures = Vec::new();
+        let mut checked = 0;
         for e in entries.filter_map(|e| e.ok()) {
             let path = e.path();
             if path.extension().and_then(|x| x.to_str()) != Some("yaml") {
                 continue;
             }
-            let Ok(src) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            let Ok(mut o) = Ontology::from_yaml(&src) else {
-                continue;
-            };
-            // Splice in the parent module's types the way a load would.
-            if let Some(parent) = o.ontology.extends.clone() {
-                if let Some(m) = modules.iter().find(|m| m.ontology.name == parent) {
-                    o.entity_types.extend(m.entity_types.iter().cloned());
+            let file = path.file_name().unwrap().to_string_lossy().to_string();
+            let src = std::fs::read_to_string(&path).unwrap();
+            // The real loader, not a hand-rolled splice: the old version of
+            // this test merged module types itself, which hid that the loader
+            // ignored every module but genealogy. A file that fails to parse
+            // is a failure, not a skip.
+            let o = match Ontology::from_yaml(&src) {
+                Ok(o) => o,
+                Err(err) => {
+                    failures.push(format!("{file}: does not load: {err}"));
+                    continue;
                 }
-            }
+            };
+            checked += 1;
             for (rel, side, ty) in o.dangling_type_refs() {
-                failures.push(format!(
-                    "{}: {rel}.{side} -> {ty}",
-                    path.file_name().unwrap().to_string_lossy()
-                ));
+                failures.push(format!("{file}: {rel}.{side} -> {ty}"));
             }
         }
+        // 18 since D6.yaml left the public tree (#243): it lives with the private corpus.
+        assert!(checked >= 18, "only {checked} ontologies checked");
         assert!(
             failures.is_empty(),
-            "dangling type references:\n  {}",
+            "shipped ontology failures:\n  {}",
             failures.join("\n  ")
         );
     }
@@ -1609,9 +1918,9 @@ mod original_predicate_tests {
             .unwrap(),
         )
         .unwrap();
-        g.upsert_entity(person("Joe")).unwrap();
+        g.upsert_entity(person("Tomas")).unwrap();
         g.upsert_entity(person("Mike")).unwrap();
-        let (a, b) = (entity_id("Joe", "Person"), entity_id("Mike", "Person"));
+        let (a, b) = (entity_id("Tomas", "Person"), entity_id("Mike", "Person"));
 
         // Undeclared and unaliased -> fallback, original retained.
         g.upsert_relation(a, b, "nursed_by", 1).unwrap();
@@ -1648,9 +1957,9 @@ mod original_predicate_tests {
             .unwrap(),
         )
         .unwrap();
-        g.upsert_entity(person("Joe")).unwrap();
+        g.upsert_entity(person("Tomas")).unwrap();
         g.upsert_entity(person("Mike")).unwrap();
-        let (a, b) = (entity_id("Joe", "Person"), entity_id("Mike", "Person"));
+        let (a, b) = (entity_id("Tomas", "Person"), entity_id("Mike", "Person"));
         g.upsert_relation(a, b, "lived_at", 1).unwrap();
         let rels = g.all_relation_records();
         let r = rels.iter().find(|r| r.src_id == a).unwrap();
@@ -1662,7 +1971,6 @@ mod original_predicate_tests {
 
 #[cfg(test)]
 mod evidence_window_tests {
-    use super::*;
     use crate::graph::{entity_id, EntityNode, FieldValue, GraphStore};
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -1698,10 +2006,10 @@ mod evidence_window_tests {
         {
             let mut g = GraphStore::open(&dir, tenant).unwrap();
             g.set_evidence_window(1);
-            g.upsert_entity(person("Joe")).unwrap();
+            g.upsert_entity(person("Tomas")).unwrap();
             g.upsert_entity(person("Mike")).unwrap();
             g.upsert_relation(
-                entity_id("Joe", "Person"),
+                entity_id("Tomas", "Person"),
                 entity_id("Mike", "Person"),
                 "member_of",
                 42,
@@ -1729,10 +2037,10 @@ mod evidence_window_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut g = GraphStore::open(&dir, Uuid::new_v4()).unwrap();
         g.set_evidence_window(1);
-        g.upsert_entity(person("Joe")).unwrap();
+        g.upsert_entity(person("Tomas")).unwrap();
         g.upsert_entity(person("Mike")).unwrap();
         g.upsert_relation(
-            entity_id("Joe", "Person"),
+            entity_id("Tomas", "Person"),
             entity_id("Mike", "Person"),
             "member_of",
             0,
@@ -1791,5 +2099,89 @@ mod kinship_alias_tests {
         assert_eq!(o.coerce_relation("son_of").as_deref(), Some("child_of"));
         assert_eq!(o.coerce_relation("father_of").as_deref(), Some("parent_of"));
         assert_eq!(o.inverse_of("parent_of"), Some("child_of"));
+    }
+}
+
+#[cfg(test)]
+mod module_resolution_tests {
+    use super::*;
+
+    /// Regression: `extends: scholarly` loaded nothing, because only
+    /// `genealogy` was resolved and every other name was silently ignored.
+    #[test]
+    fn extends_scholarly_brings_in_the_module() {
+        let o = Ontology::from_yaml("ontology: { name: c, extends: scholarly }\n").unwrap();
+        assert!(
+            o.entity_type("Finding").is_some(),
+            "{:?}",
+            o.entity_type_names()
+        );
+        assert!(o.relation_type("reports").is_some());
+        assert_eq!(o.ontology.inherited, vec!["scholarly"]);
+    }
+
+    #[test]
+    fn extends_resolves_transitively() {
+        let o = Ontology::from_yaml("ontology: { name: m, extends: narrative-history }\n").unwrap();
+        assert_eq!(o.ontology.inherited, vec!["narrative-history", "genealogy"]);
+        assert!(
+            o.relation_type("parent_of").is_some(),
+            "kinship arrives via genealogy"
+        );
+        assert_eq!(o.fallback_predicate.as_deref(), Some("associated_with"));
+    }
+
+    #[test]
+    fn unknown_module_is_an_error() {
+        let err = Ontology::from_yaml("ontology: { name: x, extends: geneology }\n").unwrap_err();
+        assert!(err.to_string().contains("unknown ontology module"), "{err}");
+    }
+
+    #[test]
+    fn extends_none_is_a_no_op() {
+        let o = Ontology::from_yaml("ontology: { name: x, extends: none }\n").unwrap();
+        assert!(o.is_empty() && o.ontology.inherited.is_empty());
+    }
+
+    #[test]
+    fn local_declarations_win() {
+        let o = Ontology::from_yaml(
+            "ontology: { name: c, extends: scholarly }\n\
+             relation_types:\n  - name: reports\n    description: mine\n",
+        )
+        .unwrap();
+        let reports: Vec<_> = o
+            .relation_types
+            .iter()
+            .filter(|r| r.name == "reports")
+            .collect();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].description, "mine");
+    }
+
+    /// `fallback_predicate: null` means "no vague edges here" and must not be
+    /// overwritten by a module's fallback; an absent key inherits it.
+    #[test]
+    fn explicit_null_fallback_is_not_inherited() {
+        let null = Ontology::from_yaml(
+            "ontology: { name: m, extends: narrative-history }\nfallback_predicate: null\n",
+        )
+        .unwrap();
+        assert_eq!(null.fallback_predicate, None);
+    }
+
+    /// The stored form is resolved once; a JSON round trip (how GraphStore
+    /// persists it) must not splice the module in a second time.
+    #[test]
+    fn stored_form_is_not_resolved_twice() {
+        let mut o = Ontology::from_yaml("ontology: { name: c, extends: scholarly }\n").unwrap();
+        let n = (o.entity_types.len(), o.relation_types.len(), o.axioms.len());
+        let json = serde_json::to_string(&o).unwrap();
+        o = serde_json::from_str(&json).unwrap();
+        o.resolve_extends(&mut Vec::new(), true).unwrap();
+        assert_eq!(
+            n,
+            (o.entity_types.len(), o.relation_types.len(), o.axioms.len())
+        );
     }
 }

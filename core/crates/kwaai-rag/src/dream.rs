@@ -21,7 +21,7 @@ use uuid::Uuid;
 use crate::embedder::EmbedClient;
 use crate::graph::{description_from_fields, GraphStore, RELATION_TYPES};
 use crate::meta_store::MetaStore;
-use crate::scorer::{score_entity, score_graph};
+use crate::scorer::score_graph;
 use std::collections::HashMap;
 
 // ── Config & report ───────────────────────────────────────────────────────────
@@ -715,6 +715,22 @@ pub async fn run_dream_cycle(
     let model_str = model.to_string();
     let document_titles = Arc::new(document_titles);
     let doc_context_arc = Arc::new(doc_context_line);
+    // With an ontology, every entity is completed from it (one prompt built
+    // from the KB's types, fields and predicates); without one, the compiled
+    // schema-type templates below are used unchanged.
+    let ontology = Arc::new(
+        GraphStore::open(data_dir, tenant_id)
+            .context("open graph for ontology")?
+            .ontology()
+            .filter(|o| !o.is_empty())
+            .cloned(),
+    );
+    if let Some(o) = ontology.as_ref() {
+        tracing::info!(
+            "dream completions driven by KB ontology '{}'",
+            o.ontology.name
+        );
+    }
 
     let no_rel = cfg.no_relations;
     for item in work_items {
@@ -725,6 +741,7 @@ pub async fn run_dream_cycle(
         let model = model_str.clone();
         let doc_titles = document_titles.clone();
         let doc_ctx = doc_context_arc.clone();
+        let ontology = ontology.clone();
 
         tokio::spawn(async move {
             let _permit = permit;
@@ -764,6 +781,24 @@ pub async fn run_dream_cycle(
                 }
                 _ => item.evidence_text.clone(),
             };
+            if let Some(ont) = ontology.as_ref() {
+                let result = crate::dream_tasks::run_ontology_task(
+                    ont,
+                    item.entity_id,
+                    &item.name,
+                    &item.entity_type,
+                    &item.description,
+                    &evidence_with_ctx,
+                    url,
+                    &model,
+                    &doc_titles,
+                    &item.evidence_chunk_ids,
+                    no_rel,
+                )
+                .await;
+                let _ = tx.send(Ok(result)).await;
+                return;
+            }
             let result = crate::dream_tasks::run_task(
                 kind,
                 item.entity_id,
@@ -1016,7 +1051,9 @@ pub async fn run_dream_cycle(
                     && store.chunks_for_entity(n.id).is_empty()
                     && {
                         let neighbor_rels: Vec<String> = vec![];
-                        score_entity(n, &neighbor_rels).overall < cfg.prune_threshold
+                        crate::scorer::score_entity_with(n, &neighbor_rels, store.ontology())
+                            .overall
+                            < cfg.prune_threshold
                     }
             })
             .map(|n| n.id)

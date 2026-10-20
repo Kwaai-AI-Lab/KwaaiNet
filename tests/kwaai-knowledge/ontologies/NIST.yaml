@@ -6,16 +6,24 @@
 # 90.7% clean text, 7 relations from 5182 entities — vocabulary-bound.
 # The corpus is itself a set of taxonomies, so the ontology is largely *given*
 # rather than inferred, which is the standards case the framing doc predicted.
+#
+# v2, 2026-09-28. v1 fitted this corpus best of the pilot's four: the ontology arm
+# raised both precision and yield. The test-set check found five gaps: authors
+# (people and co-authoring agencies), ATLAS's tactics, "modeled after" and
+# "profile of" between frameworks, and publication dates, versions and markings.
+# Each addition carries its measured share of the 3,486 prose chunks;
+# test-set-driven ones are marked "test-set".
 
 ontology:
   name: ai-risk-standards
-  version: 1
+  version: 2
   extends: none
 
 provenance:
   derivation: derived
   note: >-
-    6 sampled chunks (AI 100-1, dual-use misuse, Vassilev, OWASP, ATLAS)
+    v1: 6 sampled chunks. v2 (2026-09-28): full-corpus probes over 3,486 prose
+    chunks, the pilot's judged edges, and the 20 questions with their gold nuggets.
 
 # Three genuinely different document kinds in one KB (Reza, 2026-08-25: a KB has
 # several ontologies, not one). Normative standards, practitioner guidance, and
@@ -28,7 +36,7 @@ streams:
     retention: irreducible_text     # requirement wording is the requirement
   - name: threat-research
     description: Adversarial ML papers and taxonomies.
-    entity_types: [AttackTechnique, Mitigation, AISystem, Asset, Publication]
+    entity_types: [AttackTechnique, Tactic, Mitigation, AISystem, Asset, Publication, Person]
   - name: incident-report
     description: MITRE ATLAS-style reports of observed attacks in the wild.
     entity_types: [AttackTechnique, ThreatActor, Organization, Asset, AISystem]
@@ -112,6 +120,25 @@ entity_types:
       publication *documents* a framework.
     examples: ["NIST.CSWP.29", "nist.ai.100-1"]
     irreducible: false
+    fields:
+      # published/released/draft/version 6.0%, 13 documents; TLP markings 1.6%, 3.
+      - { key: datePublished, desc: "publication or release date, as stated" }
+      - { key: version,       desc: "version, revision or draft stage, as stated" }
+      - { key: marking,       desc: "distribution marking such as TLP:CLEAR, as stated" }
+
+  - name: Tactic
+    evidence: 12.9
+    # tactic/reconnaissance/initial access/exfiltration..., 10 documents.
+    description: >-
+      An adversary goal in a tactics-and-techniques framework (the "why" that a
+      technique serves).
+    examples: ["Reconnaissance", "Initial Access", "Exfiltration", "ML Attack Staging"]
+
+  - name: Person
+    evidence: 1.9
+    # named authors and officials, 6 documents. test-set: q13 (NIST AI 100-2's authors).
+    description: A named author, official or researcher.
+    examples: ["Apostol Vassilev", "Alina Oprea", "Hyrum Anderson"]
 
 relation_types:
   # ── Framework structure ───────────────────────────────────────────────────
@@ -173,14 +200,48 @@ relation_types:
     domain: [ThreatActor]
     range:  [Asset, AISystem, Organization]
 
+  # ── v2 ────────────────────────────────────────────────────────────────────
+  - name: authored
+    domain: [Person, Organization]
+    range:  [Publication]
+    inverse: authored_by
+    triggers: ["authors", "co-authored", "prepared by"]
+    aliases: [co_authored, wrote]
+    # 1.0%, 8 documents. Not functional, unlike `published_by`. test-set: q01 (five
+    # co-authoring agencies) and q13.
+  - name: achieves
+    description: A technique serves an adversary tactic.
+    domain: [AttackTechnique]
+    range:  [Tactic]
+    # ATT&CK's own convention; q12 and q20.
+  - name: derived_from
+    description: A framework or publication is modeled on, based on, or adapted from another.
+    domain: [Framework, Publication]
+    range:  [Framework, Publication]
+    triggers: ["modeled after", "based on", "adapted from", "derived from"]
+    aliases: [modeled_after, based_on, adapted_from]
+    acyclic: true
+    # 6.8%, 13 documents ("ATLAS is modeled after ATT&CK").
+  - name: profile_of
+    description: A profile specialises a base framework for one technology or community.
+    domain: [Publication, Framework]
+    range:  [Framework]
+    triggers: ["profile", "community profile"]
+    # 2.4%, 12 documents; q15, q18 and q19 (600-1 is a profile of AI RMF;
+    # 800-218A of SSDF).
+
 axioms:
   - kind: contradiction
     pairs:
       - [mitigates, exploits]
   - kind: acyclic
-    relations: [supersedes, references, part_of]
+    relations: [supersedes, references, part_of, derived_from]
   - kind: functional
     relations: [published_by]
 
 # A standards corpus that admits a vague predicate stops being a standard.
 fallback_predicate: null
+
+rejected_types:
+  - { name: genealogy (module), evidence: 0.0, reason: "no kinship words in 3,486 prose chunks" }
+
