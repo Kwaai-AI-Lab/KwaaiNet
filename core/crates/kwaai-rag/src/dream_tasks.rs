@@ -1120,6 +1120,24 @@ pub fn applicable_relations<'a>(
 /// and in Eval v2 those four plus `part_of` were ~99% of every non-memoir
 /// corpus's dream relations.
 #[allow(clippy::too_many_arguments)]
+/// Whether the ontology task for this type asks for a prose description.
+///
+/// Matches the compiled tasks it replaces: Biography, Geography and OrgProfile
+/// (Person, Place, Organization) never asked for one, so their descriptions are
+/// built from fields and hand-fixed prose survives. Asking every type let dream
+/// replace a Person's description whenever the new one was a tier higher or 20
+/// characters longer (review of #248).
+pub fn ontology_task_asks_description(ont: &crate::ontology::Ontology, entity_type: &str) -> bool {
+    let schema_type = ont
+        .entity_type(entity_type)
+        .and_then(|e| e.schema_type.clone())
+        .or_else(|| crate::scorer::schema_type_for(entity_type).map(String::from));
+    !matches!(
+        task_for_schema_type(schema_type.as_deref()),
+        DreamTaskKind::Biography | DreamTaskKind::Geography | DreamTaskKind::OrgProfile
+    )
+}
+
 pub fn ontology_task_prompt(
     ont: &crate::ontology::Ontology,
     name: &str,
@@ -1140,6 +1158,11 @@ pub fn ontology_task_prompt(
         .filter(|d| !d.is_empty())
         .map(|d| format!(" — {d}"))
         .unwrap_or_default();
+    let description_schema = if ontology_task_asks_description(ont, entity_type) {
+        format!("\"description\":\"2-4 sentences from the text on what {name} is and why it matters here\",")
+    } else {
+        String::new()
+    };
     let fields = crate::graph::expected_fields_for(entity_type, Some(ont));
     let fields_json = fields
         .iter()
@@ -1196,8 +1219,7 @@ pub fn ontology_task_prompt(
          Return ONLY valid JSON — no markdown, no explanation.\n\n\
          Source text:\n---\n{text}\n---\n\n\
          JSON schema (omit any field or relation the text does not support):\n\
-         {{\"description\":\"2-4 sentences from the text on what {name} is and why it matters here\",\
-         \"fields\":{{{fields_json}}},{relations_schema}}}\n\n\
+         {{{description_schema}\"fields\":{{{fields_json}}},{relations_schema}}}\n\n\
          Rules:\n\
          - Use only facts stated in the source text. Do not use background knowledge.\n\
          {relation_block}{doc_rule_line}"
@@ -1241,6 +1263,9 @@ pub async fn run_ontology_task(
                     .entity_type(entity_type)
                     .and_then(|e| e.schema_type.clone());
             }
+            if !ontology_task_asks_description(ont, entity_type) {
+                c.description = None; // returned unasked: never replaces prose
+            }
             c
         }
         None => empty_failed(eid),
@@ -1251,6 +1276,26 @@ pub async fn run_ontology_task(
 mod ontology_task_tests {
     use super::*;
     use crate::ontology::Ontology;
+
+    /// Regression (review of #248): every ontology task asked for a prose
+    /// description, so dream replaced Person descriptions that the compiled
+    /// Biography task never touched.
+    #[test]
+    fn person_place_and_organization_tasks_ask_for_no_description() {
+        let ont = Ontology::from_yaml(
+            "ontology: { name: t }\n\
+             entity_types:\n  \
+             - { name: Person, schema_type: \"schema:Person\" }\n  \
+             - { name: Committee, schema_type: \"schema:Organization\" }\n  \
+             - { name: Test, schema_type: \"schema:Event\" }\n",
+        )
+        .unwrap();
+        for (ty, asks) in [("Person", false), ("Committee", false), ("Test", true)] {
+            assert_eq!(ontology_task_asks_description(&ont, ty), asks, "{ty}");
+            let p = ontology_task_prompt(&ont, "X", ty, "text", &[], true);
+            assert_eq!(p.contains("\"description\""), asks, "{ty}: {p}");
+        }
+    }
 
     fn shipped(kb: &str) -> Ontology {
         let p = format!(
