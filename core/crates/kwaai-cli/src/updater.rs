@@ -587,9 +587,13 @@ fn swap_in_staged(
 ) -> Result<()> {
     let mut staged = Vec::new();
     let mut stage = || -> Result<()> {
-        for entry in std::fs::read_dir(extracted).context("Reading extract dir")? {
+        let mut entries = std::fs::read_dir(extracted)
+            .context("Reading extract dir")?
+            .collect::<std::io::Result<Vec<_>>>()?;
+        // By name, so the install order is the same on every filesystem.
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
             ensure_not_cancelled(cancel)?;
-            let entry = entry?;
             let name = entry.file_name();
             let staging = install_dir.join(format!("{}.new", name.to_string_lossy()));
             staged.push((staging.clone(), install_dir.join(&name)));
@@ -597,6 +601,11 @@ fn swap_in_staged(
                 .with_context(|| format!("Staging {}", staging.display()))?;
         }
         ensure_not_cancelled(cancel)?;
+        anyhow::ensure!(
+            staged.iter().any(|(_, dest)| dest == exe),
+            "The update archive has no {}; nothing was installed",
+            exe.display()
+        );
         std::fs::rename(exe, exe_bak).with_context(|| {
             format!(
                 "Could not move {} aside to {}",
@@ -1354,6 +1363,42 @@ mod tests {
             .collect();
         left.sort();
         assert_eq!(left, ["kwaainet.exe"]);
+    }
+
+    #[test]
+    fn an_archive_without_the_exe_installs_nothing() {
+        let (_dir, extracted, install) = install_fixture();
+        std::fs::remove_file(extracted.join("kwaainet.exe")).unwrap();
+        let (exe, bak) = (
+            install.join("kwaainet.exe"),
+            install.join("kwaainet.exe.old"),
+        );
+        let err = swap_in_staged(&extracted, &install, &exe, &bak, &AtomicBool::new(false))
+            .expect_err("an archive with no exe must not report success");
+        assert!(format!("{err:#}").contains("has no"), "got: {err:#}");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "old");
+        let left: Vec<_> = std::fs::read_dir(&install)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left, ["kwaainet.exe"]);
+    }
+
+    /// The exe is renamed in before any DLL, so a DLL that cannot be replaced
+    /// still leaves a working binary behind.
+    #[test]
+    fn a_failed_dll_rename_still_leaves_the_new_exe() {
+        let (_dir, extracted, install) = install_fixture();
+        // A non-empty directory at the DLL's destination makes its rename fail.
+        std::fs::create_dir_all(install.join("cublas64_12.dll").join("x")).unwrap();
+        let (exe, bak) = (
+            install.join("kwaainet.exe"),
+            install.join("kwaainet.exe.old"),
+        );
+        swap_in_staged(&extracted, &install, &exe, &bak, &AtomicBool::new(false))
+            .expect_err("the DLL rename must fail");
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "old");
     }
 
     #[test]
