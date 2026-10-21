@@ -44,7 +44,7 @@ function Invoke-CudaUpgrade($download_url, [ref]$artifact_name_ref) {
         $probeDirs += (Join-Path $env:KWAAINET_INSTALL_DIR "bin")
     }
     if ($env:CARGO_HOME) { $probeDirs += (Join-Path $env:CARGO_HOME "bin") }
-    else { $probeDirs += (Join-Path $HOME ".cargoin") }
+    else { $probeDirs += (Join-Path $HOME ".cargo\bin") }
     if ($env:CUDA_PATH) { $probeDirs += (Join-Path $env:CUDA_PATH "bin") }
     $probeDirs += ($env:PATH -split ";" | Where-Object { $_ })
     foreach ($dir in $probeDirs) {
@@ -141,7 +141,11 @@ fi
 # and the difference only shows up as a CPU-only binary on somebody's GPU
 # machine months later. Assert every injection landed.
 missing=""
-for marker in     'function Invoke-CudaUpgrade'     'Invoke-CudaUpgrade $download_url ([ref]$artifact_name)'     'if ($global:_cuda_selected) { if ($global:_cuda_checksum'     'Bundled CUDA lib:'
+for marker in \
+    'function Invoke-CudaUpgrade' \
+    'Invoke-CudaUpgrade $download_url ([ref]$artifact_name)' \
+    'if ($global:_cuda_selected) { if ($global:_cuda_checksum' \
+    'Bundled CUDA lib:'
 do
     grep -qF -- "$marker" "$INSTALLER" || missing="${missing}
   ${marker}"

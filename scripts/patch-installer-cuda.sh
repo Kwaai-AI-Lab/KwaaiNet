@@ -110,7 +110,11 @@ sed -i '/ignore rm -rf "$_install_temp"/i\    _finalize_cuda_libs "$_install_tem
 # matching after a cargo-dist upgrade would ship a CPU-only installer in
 # silence. Assert every injection landed.
 missing=""
-for marker in     '_try_cuda_upgrade()'     '    _try_cuda_upgrade'     '_stage_cuda_libs "$_src_dir" "$_install_temp"'     '_finalize_cuda_libs "$_install_temp" "$_install_dir"'
+for marker in \
+    '_try_cuda_upgrade()' \
+    '    _try_cuda_upgrade' \
+    '_stage_cuda_libs "$_src_dir" "$_install_temp"' \
+    '_finalize_cuda_libs "$_install_temp" "$_install_dir"'
 do
     grep -qF -- "$marker" "$INSTALLER" || missing="${missing}
   ${marker}"
