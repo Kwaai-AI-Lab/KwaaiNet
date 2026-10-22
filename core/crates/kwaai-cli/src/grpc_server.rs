@@ -3150,14 +3150,14 @@ fn build_dht_records(
         .map(|record| {
             let key_id = hex::encode(&record.summary.key);
             // Read from this row's own tier, or a cache row would show the
-            // primary tier's value.
-            let held = include_values
-                .then(|| {
-                    storage.with_local_record(&record.summary.key, record.in_cache, |v, _| {
+            // primary tier's value. A row gone since the listing is flagged.
+            let held = include_values.then(|| {
+                storage
+                    .with_local_record(&record.summary.key, record.in_cache, |v, _| {
                         crate::dht_records::hold_value(v, &budget)
                     })
-                })
-                .flatten();
+                    .unwrap_or(crate::dht_records::HeldValue::Vanished)
+            });
             crate::dht_records::local_record(
                 record,
                 held,
@@ -5999,7 +5999,7 @@ mod tests {
             id: 1,
             body: Some(server_frame::Body::DhtRecords(reply.clone())),
         };
-        let len = prost_rpc::Message::encoded_len(&frame);
+        let len = kwaai_rpc::prost::Message::encoded_len(&frame);
         assert!(len < 4 << 20, "{len} bytes");
 
         assert_eq!(reply.records.len(), 4);
@@ -6012,6 +6012,40 @@ mod tests {
         for r in &reply.records[1..] {
             assert!(r.value.is_none() && r.values_truncated, "{}", r.key_id);
         }
+    }
+
+    /// Many small subkeys: their per-subkey framing must be charged too, or
+    /// 600 dictionaries of 256 tiny subkeys build a ~6 MiB frame.
+    #[test]
+    fn dht_records_subkey_overhead_counts_against_the_budget() {
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        let keys: Vec<[u8; 2]> = (0..600u16).map(u16::to_be_bytes).collect();
+        // Two bytes: a one-byte 0xc0 is the store's regular-value tag.
+        let subkeys: Vec<[u8; 2]> = (0..256u16).map(u16::to_be_bytes).collect();
+        // One dictionary per request: a store carries at most 1024 keys.
+        for k in &keys {
+            store_values(
+                &storage,
+                subkeys
+                    .iter()
+                    .map(|sk| (k.as_slice(), sk.as_slice(), vec![0x01]))
+                    .collect(),
+            );
+        }
+
+        let wanted = keys.iter().map(|k| k.to_vec()).collect();
+        let reply = build_dht_records(&storage, &KwaaiNetConfig::default(), true, &wanted, 5000);
+        let frame = ServerFrame {
+            id: 1,
+            body: Some(server_frame::Body::DhtRecords(reply.clone())),
+        };
+        let len = kwaai_rpc::prost::Message::encoded_len(&frame);
+        assert!(len < 4 << 20, "{len} bytes");
+        assert_eq!(reply.records.len(), 600);
+        assert!(
+            reply.values_truncated,
+            "the budget must have cut this reply"
+        );
     }
 
     /// The subkey cap truncates one record without spending the budget the

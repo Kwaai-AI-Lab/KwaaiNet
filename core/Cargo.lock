@@ -3240,7 +3240,6 @@ dependencies = [
  "llama-cpp-2",
  "nix 0.27.1",
  "prost 0.12.6",
- "prost 0.13.5",
  "reqwest",
  "rmp",
  "rmp-serde",

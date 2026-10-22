@@ -1360,9 +1360,9 @@ message DhtRecordsRequest {
     // them could not fit one frame. INVALID_ARGUMENT otherwise.
     //
     // Values are attached in reply order until about 3 MiB of value data
-    // has been included, each value charged the larger of its raw and
-    // rendered size (a subkey's own bytes count too); once one does not
-    // fit, no further value is attached. A dictionary returns at most 256
+    // has been included, each value or subkey charged its encoded size in
+    // the reply (never less than its raw size); once one does not fit, no
+    // further value is attached. A dictionary returns at most 256
     // subkeys, in subkey byte order. Anything withheld sets
     // `values_truncated` on its record and on the reply.
     bool include_values = 1;
@@ -1471,14 +1471,17 @@ message DhtRecord {
     optional DhtValueView value = 11;
 
     // Per-subkey breakdown, when `include_values` was set and this is a
-    // dictionary. Each subkey expires independently of the record. A
-    // prefix in subkey byte order: fewer than `subkey_count` entries
-    // means the rest were withheld, and `values_truncated` is set.
+    // dictionary. Each subkey expires independently of the record, and
+    // expired ones are included (see `subkey_count`). A prefix in subkey
+    // byte order: fewer than `subkey_count` entries means the rest were
+    // withheld, and `values_truncated` is set.
     repeated DhtSubkey subkeys = 12;
 
     // `include_values` was asked but part of this record's value was
     // withheld: a regular record's `value`, or the subkeys past
-    // `subkeys.len()`. See DhtRecordsRequest.include_values.
+    // `subkeys.len()`. See DhtRecordsRequest.include_values. Also set,
+    // with nothing attached, when the record expired or was evicted
+    // between being listed and its value being read.
     bool values_truncated = 13;
 }
 
@@ -1490,7 +1493,9 @@ message DhtSubkey {
 
     // Absolute expiration, seconds since the UNIX epoch, and the
     // countdown to it. Independent of the record's own expiration:
-    // that is the whole point of a dictionary.
+    // that is the whole point of a dictionary. Unlike the record's,
+    // `expires_in_secs` can be negative: an expired subkey stays until
+    // its record goes, and is not live.
     double expiration = 2;
     double expires_in_secs = 3;
 
