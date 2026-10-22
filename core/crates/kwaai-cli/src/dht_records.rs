@@ -4,6 +4,7 @@
 //! what is there, never guessing at field names it cannot verify.
 
 use kwaai_hivemind_dht::{DHTExpiration, LocalRecord, Stored};
+use kwaai_rpc::prost::{encoding::encoded_len_varint, Message};
 use kwaai_rpc::v1::{DhtKnownKey, DhtRecord, DhtRecordKind, DhtSubkey, DhtValueView};
 
 use crate::announce::{dht_id, PETALS_MODELS_KEY, VPK_NODES_KEY};
@@ -35,8 +36,8 @@ pub fn known_keys(config: &KwaaiNetConfig) -> Vec<DhtKnownKey> {
         .collect()
 }
 
-/// Value bytes one reply may carry. Leaves room under tonic's 4 MiB decode
-/// limit for the metadata of up to 5000 rows and the known-key table.
+/// Encoded value fields one reply may carry. Leaves room under tonic's 4 MiB
+/// decode limit for the metadata of up to 5000 rows and the known-key table.
 pub const VALUE_BUDGET_BYTES: usize = 3 << 20;
 
 /// Subkeys returned per dictionary, whatever the budget.
@@ -81,6 +82,14 @@ pub enum HeldValue {
         entries: Vec<(Vec<u8>, Vec<u8>, DHTExpiration)>,
         total: usize,
     },
+    /// Expired or evicted between the listing and the value read.
+    Vanished,
+}
+
+/// What `msg` adds to a reply as a length-delimited field: tag, length, body.
+fn field_len(msg: &impl Message) -> usize {
+    let body = msg.encoded_len();
+    1 + encoded_len_varint(body as u64) + body
 }
 
 /// Copy as much of `stored` as `budget` could possibly admit: raw size is a
@@ -129,7 +138,7 @@ pub fn local_record(
     match held {
         Some(HeldValue::Regular(Some(raw))) => {
             let view = render_value(&raw);
-            if budget.charge(raw.len().max(view.rendered.len())) {
+            if budget.charge(field_len(&view).max(raw.len())) {
                 value = Some(view);
             } else {
                 values_truncated = true;
@@ -142,9 +151,7 @@ pub fn local_record(
         Some(HeldValue::Dictionary { entries, total }) => {
             for (subkey, raw, expiration) in &entries {
                 let view = subkey_view(subkey, raw, *expiration, now);
-                let rendered =
-                    view.subkey.len() + view.value.as_ref().map_or(0, |v| v.rendered.len());
-                if !budget.charge((subkey.len() + raw.len()).max(rendered)) {
+                if !budget.charge(field_len(&view).max(subkey.len() + raw.len())) {
                     break;
                 }
                 subkeys.push(view);
@@ -155,6 +162,7 @@ pub fn local_record(
                 budget.exhaust();
             }
         }
+        Some(HeldValue::Vanished) => values_truncated = true,
         None => {}
     }
 
@@ -593,6 +601,31 @@ mod tests {
         };
         assert_eq!(render_value(&raw).rendered, r#"{"$hex":"fffe"}"#);
         assert_json(&render_value(&raw));
+    }
+
+    /// A record gone before its value was read is flagged, not shown as one
+    /// that has no value.
+    #[test]
+    fn a_vanished_record_is_flagged_truncated() {
+        let record = LocalRecord {
+            summary: kwaai_hivemind_dht::EntrySummary {
+                key: vec![1],
+                expiration: 10.0,
+                subkeys: None,
+                value_bytes: 1,
+                latest_expiration: None,
+                maxsize: None,
+            },
+            in_cache: false,
+        };
+        let mut budget = ValueBudget::default();
+        let row = local_record(&record, Some(HeldValue::Vanished), "", 0.0, &mut budget);
+        assert!(row.value.is_none() && row.values_truncated);
+        // Nothing was charged, so later rows still get values.
+        assert_eq!(budget.remaining, VALUE_BUDGET_BYTES);
+
+        let unasked = local_record(&record, None, "", 0.0, &mut budget);
+        assert!(!unasked.values_truncated);
     }
 
     /// The ids must be the same `SHA1(msgpack(name))` the announce path
