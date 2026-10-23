@@ -525,3 +525,48 @@ mod document_order_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod doc_count_tests {
+    use super::*;
+
+    fn chunk(doc: &str, i: u32) -> ChunkMeta {
+        ChunkMeta {
+            doc_name: doc.into(),
+            chunk_index: i,
+            text: format!("{doc} {i}"),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: String::new(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: Default::default(),
+        }
+    }
+
+    /// Each document's chunk count, which `rag_status` reports, and the
+    /// count after a delete.
+    #[test]
+    fn counts_each_documents_chunks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ms = MetaStore::open(dir.path(), Uuid::from_u128(1)).expect("open");
+        assert!(ms.list_docs_with_counts().expect("counts").is_empty());
+
+        ms.put_chunks(
+            &[chunk("a", 0), chunk("a", 1), chunk("a", 2), chunk("b", 0)],
+            &[10, 11, 12, 20],
+        )
+        .expect("put");
+        assert_eq!(
+            ms.list_docs_with_counts().expect("counts"),
+            vec![("a".to_string(), 3), ("b".to_string(), 1)]
+        );
+
+        ms.delete_doc("a").expect("delete");
+        assert_eq!(
+            ms.list_docs_with_counts().expect("counts"),
+            vec![("b".to_string(), 1)]
+        );
+    }
+}

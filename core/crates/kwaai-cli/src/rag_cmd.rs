@@ -369,6 +369,7 @@ pub(crate) async fn init_kb(
     rag_dir: Option<std::path::PathBuf>,
     progress: impl Fn(&str),
 ) -> Result<InitOutcome> {
+    crate::config::validate_kb_name(name)?;
     let data_dir = rag_dir
         .clone()
         .unwrap_or_else(|| RagConfig::default_data_dir_for(name));
@@ -410,7 +411,7 @@ pub(crate) async fn init_kb(
         if existing_rag.storage_url.as_deref() == Some("local") {
             if let Some(ref tid) = existing_rag.tenant_id {
                 let tenant_id: Uuid = tid.parse().context("invalid tenant_id in config")?;
-                let tenant_in_db = if let Ok(db) = kwaai_storage::StorageDb::open(&data_dir) {
+                let tenant_in_db = if let Ok(db) = open_storage_db(&data_dir).await {
                     let tm = kwaai_storage::TenantManager::new(db);
                     tm.get(tenant_id).await.ok().flatten().is_some()
                 } else {
@@ -438,7 +439,9 @@ pub(crate) async fn init_kb(
     }
 
     // Fresh init: create local embedded vector store + tenant.
-    let db = kwaai_storage::StorageDb::open(&data_dir).context("opening local vector store")?;
+    let db = open_storage_db(&data_dir)
+        .await
+        .context("opening local vector store")?;
     let tm = kwaai_storage::TenantManager::new(db);
     let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
     let info = tm
@@ -477,6 +480,16 @@ pub(crate) async fn init_kb(
         embed_dim,
         already_initialised: false,
     })
+}
+
+/// `StorageDb::open` replays every stored vector into the in-memory index —
+/// O(corpus) sync work — so it runs on the blocking pool, not the reactor.
+#[cfg(feature = "storage")]
+async fn open_storage_db(data_dir: &std::path::Path) -> Result<kwaai_storage::StorageDb> {
+    let dir = data_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || kwaai_storage::StorageDb::open(&dir))
+        .await
+        .context("storage open task panicked")?
 }
 
 async fn cmd_init(
@@ -671,6 +684,79 @@ fn select_document_ontology(
     Ok(())
 }
 
+/// The per-document steps every ingest takes before chunking, shared by the
+/// CLI and the daemon so one file chunks the same way through either: record
+/// the document's title, load its doc schema from `doc_schema_path` or
+/// auto-detect one from its header, and persist the schema's metadata.
+///
+/// `note` receives the status lines: the CLI prints them, the daemon logs
+/// them. Returns the schema for `IngestConfig::doc_schema`. Sync (graph-store
+/// writes); the daemon runs it on the blocking pool.
+#[cfg(feature = "storage")]
+pub(crate) fn prepare_document(
+    rag_cfg: &RagConfig,
+    tenant_id: Uuid,
+    doc_name: &str,
+    text: &str,
+    doc_schema_path: Option<&std::path::Path>,
+    note: &mut dyn FnMut(&str),
+) -> Result<Option<kwaai_rag::doc_schema::DocSchema>> {
+    // Store document title in graph store for LLM prompt injection
+    if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+        let _ = g.set_document_titles(&[doc_name.to_string()]);
+    }
+
+    // Doc schema: load from YAML, or auto-detect from the document header.
+    let schema = if let Some(path) = doc_schema_path {
+        let schema = kwaai_rag::doc_schema::load_doc_schema(path)?;
+        let skip_count = schema.sections.iter().filter(|s| s.skip).count();
+        let seed_count = schema.sections.iter().filter(|s| s.index_seeds).count();
+        let note_count = schema
+            .sections
+            .iter()
+            .filter(|s| s.narrator_note.is_some())
+            .count();
+        note(&format!(
+            "Doc-schema loaded: type={} sections={} (skip={}, index_seeds={}, narrator_notes={})",
+            schema.schema_type.as_deref().unwrap_or("untyped"),
+            schema.sections.len(),
+            skip_count,
+            seed_count,
+            note_count
+        ));
+        schema
+    } else {
+        let preview = &text[..text.floor_char_boundary(text.len().min(4000))];
+        let detected = kwaai_rag::doc_schema::auto_detect_schema(preview);
+        if detected.schema_type.is_none() && detected.metadata.is_empty() {
+            return Ok(None);
+        }
+        note(&format!(
+            "Doc-schema auto-detected: type={}, metadata_keys=[{}]",
+            detected.schema_type.as_deref().unwrap_or("unknown"),
+            detected
+                .metadata
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        detected
+    };
+
+    // Persist document metadata into the graph store for use at query/dream time.
+    if !schema.metadata.is_empty() {
+        if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+            let _ = g.set_doc_metadata(&schema.metadata);
+            note(&format!(
+                "Doc metadata persisted: {} key(s)",
+                schema.metadata.len()
+            ));
+        }
+    }
+    Ok(Some(schema))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_ingest(
     file: std::path::PathBuf,
@@ -726,13 +812,6 @@ async fn cmd_ingest(
         let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
 
-        // Store document title in graph store for LLM prompt injection
-        {
-            if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                let _ = g.set_document_titles(std::slice::from_ref(&doc_name));
-            }
-        }
-
         let mut cfg = IngestConfig::new(embed);
         cfg.chunk_cfg.chunk_size = chunk_size;
         cfg.chunk_cfg.chunk_overlap = chunk_overlap;
@@ -746,57 +825,15 @@ async fn cmd_ingest(
             print_info(&format!("Doc-meta loaded: {} entries", cfg.doc_meta.len()));
         }
 
-        // Doc schema: load from YAML, or auto-detect from the document header.
-        let loaded_schema: Option<kwaai_rag::doc_schema::DocSchema> = if let Some(path) =
-            doc_schema_path
-        {
-            let schema = kwaai_rag::doc_schema::load_doc_schema(&path)?;
-            let skip_count = schema.sections.iter().filter(|s| s.skip).count();
-            let seed_count = schema.sections.iter().filter(|s| s.index_seeds).count();
-            let note_count = schema
-                .sections
-                .iter()
-                .filter(|s| s.narrator_note.is_some())
-                .count();
-            print_info(&format!(
-                "Doc-schema loaded: type={} sections={} (skip={}, index_seeds={}, narrator_notes={})",
-                schema.schema_type.as_deref().unwrap_or("untyped"),
-                schema.sections.len(), skip_count, seed_count, note_count
-            ));
-            Some(schema)
-        } else {
-            let preview = &text[..text.floor_char_boundary(text.len().min(4000))];
-            let detected = kwaai_rag::doc_schema::auto_detect_schema(preview);
-            if detected.schema_type.is_some() || !detected.metadata.is_empty() {
-                print_info(&format!(
-                    "Doc-schema auto-detected: type={}, metadata_keys=[{}]",
-                    detected.schema_type.as_deref().unwrap_or("unknown"),
-                    detected
-                        .metadata
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-                Some(detected)
-            } else {
-                None
-            }
-        };
-
-        if let Some(ref schema) = loaded_schema {
-            // Persist document metadata into the graph store for use at query/dream time.
-            if !schema.metadata.is_empty() {
-                if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                    let _ = g.set_doc_metadata(&schema.metadata);
-                    print_info(&format!(
-                        "Doc metadata persisted: {} key(s)",
-                        schema.metadata.len()
-                    ));
-                }
-            }
-            cfg.doc_schema = Some(schema.clone());
-        }
+        let loaded_schema = prepare_document(
+            &rag_cfg,
+            tenant_id,
+            &doc_name,
+            &text,
+            doc_schema_path.as_deref(),
+            &mut |line| print_info(line),
+        )?;
+        cfg.doc_schema = loaded_schema.clone();
 
         if extract_entities {
             let infer_url = inference_url

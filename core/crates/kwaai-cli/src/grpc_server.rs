@@ -716,10 +716,10 @@ const RAG_PROGRESS_INTERVAL: std::time::Duration = std::time::Duration::from_mil
 ///
 /// pdf-extract can take effectively unbounded time on pathological PDFs
 /// (huge object counts, malformed xref tables), and a blocking task cannot
-/// be killed — without a ceiling the op would hold the RAG lock forever and
-/// the client would never see another frame. On timeout the op fails with a
-/// clear message, but note the abandoned extraction thread runs on until
-/// the parse finishes; only a daemon restart reclaims it sooner.
+/// be killed — without a ceiling the client would never see another frame.
+/// On timeout the op fails with a clear message, but the abandoned
+/// extraction thread runs on until the parse finishes, holding its upload
+/// slot; only a daemon restart reclaims it sooner.
 #[cfg(feature = "rag")]
 const RAG_EXTRACT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
@@ -737,7 +737,9 @@ const RAG_UPLOAD_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 #[cfg(feature = "rag")]
 const RAG_UPLOAD_BUFFER: usize = 8;
 
-/// Uploads a daemon runs at once, across sessions; each spools to disk.
+/// Uploads a daemon runs at once, across sessions; each spools to disk. A
+/// slot is held until the upload's text extraction ends, even one abandoned
+/// on timeout or cancel, so this also bounds runaway parser threads.
 #[cfg(feature = "rag")]
 const RAG_MAX_UPLOADS: usize = 4;
 
@@ -766,7 +768,7 @@ type RagUploads = Arc<Mutex<HashMap<u64, RagUpload>>>;
 struct UploadRx {
     pieces: mpsc::Receiver<Vec<u8>>,
     overrun: Arc<std::sync::atomic::AtomicBool>,
-    /// Held until the spool file is deleted.
+    /// Held until text extraction ends and the spool file is deleted.
     slot: tokio::sync::OwnedSemaphorePermit,
 }
 
@@ -836,6 +838,7 @@ fn classify_rag_error(msg: &str) -> ErrorCode {
     // Caller-supplied arguments we rejected before touching any store,
     // including an upload that broke its own declared size or stalled.
     if msg.contains("rag_ingest upload")
+        || msg.contains("invalid KB name")
         || msg.contains("rag_init cannot switch")
         || msg.contains("requires non-empty query text")
         || msg.contains("requires a document name")
@@ -874,14 +877,17 @@ async fn send_rag_error(
         .await;
 }
 
-/// Blank KB name means "default", matching the CLI's `--kb` default.
+/// Blank KB name means "default", matching the CLI's `--kb` default. Any
+/// other name must be a plain directory name: `rag_init` derives a new KB's
+/// data dir from it, and any local process can reach this service.
 #[cfg(feature = "rag")]
-fn rag_kb_or_default(kb: &str) -> String {
-    if kb.trim().is_empty() {
-        "default".to_string()
-    } else {
-        kb.trim().to_string()
+fn rag_kb_or_default(kb: &str) -> Result<String> {
+    let kb = kb.trim();
+    if kb.is_empty() {
+        return Ok("default".to_string());
     }
+    crate::config::validate_kb_name(kb)?;
+    Ok(kb.to_string())
 }
 
 /// True when this KB's vectors do not live in the local embedded store.
@@ -904,8 +910,9 @@ fn reject_if_remote(kb: &str, rag: &crate::config::RagConfig) -> Result<()> {
     Ok(())
 }
 
-/// Delete upload spool files left by an earlier daemon: on Windows an
-/// abandoned extraction thread keeps its file open, so the drop-time delete fails.
+/// Delete upload spool files left by an earlier daemon that exited while an
+/// extraction still held one (an abandoned parse only deletes its file when
+/// it finishes).
 #[cfg(feature = "rag")]
 fn sweep_stale_spools(dir: &std::path::Path, older_than: std::time::Duration) -> usize {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -1023,7 +1030,10 @@ fn spawn_session_rag_init(
         let _guard = rag.lock.lock().await;
         let _config = rag.config_lock.lock().await;
 
-        let kb = rag_kb_or_default(&req.kb);
+        let kb = match rag_kb_or_default(&req.kb) {
+            Ok(kb) => kb,
+            Err(e) => return send_rag_error(id, &e, &out_tx).await,
+        };
         let requested = req.embed_model.trim().to_string();
         let kb_for_args = kb.clone();
         let args = tokio::task::spawn_blocking(move || rag_init_args(&kb_for_args, &requested))
@@ -1036,8 +1046,8 @@ fn spawn_session_rag_init(
         };
 
         // init_kb is async (it awaits the Ollama probe and the tenant
-        // create), so it is driven directly rather than via spawn_blocking;
-        // the sync store work inside it is short.
+        // create), so it is driven directly; its store opens, which replay
+        // the corpus, run on the blocking pool inside it.
         match crate::rag_cmd::init_kb(&kb, embed_model, rag_dir, |_| {}).await {
             Ok(outcome) => {
                 // A tenant init created is absent from a store cached before it.
@@ -1330,7 +1340,7 @@ async fn run_rag_ingest(
     };
     use std::pin::Pin;
 
-    let kb = rag_kb_or_default(&req.kb);
+    let kb = rag_kb_or_default(&req.kb)?;
     let (rag_cfg, tenant_id) = crate::rag_cmd::load_rag_config_for(&kb)?;
     reject_if_remote(&kb, &rag_cfg)?;
 
@@ -1357,11 +1367,10 @@ async fn run_rag_ingest(
         slot,
     } = upload;
     let spool = receive_upload(id, &doc_name, req.size, pieces, &overrun, &out_tx).await?;
-    // Shared with each vector upload, so one this op abandons on cancel
-    // still lands under the lock.
-    let guard = Arc::new(rag.lock.clone().lock_owned().await);
 
-    // Extraction is sync and can be slow on big PDFs.
+    // Extraction is sync and can be slow on big PDFs. It touches no store,
+    // so it runs before the RAG lock: one slow PDF must not hold up every
+    // query and delete.
     let _ = out_tx
         .send(Ok(rag_progress_frame(
             id,
@@ -1372,8 +1381,14 @@ async fn run_rag_ingest(
         )))
         .await;
 
-    let extract_path = spool.path().to_path_buf();
-    let extract = tokio::task::spawn_blocking(move || document::extract_text(&extract_path));
+    // The spool file and the upload slot go with the extraction, so both
+    // last until the parse really ends — including one this op abandons on
+    // timeout or cancel. That keeps RAG_MAX_UPLOADS a bound on abandoned
+    // parses too, and the spool file is only for the parsers.
+    let extract = tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        document::extract_text(spool.path())
+    });
     let text = match tokio::time::timeout(RAG_EXTRACT_TIMEOUT, extract).await {
         Ok(joined) => joined.context("text extraction task panicked")??,
         Err(_) => anyhow::bail!(
@@ -1383,9 +1398,35 @@ async fn run_rag_ingest(
             RAG_EXTRACT_TIMEOUT.as_secs()
         ),
     };
-    // The spool file is only for the parsers; delete it now, not after embedding.
-    drop(spool);
-    drop(slot);
+    // Shared rather than copied: a 256 MiB upload can extract to a lot of text.
+    let text = Arc::new(text);
+
+    // Shared with each vector upload, so one this op abandons on cancel
+    // still lands under the lock.
+    let guard = Arc::new(rag.lock.clone().lock_owned().await);
+
+    // The same per-document steps the CLI takes (title, doc schema, its
+    // metadata), so a file chunks the same way through either. The CLI's
+    // `--doc-schema` file and `--ontology-library` selection read paths on
+    // the daemon's disk, so a client cannot ask for them; without them the
+    // CLI auto-detects the schema and keeps the KB's ontology, as here.
+    let schema = {
+        let rag_cfg = rag_cfg.clone();
+        let doc_name = doc_name.clone();
+        let text = text.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::rag_cmd::prepare_document(
+                &rag_cfg,
+                tenant_id,
+                &doc_name,
+                &text,
+                None,
+                &mut |line| info!(doc = %doc_name, "{line}"),
+            )
+        })
+        .await
+        .context("document preparation task panicked")??
+    };
 
     let data_dir = rag_cfg.data_dir();
     let meta_dir = data_dir.clone();
@@ -1423,6 +1464,7 @@ async fn run_rag_ingest(
     let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
     let mut cfg = IngestConfig::new(embed);
     cfg.bm25 = bm25;
+    cfg.doc_schema = schema;
 
     // `ingest_text`'s progress callback is sync and called from inside the
     // ingest future, so it can't await. Hand counts to a forwarder over an
@@ -1634,7 +1676,7 @@ async fn run_rag_query(req: RagQueryRequest, rag_stores: RagStores) -> Result<Ve
     };
     use std::pin::Pin;
 
-    let kb = rag_kb_or_default(&req.kb);
+    let kb = rag_kb_or_default(&req.kb)?;
     if req.text.trim().is_empty() {
         anyhow::bail!("rag_query requires non-empty query text");
     }
@@ -1762,7 +1804,7 @@ fn spawn_session_rag_delete(
 async fn run_rag_delete(req: RagDeleteRequest, rag_stores: RagStores) -> Result<RagDeleteReply> {
     use kwaai_rag::meta_store::MetaStore;
 
-    let kb = rag_kb_or_default(&req.kb);
+    let kb = rag_kb_or_default(&req.kb)?;
     let doc_name = req.doc_name.trim().to_string();
     if doc_name.is_empty() {
         anyhow::bail!("rag_delete requires a document name");
@@ -5317,6 +5359,258 @@ mod tests {
 
             let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
             assert!(msg.contains("cannot switch"), "got {msg:?}");
+            drop(handle);
+        }
+
+        /// A KB name is joined onto `~/.kwaainet/rag/` to make a new KB's
+        /// data dir, so one that is not a plain directory name is refused
+        /// before anything touches the disk or the embedder.
+        #[tokio::test]
+        async fn rag_ops_refuse_a_kb_name_that_is_not_a_plain_directory() {
+            use kwaai_rpc::v1::RagInitRequest;
+
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            let outside = tmp.path().join("outside");
+            let (handle, port) = spawn_test_server().await;
+
+            for kb in ["../escape", outside.to_str().expect("utf-8 temp path")] {
+                let bodies = round_trip(
+                    port,
+                    client_frame::Body::RagInit(RagInitRequest {
+                        kb: kb.into(),
+                        embed_model: String::new(),
+                    }),
+                )
+                .await;
+                let msg = expect_error(&bodies, ErrorCode::InvalidArgument);
+                assert!(msg.contains("invalid KB name"), "{kb}: {msg:?}");
+            }
+            assert!(!outside.exists(), "an absolute KB name created a dir");
+            assert!(!tmp.path().join("escape").exists(), "../ escaped rag/");
+
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagQuery(RagQueryRequest {
+                    kb: "../escape".into(),
+                    text: "anything".into(),
+                    ..Default::default()
+                }),
+            )
+            .await;
+            expect_error(&bodies, ErrorCode::InvalidArgument);
+            drop(handle);
+        }
+
+        /// Points the embedder at `url` for one test, restoring the
+        /// previous value on drop so a panic cannot leak it.
+        struct OllamaGuard(Option<std::ffi::OsString>);
+
+        impl OllamaGuard {
+            fn set(url: &str) -> Self {
+                let prev = std::env::var_os("OLLAMA_BASE_URL");
+                std::env::set_var("OLLAMA_BASE_URL", url);
+                Self(prev)
+            }
+        }
+
+        impl Drop for OllamaGuard {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("OLLAMA_BASE_URL", v),
+                    None => std::env::remove_var("OLLAMA_BASE_URL"),
+                }
+            }
+        }
+
+        /// An Ollama stand-in serving `/api/embed`: each text embeds to
+        /// its byte histogram over 8 buckets, so similar text scores close.
+        async fn spawn_fake_embedder() -> String {
+            use axum::{routing::post, Json, Router};
+
+            async fn embed(Json(req): Json<serde_json::Value>) -> Json<serde_json::Value> {
+                let embeddings: Vec<Vec<f32>> = req["input"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| t.as_str())
+                    .map(|t| {
+                        let mut v = vec![1.0f32; 8];
+                        for b in t.bytes() {
+                            v[(b % 8) as usize] += 1.0;
+                        }
+                        v
+                    })
+                    .collect();
+                Json(serde_json::json!({ "embeddings": embeddings }))
+            }
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind fake embedder");
+            let addr = listener.local_addr().expect("fake embedder addr");
+            let app = Router::new().route("/api/embed", post(embed));
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            format!("http://{addr}")
+        }
+
+        /// Upload `doc` as `doc_name` into `kb` and return the ingest reply.
+        async fn ingest_doc(
+            port: u16,
+            kb: &str,
+            doc_name: &str,
+            doc: &[u8],
+        ) -> kwaai_rpc::v1::RagIngestReply {
+            let bodies = round_trip_frames(
+                port,
+                vec![
+                    client_frame::Body::RagIngest(RagIngestRequest {
+                        kb: kb.into(),
+                        doc_name: doc_name.into(),
+                        size: doc.len() as u64,
+                    }),
+                    piece(doc),
+                ],
+            )
+            .await;
+            bodies
+                .iter()
+                .find_map(|b| match b {
+                    server_frame::Body::RagIngest(r) => Some(*r),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no ingest reply: {bodies:?}"))
+        }
+
+        /// Init, ingest, status and query, end to end against a stand-in
+        /// embedder. The ingest takes the CLI's per-document steps: the
+        /// title is recorded and the header's ISBN lands as doc metadata.
+        #[tokio::test]
+        async fn rag_ingest_end_to_end_takes_the_cli_document_steps() {
+            use kwaai_rpc::v1::RagInitRequest;
+
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            let _ollama = OllamaGuard::set(&spawn_fake_embedder().await);
+            let (handle, port) = spawn_test_server().await;
+
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagInit(RagInitRequest {
+                    kb: "kb1".into(),
+                    embed_model: String::new(),
+                }),
+            )
+            .await;
+            assert!(
+                matches!(bodies.last(), Some(server_frame::Body::Done(_))),
+                "init failed: {bodies:?}"
+            );
+
+            let mut doc = b"Title Page\nISBN 978-0-306-40615-7\n\n".to_vec();
+            doc.extend(b"KwaaiNet is a distributed inference network. ".repeat(40));
+            let reply = ingest_doc(port, "kb1", "handbook.txt", &doc).await;
+            assert!(reply.chunks_ingested > 0, "{reply:?}");
+
+            let bodies = round_trip(port, client_frame::Body::RagStatus(RagStatusRequest {})).await;
+            let docs: Vec<(String, u32)> = bodies
+                .iter()
+                .find_map(|b| match b {
+                    server_frame::Body::RagStatus(s) => s.kbs.iter().find(|k| k.name == "kb1"),
+                    _ => None,
+                })
+                .expect("kb1 in status")
+                .documents
+                .iter()
+                .map(|d| (d.name.clone(), d.chunks))
+                .collect();
+            assert_eq!(docs, vec![("handbook.txt".into(), reply.chunks_ingested)]);
+
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagQuery(RagQueryRequest {
+                    kb: "kb1".into(),
+                    text: "distributed inference".into(),
+                    ..Default::default()
+                }),
+            )
+            .await;
+            let hits: Vec<String> = bodies
+                .iter()
+                .find_map(|b| match b {
+                    server_frame::Body::RagQuery(q) => {
+                        Some(q.chunks.iter().map(|c| c.doc.clone()).collect())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("no query reply: {bodies:?}"));
+            assert!(hits.contains(&"handbook.txt".to_string()), "{hits:?}");
+
+            let (rag_cfg, tenant_id) =
+                crate::rag_cmd::load_rag_config_for("kb1").expect("kb1 saved");
+            let graph = kwaai_rag::graph::GraphStore::open(&rag_cfg.data_dir(), tenant_id)
+                .expect("open graph store");
+            assert_eq!(
+                graph.get_document_titles(),
+                vec!["handbook.txt".to_string()]
+            );
+            assert_eq!(
+                graph.get_doc_metadata().get("isbn").map(String::as_str),
+                Some("9780306406157")
+            );
+            drop(handle);
+        }
+
+        /// `rag_init` recreating a KB's tenant drops the vector store cached
+        /// before it, which would not know the new tenant.
+        #[tokio::test]
+        async fn rag_init_drops_the_cached_store_of_a_recreated_tenant() {
+            use kwaai_rpc::v1::RagInitRequest;
+
+            let _serial = TEST_LOCK.lock().await;
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let _env = EnvGuard::set(tmp.path());
+            let _ollama = OllamaGuard::set(&spawn_fake_embedder().await);
+            // A tenant id the store has never seen: init must recreate it.
+            save_local_kb(tmp.path(), None);
+            let (handle, port) = spawn_test_server().await;
+
+            // Caches the store for this data dir, whatever the query returns.
+            round_trip(
+                port,
+                client_frame::Body::RagQuery(RagQueryRequest {
+                    kb: "default".into(),
+                    text: "anything".into(),
+                    ..Default::default()
+                }),
+            )
+            .await;
+
+            let bodies = round_trip(
+                port,
+                client_frame::Body::RagInit(RagInitRequest {
+                    kb: "default".into(),
+                    embed_model: String::new(),
+                }),
+            )
+            .await;
+            assert!(
+                matches!(bodies.last(), Some(server_frame::Body::Done(_))),
+                "init failed: {bodies:?}"
+            );
+
+            let reply = ingest_doc(
+                port,
+                "default",
+                "notes.txt",
+                &b"KwaaiNet is a distributed inference network. ".repeat(40),
+            )
+            .await;
+            assert!(reply.vectors_uploaded > 0, "{reply:?}");
             drop(handle);
         }
 
