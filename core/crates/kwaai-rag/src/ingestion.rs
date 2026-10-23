@@ -98,6 +98,57 @@ pub struct GraphIngestConfig {
     /// Low-confidence cutoff for the Phase 4 lexical relation classifier (default 0.0,
     /// meaning nothing is dropped). Only effective when `relation_threshold_high > 0.0`.
     pub relation_threshold_low: f32,
+    /// Chunks whose extraction was lost, by cause, filled in during the build.
+    pub drop_stats: Arc<ChunkDropStats>,
+}
+
+/// Chunks a graph build processed without getting their entities, by cause.
+///
+/// Every one of these used to look like a chunk with no entities: the build
+/// finished with ✅ and the 10% cycle-0 graphs of the forgetting experiment
+/// had entities on 9–38% of their chunks (2026-10-21).
+#[derive(Debug, Default)]
+pub struct ChunkDropStats {
+    /// The answer parsed as neither accepted shape.
+    pub parse: AtomicUsize,
+    /// The answer was cut off mid-JSON.
+    pub truncated: AtomicUsize,
+    /// Every request attempt failed (transport or non-2xx).
+    pub request: AtomicUsize,
+    /// Entities came back, but none of an allowed type.
+    pub all_filtered: AtomicUsize,
+}
+
+impl ChunkDropStats {
+    /// Chunks whose answer was lost, as opposed to filtered.
+    pub fn lost(&self) -> usize {
+        self.parse.load(Ordering::Relaxed)
+            + self.truncated.load(Ordering::Relaxed)
+            + self.request.load(Ordering::Relaxed)
+    }
+
+    fn record(&self, e: &anyhow::Error) {
+        use crate::graph::ExtractionFailure as F;
+        let counter = match e.downcast_ref::<F>() {
+            Some(F::Parse(_)) => &self.parse,
+            Some(F::Truncated(_)) => &self.truncated,
+            // Untyped errors come from the request path too (client build, body read).
+            Some(F::Request(_)) | None => &self.request,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The line `graph build` prints after a build.
+    pub fn summary(&self) -> String {
+        format!(
+            "Chunks lost:       {} (parse {} · truncated {} · request {}) · all entities filtered: {}",
+            self.lost(),
+            self.parse.load(Ordering::Relaxed),
+            self.truncated.load(Ordering::Relaxed),
+            self.request.load(Ordering::Relaxed),
+            self.all_filtered.load(Ordering::Relaxed),
+        )
+    }
 }
 
 impl GraphIngestConfig {
@@ -663,6 +714,7 @@ pub async fn extract_and_store_entities_pub(
             .unwrap_or_else(|| ontology.clone());
         let axio_accum = axio_accum.clone();
         let doc_name_own = chunk.doc_name.clone();
+        let drop_stats = graph_cfg.drop_stats.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len();
@@ -875,6 +927,7 @@ pub async fn extract_and_store_entities_pub(
                     Ok(r) => r,
                     Err(e) => {
                         warn!("entity extraction error for chunk {chunk_id}: {e}");
+                        drop_stats.record(&e);
                         let _ = tx
                             .send(ChunkResult {
                                 chunk_id,
@@ -916,7 +969,11 @@ pub async fn extract_and_store_entities_pub(
 
             // Drop entities whose type the LLM returned outside the allowed list.
             if !et.is_empty() {
+                let before = entities.len();
                 entities.retain(|e| et.iter().any(|t| t.eq_ignore_ascii_case(&e.entity_type)));
+                if before > 0 && entities.is_empty() {
+                    drop_stats.all_filtered.fetch_add(1, Ordering::Relaxed);
+                }
             }
 
             let embeddings = if entities.is_empty() {
@@ -2573,5 +2630,28 @@ mod endpoint_resolution_tests {
             "a pronoun is never an endpoint"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod drop_stats_tests {
+    use super::*;
+    use crate::graph::ExtractionFailure;
+
+    #[test]
+    fn each_failure_is_counted_under_its_cause() {
+        let s = ChunkDropStats::default();
+        s.record(&anyhow::Error::new(ExtractionFailure::Parse("x".into())));
+        s.record(&anyhow::Error::new(ExtractionFailure::Truncated(
+            "x".into(),
+        )));
+        s.record(&anyhow::Error::new(ExtractionFailure::Request("x".into())));
+        s.record(&anyhow::anyhow!("untyped: from the request path"));
+        s.all_filtered.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(s.lost(), 4, "filtered chunks are not lost answers");
+        assert_eq!(
+            s.summary(),
+            "Chunks lost:       4 (parse 1 · truncated 1 · request 2) · all entities filtered: 1"
+        );
     }
 }

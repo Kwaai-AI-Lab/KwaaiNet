@@ -770,6 +770,7 @@ async fn cmd_ingest(
                 axiomatic_threshold: 0.0,
                 relation_threshold_high: 0.0,
                 relation_threshold_low: 0.0,
+                drop_stats: Default::default(),
             });
             print_info("Entity extraction enabled — knowledge graph will be updated");
         }
@@ -3400,6 +3401,7 @@ async fn run_sync_pass(
                     axiomatic_threshold: 0.0,
                     relation_threshold_high: 0.0,
                     relation_threshold_low: 0.0,
+                    drop_stats: Default::default(),
                 });
             }
         }
@@ -3894,6 +3896,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                     axiomatic_threshold,
                     relation_threshold_high,
                     relation_threshold_low,
+                    drop_stats: Default::default(),
                 };
 
                 let chunks: Vec<kwaai_rag::chunker::Chunk> = all_chunks
@@ -3958,6 +3961,13 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         "Graph built — {} entities, {} relations",
                         final_store.node_count(),
                         final_store.relation_count()
+                    ));
+                }
+                println!("  {}", graph_cfg.drop_stats.summary());
+                if graph_cfg.drop_stats.lost() > 0 {
+                    print_warning(&format!(
+                        "{} chunks lost their extraction and have no entities; see the warnings above",
+                        graph_cfg.drop_stats.lost()
                     ));
                 }
 
