@@ -105,4 +105,23 @@ sed -i '/# Like the above, but no aliases/i\    _stage_cuda_libs "$_src_dir" "$_
 #    in the final mv section). We use the line right before cleanup.
 sed -i '/ignore rm -rf "$_install_temp"/i\    _finalize_cuda_libs "$_install_temp" "$_install_dir"' "$INSTALLER"
 
+# ── Verify, because `sed -i` succeeds when it matches nothing ────────────
+# Nothing downstream looks at the installer again, so a marker that stopped
+# matching after a cargo-dist upgrade would ship a CPU-only installer in
+# silence. Assert every injection landed.
+missing=""
+for marker in \
+    '_try_cuda_upgrade()' \
+    '    _try_cuda_upgrade' \
+    '_stage_cuda_libs "$_src_dir" "$_install_temp"' \
+    '_finalize_cuda_libs "$_install_temp" "$_install_dir"'
+do
+    grep -qF -- "$marker" "$INSTALLER" || missing="${missing}
+  ${marker}"
+done
+if [ -n "$missing" ]; then
+    echo "ERROR: ${INSTALLER} is missing CUDA injections after patching:${missing}"
+    exit 1
+fi
+
 echo "Patched ${INSTALLER}: CUDA auto-detection and library install added"

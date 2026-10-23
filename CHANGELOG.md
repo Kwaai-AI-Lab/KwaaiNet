@@ -57,6 +57,11 @@ The historical record up to v0.3.7 follows.
 - `port_in_use` probes both address families, so the "already running" message is not defeated by a squatter holding only the v6 half.
 - `kwaai-p2p`: `is_announceable` now applies the strict (`only_global_ips: true`) tier, with no signature change — a caller outside this repo that relied on it admitting reserved space should switch to `is_announceable_with(addr, false)`.
 
+### Fixed
+- **The Windows installer installs the CUDA build on an NVIDIA machine.** `scripts/patch-installer-cuda-ps1.sh` was written but never called by the release workflow — only its shell counterpart was — so every published `kwaainet-installer.ps1` since the script was added has had no GPU detection at all, and every Windows GPU machine installed the CPU build. The workflow now patches both installers, and a missing installer fails the release instead of warning.
+- The Windows installer takes the `-cuda-full` archive when the machine has no CUDA runtime. The lean `-cuda` archive is the binary alone; installed on a machine without `cublas64_12.dll` the GPU binary died at startup with `0xC0000135` before printing anything. The choice now mirrors `install_update()` in `updater.rs`: lean when a runtime is already resolvable, full otherwise.
+- Both installer patch scripts fail the release when an injection does not land. `sed -i` exits 0 when it matches nothing, so a marker that stopped matching after a cargo-dist upgrade would have shipped a CPU-only installer in silence — the failure mode that hid the first bug above.
+
 ## [v0.3.7] - 2026-03-04
 
 ### Fixed
