@@ -456,6 +456,10 @@ pub async fn run_native_node(
     // so that ping/status/generate would answer during startup. Until now its
     // Network op has been reporting "still starting"; from here it can serve.
     grpc.attach_network(node.handle.clone()).await;
+    // The store as well: it is what the DHT-records op enumerates, and it is
+    // the only enumerable view of the DHT there is — Kademlia has no
+    // key-listing operation, so what this node holds is the whole answer.
+    grpc.attach_dht_storage(node.storage.clone()).await;
 
     // ── Announce inputs ────────────────────────────────────────────────────
     // Everything from here to the initial announce describes a record this node

@@ -1107,27 +1107,48 @@ impl NetworkService {
     /// (k=20 per bucket, 256 buckets) and never touching the network, so it is
     /// safe in the event loop.
     fn collect_routing_peers(&mut self) -> Vec<RoutingEntry> {
+        // Taken before the mutable behaviour borrow, and used to derive each
+        // entry's bucket from its distance rather than from the walk's
+        // position: `kbuckets()` skips empty buckets, so an index counted off
+        // the iteration would be a position in a filtered list, not the
+        // bucket's real index.
+        let local_key = kad::KBucketKey::from(*self.swarm.local_peer_id());
+
         self.swarm
             .behaviour_mut()
             .kad
             .kbuckets()
             .flat_map(|bucket| {
+                // Per bucket, not per entry, so they are read once out here.
+                let bucket_entries = bucket.num_entries();
+                let bucket_pending = bucket.has_pending();
+
                 bucket
                     .iter()
-                    .map(|entry| RoutingEntry {
-                        peer_id: *entry.node.key.preimage(),
-                        // Reported alongside the peer rather than dropped: an
-                        // entry with no usable address is a peer we know of but
-                        // cannot dial, and without the addresses that is
-                        // indistinguishable on screen from one we simply have
-                        // not connected to yet.
-                        addrs: entry
-                            .node
-                            .value
-                            .iter()
-                            .filter(|a| !a.is_empty())
-                            .cloned()
-                            .collect(),
+                    .map(|entry| {
+                        let distance = local_key.distance(entry.node.key);
+                        RoutingEntry {
+                            peer_id: *entry.node.key.preimage(),
+                            // Reported alongside the peer rather than dropped:
+                            // an entry with no usable address is a peer we know
+                            // of but cannot dial, and without the addresses
+                            // that is indistinguishable on screen from one we
+                            // simply have not connected to yet.
+                            addrs: entry
+                                .node
+                                .value
+                                .iter()
+                                .filter(|a| !a.is_empty())
+                                .cloned()
+                                .collect(),
+                            status: entry.status,
+                            // Only the local key itself has distance 0, and it
+                            // is in no bucket, so the fallback is unreachable.
+                            bucket: distance.ilog2().unwrap_or(0) as u8,
+                            bucket_entries,
+                            bucket_pending,
+                            distance,
+                        }
                     })
                     .collect::<Vec<_>>()
             })
