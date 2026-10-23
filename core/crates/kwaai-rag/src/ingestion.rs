@@ -103,6 +103,8 @@ pub struct GraphIngestConfig {
 }
 
 /// Chunks a graph build processed without getting their entities, by cause.
+/// Counted by the chunk-centric build only (not `--entity-centric` or
+/// `--ec-refine-only`, which `graph build` reports no line for).
 ///
 /// Every one of these used to look like a chunk with no entities: the build
 /// finished with ✅ and the 10% cycle-0 graphs of the forgetting experiment
@@ -132,7 +134,8 @@ impl ChunkDropStats {
         let counter = match e.downcast_ref::<F>() {
             Some(F::Parse(_)) => &self.parse,
             Some(F::Truncated(_)) => &self.truncated,
-            // Untyped errors come from the request path too (client build, body read).
+            // extract_from_text's errors are all typed; an untyped one would be
+            // the request path's, so it is counted there.
             Some(F::Request(_)) | None => &self.request,
         };
         counter.fetch_add(1, Ordering::Relaxed);
@@ -925,22 +928,15 @@ pub async fn extract_and_store_entities_pub(
                 .await
                 {
                     Ok(r) => r,
+                    // Counted, then carried on with no LLM entities, as Ok(empty) used to
+                    // be: the chunk's axiomatic entities are still embedded and stored,
+                    // and the type filter, timeline and metrics still run. Returning
+                    // early here sent them without embeddings, which the drain's zip
+                    // dropped.
                     Err(e) => {
                         warn!("entity extraction error for chunk {chunk_id}: {e}");
                         drop_stats.record(&e);
-                        let _ = tx
-                            .send(ChunkResult {
-                                chunk_id,
-                                doc_name: Some(doc_name_own.clone()),
-                                chunk_text: chunk_text_own,
-                                entities: axio_entities,
-                                relations: vec![],
-                                embeddings: vec![],
-                                raw_events: vec![],
-                                raw_interactions: vec![],
-                            })
-                            .await;
-                        return;
+                        (vec![], vec![])
                     }
                 }
             };

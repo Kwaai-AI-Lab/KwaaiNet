@@ -338,21 +338,18 @@ fn default_relation_source() -> String {
 /// Raw extraction output from the LLM before embedding / storing.
 ///
 /// Deserialization tolerates what an 8B model writes: a `null` anywhere reads
-/// as empty, and a number or boolean field value as its text. Each of those
-/// used to reject the whole chunk's answer.
+/// as empty, a number or boolean where text is expected (here or in `fields`)
+/// as its text, and a numeric string as the confidence. Each of those used to
+/// reject the whole chunk's answer.
 #[derive(Debug, Deserialize)]
 pub struct ExtractedEntity {
     /// Empty (missing or `null`) is dropped after parsing.
-    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
+    #[serde(default, deserialize_with = "text_or_default")]
     pub name: String,
-    #[serde(
-        rename = "type",
-        default,
-        deserialize_with = "crate::dream_tasks::null_as_default"
-    )]
+    #[serde(rename = "type", default, deserialize_with = "text_or_default")]
     pub entity_type: String,
     /// Legacy prose description; used when `fields` is empty (full 15-type extraction).
-    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
+    #[serde(default, deserialize_with = "text_or_default")]
     pub description: String,
     /// Structured fields returned by the 3-type (no_relations) extraction prompt.
     #[serde(default, deserialize_with = "field_values_as_text")]
@@ -371,9 +368,26 @@ fn default_extraction_confidence() -> f32 {
     1.0
 }
 
-/// `extraction_confidence`, with `null` read as the default rather than an error.
+/// `extraction_confidence`: a number, or a numeric string; `null` or anything
+/// else reads as the default rather than rejecting the answer.
 fn confidence_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
-    Ok(Option::<f32>::deserialize(d)?.unwrap_or_else(default_extraction_confidence))
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::Number(n)) => n.as_f64().map(|f| f as f32),
+        Some(serde_json::Value::String(s)) => s.trim().parse().ok(),
+        _ => None,
+    }
+    .unwrap_or_else(default_extraction_confidence))
+}
+
+/// A string as itself, a number or boolean as its JSON text, and `null`, an
+/// array or an object as empty.
+fn text_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => s,
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::Bool(b)) => b.to_string(),
+        _ => String::new(),
+    })
 }
 
 /// Field values as text: a string as itself, a number or boolean as its JSON
@@ -6402,6 +6416,10 @@ entities or omit the fictional one entirely.\n\n\
                         r.to = clean_entity_name(&r.to);
                         r
                     })
+                    // A null or missing predicate or endpoint parses as empty: no edge.
+                    // An empty predicate would otherwise be stored as-is (no ontology)
+                    // or become the fallback predicate.
+                    .filter(|r| !r.relation.is_empty() && !r.from.is_empty() && !r.to.is_empty())
                     .collect()
             };
             Ok((entities, relations))
@@ -6429,6 +6447,12 @@ entities or omit the fictional one entirely.\n\n\
 /// peer on a later attempt, instead of exhausting all attempts against an instant
 /// local 503 in milliseconds.
 ///
+/// Five attempts over about four minutes. Three (0, 15, 30 s) were not enough for
+/// a peer shedding load: metro-linux answers 502/503 above about two concurrent
+/// requests, and a 10% NIST cycle-0 build lost 14 chunks after the third attempt
+/// (forgetting experiment, 2026-10-21).
+const EXTRACT_RETRY_BACKOFF_SECS: [u64; 5] = [0, 15, 30, 60, 120];
+
 /// Output cap on an entity-extraction answer. 1024 cut off legitimate answers:
 /// 11-16 entities with descriptions and fields run to about 4,000 characters,
 /// and every one of 5 re-extracted Manhattan_v3 chunks that "failed to parse"
@@ -6437,18 +6461,12 @@ entities or omit the fictional one entirely.\n\n\
 /// prompt. A shorter answer costs nothing extra.
 const EXTRACTION_MAX_TOKENS: u64 = 3072;
 
-/// Five attempts over about four minutes. Three (0, 15, 30 s) were not enough for
-/// a peer shedding load: metro-linux answers 502/503 above about two concurrent
-/// requests, and a 10% NIST cycle-0 build lost 14 chunks after the third attempt
-/// (forgetting experiment, 2026-10-21).
-const EXTRACT_RETRY_BACKOFF_SECS: [u64; 5] = [0, 15, 30, 60, 120];
-
 /// POST the extraction request and read its streamed NDJSON body, retrying
 /// transport failures and non-2xx responses per `backoff_secs` before giving up.
 /// Returns `Err` only after all attempts fail, so callers can distinguish a
 /// genuine outage from "the LLM found no entities." `backoff_secs` is a parameter
 /// (rather than a hardcoded sleep) purely so tests can exercise the retry loop
-/// without waiting on the real ~45s production schedule.
+/// without waiting on the real production schedule (about four minutes of sleeps).
 async fn extract_request_with_retry(
     url: &str,
     body: &serde_json::Value,
@@ -7894,6 +7912,17 @@ mod extraction_parse_tests {
     }
 
     #[test]
+    fn non_string_text_and_string_confidence_do_not_reject_the_answer() {
+        let p = parse_extraction(
+            r#"[{"name": 1945, "type": "Event", "description": ["x"], "extraction_confidence": "0.4"}]"#,
+        )
+        .unwrap();
+        let e = &p.entities[0];
+        assert_eq!((e.name.as_str(), e.description.as_str()), ("1945", ""));
+        assert_eq!(e.extraction_confidence, 0.4);
+    }
+
+    #[test]
     fn a_truncated_answer_is_an_eof_error() {
         let e = parse_extraction(r#"{"entities":[{"name":"Grov"#).unwrap_err();
         assert!(e.is_eof());
@@ -7956,6 +7985,42 @@ mod extraction_parse_tests {
         let (entities, _) = extract(&url).await.unwrap();
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].name, "Leo Szilard");
+    }
+
+    /// Regression (review of the chunk-loss fix): a null predicate parsed as
+    /// empty and would have been written as an edge with no type.
+    #[tokio::test]
+    async fn a_relation_with_no_predicate_or_endpoint_is_dropped() {
+        let url = serve_chat(
+            r#"{"entities":[{"name":"Leo Szilard","type":"Person"},{"name":"Bela Szilard","type":"Person"}],
+                "relations":[{"from":"Leo Szilard","to":"Bela Szilard","relation":"sibling_of"},
+                             {"from":"Leo Szilard","to":"Bela Szilard","relation":null},
+                             {"from":null,"to":"Bela Szilard","relation":"sibling_of"}]}"#,
+        );
+        let (entities, relations) = extract_from_text(
+            "Bela Szilard was the brother of Leo Szilard.",
+            &["Leo Szilard".to_string(), "Bela Szilard".to_string()],
+            &[],
+            None,
+            &url,
+            "m",
+            &["Person"],
+            &[],
+            false,
+            None,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(entities.len(), 2);
+        assert_eq!(
+            relations
+                .iter()
+                .map(|r| r.relation.as_str())
+                .collect::<Vec<_>>(),
+            ["sibling_of"]
+        );
     }
 
     #[tokio::test]

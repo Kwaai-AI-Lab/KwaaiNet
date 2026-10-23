@@ -3963,7 +3963,10 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                         final_store.relation_count()
                     ));
                 }
-                println!("  {}", graph_cfg.drop_stats.summary());
+                // Only the chunk-centric build counts losses; elsewhere the line would read 0.
+                if !entity_centric && !ec_refine_only {
+                    println!("  {}", graph_cfg.drop_stats.summary());
+                }
                 if graph_cfg.drop_stats.lost() > 0 {
                     print_warning(&format!(
                         "{} chunks lost their extraction and have no entities; see the warnings above",
