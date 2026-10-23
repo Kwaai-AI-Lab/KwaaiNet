@@ -214,22 +214,39 @@ pub fn trim_evidence(text: &str) -> &str {
 
 // ── Shared LLM helpers ────────────────────────────────────────────────────────
 
+/// Read an explicit JSON `null` as the type's default.
+///
+/// `#[serde(default)]` covers a missing field, not a `null` one, and the model
+/// writes `"target": null` often enough to matter: the whole completion was
+/// rejected, and once a cycle's work had shrunk to that one entity the cycle
+/// failed (forgetting experiment, Manhattan_v3 and D6 at 1%, 2026-10-20).
+/// The empty value then meets the same filters an empty string always has.
+pub(crate) fn null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Debug, Deserialize)]
 struct TaskPayload {
     /// Legacy prose description returned by General task and fallback paths.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     description: String,
     /// Structured fields returned by Biography/Geography/OrgProfile tasks.
-    #[serde(default)]
-    fields: HashMap<String, String>,
-    #[serde(default)]
+    /// A `null` value is dropped like an empty one.
+    #[serde(default, deserialize_with = "null_as_default")]
+    fields: HashMap<String, Option<String>>,
+    #[serde(default, deserialize_with = "null_as_default")]
     relations: Vec<TaskRelation>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TaskRelation {
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default, deserialize_with = "null_as_default")]
     relation_type: String,
+    #[serde(default, deserialize_with = "null_as_default")]
     target: String,
 }
 
@@ -345,7 +362,7 @@ fn parse_result_with(
     let fields: HashMap<String, FieldValue> = payload
         .fields
         .into_iter()
-        .filter(|(_, v)| !v.is_empty())
+        .filter_map(|(k, v)| v.filter(|v| !v.is_empty()).map(|v| (k, v)))
         .map(|(k, v)| {
             let mut fv = FieldValue::new(v, *evidence_chunks.first().unwrap_or(&0));
             for &cid in evidence_chunks.iter().skip(1) {
@@ -1365,6 +1382,32 @@ mod ontology_task_tests {
             c.relations,
             vec![("authored".to_string(), "Franck Report".to_string())]
         );
+    }
+
+    /// Regression: one `null` used to reject the whole completion, and a cycle
+    /// left with only that entity failed (Manhattan_v3 and D6, 1% stage).
+    #[test]
+    fn null_fields_are_read_as_empty_not_a_parse_failure() {
+        let m = shipped("Manhattan");
+        let raw = r#"{"description":null,
+            "fields":{"birthDate":null,"role":"physicist"},
+            "relations":[
+            {"type":"authored","target":null},
+            {"type":null,"target":"Chicago"},
+            {"type":"wrote","target":"Franck Report"}]}"#;
+        let c = parse_result_with(raw, 1, "", &[1], &|r: &str| m.declared_relation(r));
+        assert_eq!(c.failure, None);
+        assert_eq!(c.description, None);
+        assert_eq!(
+            c.relations,
+            vec![("authored".to_string(), "Franck Report".to_string())]
+        );
+        assert_eq!(c.fields.keys().collect::<Vec<_>>(), vec!["role"]);
+
+        let all_null = r#"{"description":null,"fields":null,"relations":null}"#;
+        let c = parse_result_with(all_null, 1, "", &[1], &|r: &str| m.declared_relation(r));
+        assert_eq!(c.failure, None);
+        assert!(c.relations.is_empty() && c.fields.is_empty());
     }
 
     #[test]
