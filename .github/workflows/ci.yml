@@ -105,7 +105,7 @@ jobs:
           echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
 
       - name: Install protoc
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
 
       - name: Cache cargo + target
         uses: actions/cache@v4
@@ -155,7 +155,7 @@ jobs:
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
@@ -382,7 +382,7 @@ jobs:
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y protobuf-compiler
+        run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
 
       - name: Install protoc (macOS)
         if: runner.os == 'macOS'
