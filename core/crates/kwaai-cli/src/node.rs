@@ -250,6 +250,177 @@ pub(crate) fn jitter_secs(base: u64, spread: u64) -> u64 {
 // Auto-update
 // ---------------------------------------------------------------------------
 
+/// Spaces out auto-update attempts after a failure: a tick is every ~5 min,
+/// and a doomed install otherwise re-downloads the archive on each one.
+#[derive(Default)]
+struct UpdateBackoff {
+    failures: u32,
+    not_before: Option<std::time::Instant>,
+}
+
+static UPDATE_BACKOFF: std::sync::Mutex<UpdateBackoff> = std::sync::Mutex::new(UpdateBackoff {
+    failures: 0,
+    not_before: None,
+});
+
+impl UpdateBackoff {
+    const BASE: Duration = Duration::from_secs(15 * 60);
+    const MAX: Duration = Duration::from_secs(6 * 60 * 60);
+
+    fn ready(&self, now: std::time::Instant) -> bool {
+        self.not_before.is_none_or(|t| now >= t)
+    }
+
+    /// 15 min, doubling per consecutive failure, capped at 6 h.
+    fn failed(&mut self) -> Duration {
+        let delay = Self::BASE
+            .saturating_mul(1u32 << self.failures.min(8)) // min: no shift overflow
+            .min(Self::MAX);
+        self.failures += 1;
+        self.not_before = Some(std::time::Instant::now() + delay);
+        delay
+    }
+
+    fn succeeded(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// The update a check found, after logging a failed check and recording the
+/// outcome in `backoff`.
+fn note_check_result(
+    backoff: &std::sync::Mutex<UpdateBackoff>,
+    result: Result<Option<crate::updater::UpdateInfo>>,
+) -> Option<crate::updater::UpdateInfo> {
+    match result {
+        // The count stands, so repeated install failures keep doubling.
+        Ok(Some(update)) => Some(update),
+        Ok(None) => {
+            backoff.lock().unwrap().succeeded();
+            None
+        }
+        Err(e) => {
+            let retry = backoff.lock().unwrap().failed();
+            warn!("Auto-update check failed, no retry for at least {retry:?}: {e:#}");
+            None
+        }
+    }
+}
+
+/// A panic in the update thread backs off like any other failed attempt.
+pub(crate) fn note_update_panicked() {
+    let retry = UPDATE_BACKOFF.lock().unwrap().failed();
+    warn!("Auto-update panicked, no retry for at least {retry:?}");
+}
+
+/// Run [`maybe_auto_update`] on its own thread and runtime, sending the
+/// installed version to `done`: the install blocks, for minutes at worst.
+pub(crate) fn spawn_auto_update(
+    done: tokio::sync::mpsc::Sender<String>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let run = move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
+        match runtime {
+            Ok(rt) => {
+                if let Some(version) = rt.block_on(maybe_auto_update()) {
+                    // Never block here: a node shutting down is not reading.
+                    let _ = done.try_send(version);
+                }
+            }
+            Err(e) => warn!("Auto-update: could not start a runtime: {e}"),
+        }
+    };
+    std::thread::Builder::new()
+        .name("auto-update".into())
+        .spawn(run)
+        .map_err(|e| warn!("Auto-update: could not start a thread: {e}"))
+        .ok()
+}
+
+/// The developer escape hatch, parsed in one place so the gate and the line
+/// that reports the gate can never disagree: set to anything but empty, `0`
+/// or `false`.
+fn env_disables(value: Option<&str>) -> bool {
+    value.is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+}
+
+fn no_auto_update_env() -> bool {
+    env_disables(std::env::var("KWAAINET_NO_AUTO_UPDATE").ok().as_deref())
+}
+
+/// Why this node will not install its own updates. The gates return silently,
+/// so without this a disabled node looks exactly like an up-to-date one.
+#[derive(Debug)]
+pub(crate) enum AutoUpdateOff {
+    /// Somebody asked for this: the operator, the packaging, or the release line.
+    ByChoice(String),
+    /// Nobody asked for this — the node would update, but cannot read its config.
+    Fault(String),
+}
+
+/// Resolve the gates in the order they are actually applied. Split from
+/// [`auto_update_off`] so that order can be tested without touching the
+/// process environment or the disk.
+fn auto_update_off_for(
+    packaged: Option<&str>,
+    env_disabled: bool,
+    config_auto_update: Option<bool>,
+    pre_release: bool,
+) -> Option<AutoUpdateOff> {
+    if let Some(kind) = packaged {
+        return Some(AutoUpdateOff::ByChoice(format!(
+            "this is a {kind} package, which its package manager upgrades"
+        )));
+    }
+    if env_disabled {
+        return Some(AutoUpdateOff::ByChoice(
+            "KWAAINET_NO_AUTO_UPDATE is set in this environment — clearing it takes a restart"
+                .to_string(),
+        ));
+    }
+    match config_auto_update {
+        // `unwrap_or(false)` at the tick turns an unreadable config into an
+        // opt-out. That is the safe default, but it is nobody's decision.
+        None => Some(AutoUpdateOff::Fault(
+            "config.yaml could not be read, and the announce tick treats that as opt-out"
+                .to_string(),
+        )),
+        Some(false) => Some(AutoUpdateOff::ByChoice(
+            "contribute.auto_update is false in config.yaml".to_string(),
+        )),
+        Some(true) if !pre_release => Some(AutoUpdateOff::ByChoice(format!(
+            "v{} is past 1.0, and only pre-1.0 builds update themselves",
+            crate::updater::CURRENT_VERSION
+        ))),
+        Some(true) => None,
+    }
+}
+
+/// Why this node will not update itself, or `None` when it will. Reads the
+/// config from disk, exactly as the announce tick does.
+pub(crate) fn auto_update_off() -> Option<AutoUpdateOff> {
+    auto_update_off_for(
+        crate::updater::packaged_install(),
+        no_auto_update_env(),
+        KwaaiNetConfig::load_or_create()
+            .ok()
+            .map(|c| c.contribute.auto_update),
+        crate::config::is_pre_release(),
+    )
+}
+
+/// Say once, at startup, that this node will never update itself. Silence
+/// here means auto-update is live.
+pub(crate) fn log_auto_update_off() {
+    match auto_update_off() {
+        Some(AutoUpdateOff::ByChoice(why)) => info!("Auto-update is off: {why}"),
+        Some(AutoUpdateOff::Fault(why)) => warn!("Auto-update is off: {why}"),
+        None => {}
+    }
+}
+
 /// Check for a newer release and, if found, install it automatically.
 /// After a successful install the daemon exits cleanly so the OS service
 /// manager (systemd, launchd) or the user can restart it with the new binary.
@@ -272,19 +443,20 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     // download or install an update from inside the running node.
     // A packaged install is upgraded by the distro package manager: installing
     // into ~/.cargo/bin here would shadow /usr/bin/kwaainet on PATH.
-    if crate::updater::packaged_install().is_some()
-        || std::env::var("KWAAINET_NO_AUTO_UPDATE")
-            .map(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
-            .unwrap_or(false)
+    if crate::updater::packaged_install().is_some() || no_auto_update_env() {
+        return None;
+    }
+
+    if !UPDATE_BACKOFF
+        .lock()
+        .unwrap()
+        .ready(std::time::Instant::now())
     {
         return None;
     }
 
     let checker = crate::updater::UpdateChecker::new();
-    let update = match checker.check(false).await {
-        Ok(Some(u)) => u,
-        _ => return None,
-    };
+    let update = note_check_result(&UPDATE_BACKOFF, checker.check(false).await)?;
 
     info!(
         "Auto-update: new version {} available — installing…",
@@ -292,9 +464,12 @@ pub(crate) async fn maybe_auto_update() -> Option<String> {
     );
 
     if let Err(e) = checker.install_update(&update.version).await {
-        warn!("Auto-update install failed: {e:?}");
+        let retry = UPDATE_BACKOFF.lock().unwrap().failed();
+        warn!("Auto-update install failed, no retry for at least {retry:?}: {e:?}");
         return None;
     }
+
+    UPDATE_BACKOFF.lock().unwrap().succeeded();
 
     // Windows can rename a running executable in place — the OS loader opens
     // EXEs with FILE_SHARE_DELETE, so the memory mapping stays valid after the
@@ -693,5 +868,120 @@ mod capacity_lease_dht_tests {
 
         let lease_v1 = find_field(&fields, "lease_v1").expect("lease_v1 key present");
         assert_eq!(lease_v1.as_bool(), Some(true));
+    }
+}
+
+#[cfg(test)]
+mod auto_update_gate_tests {
+    use super::*;
+
+    /// The escape hatch is a string, and every spelling of "off" must stay off.
+    #[test]
+    fn the_escape_hatch_reads_the_same_everywhere() {
+        assert!(env_disables(Some("1")));
+        assert!(env_disables(Some("yes")));
+        assert!(!env_disables(None), "unset means auto-update is live");
+        assert!(!env_disables(Some("")));
+        assert!(!env_disables(Some("0")));
+        assert!(!env_disables(Some("false")));
+        assert!(!env_disables(Some("FALSE")));
+    }
+
+    #[test]
+    fn a_live_auto_update_says_nothing() {
+        assert!(auto_update_off_for(None, false, Some(true), true).is_none());
+    }
+
+    /// The gates are reported in the order they are applied, so the line names
+    /// the one that actually stopped the update.
+    #[test]
+    fn the_first_gate_to_fire_is_the_one_reported() {
+        let packaged = auto_update_off_for(Some("deb"), true, Some(false), true);
+        assert!(
+            matches!(packaged, Some(AutoUpdateOff::ByChoice(ref why)) if why.contains("deb")),
+            "{packaged:?}"
+        );
+
+        let env = auto_update_off_for(None, true, Some(false), true);
+        assert!(
+            matches!(env, Some(AutoUpdateOff::ByChoice(ref why))
+                if why.contains("KWAAINET_NO_AUTO_UPDATE")),
+            "{env:?}"
+        );
+
+        let config = auto_update_off_for(None, false, Some(false), true);
+        assert!(
+            matches!(config, Some(AutoUpdateOff::ByChoice(ref why))
+                if why.contains("contribute.auto_update")),
+            "{config:?}"
+        );
+
+        let released = auto_update_off_for(None, false, Some(true), false);
+        assert!(
+            matches!(released, Some(AutoUpdateOff::ByChoice(ref why)) if why.contains("1.0")),
+            "{released:?}"
+        );
+    }
+
+    /// An unreadable config disables auto-update without anyone asking, so it
+    /// warns where a deliberate opt-out only informs.
+    #[test]
+    fn an_unreadable_config_is_a_fault_not_a_choice() {
+        let off = auto_update_off_for(None, false, None, true);
+        assert!(
+            matches!(off, Some(AutoUpdateOff::Fault(ref why)) if why.contains("config.yaml")),
+            "{off:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod update_backoff_tests {
+    use super::*;
+
+    /// A failed check must arm the backoff, and "no update" must clear it.
+    #[test]
+    fn check_results_drive_the_backoff() {
+        let backoff = std::sync::Mutex::new(UpdateBackoff::default());
+        let now = std::time::Instant::now();
+
+        assert!(note_check_result(&backoff, Err(anyhow::anyhow!("dns"))).is_none());
+        assert!(!backoff.lock().unwrap().ready(now), "a failure backs off");
+
+        assert!(note_check_result(&backoff, Ok(None)).is_none());
+        assert!(backoff.lock().unwrap().ready(now), "a clean check resets");
+
+        let update = crate::updater::UpdateInfo {
+            version: "9.9.9".into(),
+            name: None,
+            url: None,
+            body: None,
+        };
+        backoff.lock().unwrap().failed();
+        let found = note_check_result(&backoff, Ok(Some(update)));
+        assert_eq!(found.map(|u| u.version).as_deref(), Some("9.9.9"));
+        assert_eq!(
+            backoff.lock().unwrap().failed(),
+            Duration::from_secs(30 * 60),
+            "finding an update must not reset the count: install failures double"
+        );
+    }
+
+    #[test]
+    fn update_backoff_doubles_caps_and_resets() {
+        let mut b = UpdateBackoff::default();
+        let now = std::time::Instant::now();
+        assert!(b.ready(now), "no failure yet: every tick may try");
+        assert_eq!(b.failed(), Duration::from_secs(15 * 60));
+        assert!(!b.ready(now), "the next ~5 min tick must be skipped");
+        assert!(b.ready(now + Duration::from_secs(16 * 60)));
+        assert_eq!(b.failed(), Duration::from_secs(30 * 60));
+        for _ in 0..40 {
+            assert!(b.failed() <= UpdateBackoff::MAX);
+        }
+        assert_eq!(b.failed(), UpdateBackoff::MAX);
+        b.succeeded();
+        assert!(b.ready(std::time::Instant::now()));
+        assert_eq!(b.failed(), Duration::from_secs(15 * 60));
     }
 }
