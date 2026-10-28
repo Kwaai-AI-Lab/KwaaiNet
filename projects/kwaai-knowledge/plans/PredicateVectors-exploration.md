@@ -167,3 +167,10 @@ unrelated piece of work.
 
 Until then the §3 conclusion stands unchanged: vectors for alias proposal and
 retrieval-side matching, never for write-time coercion.
+
+---
+
+**Follow-up (2026-10-20):** storing the predicate *as* a vector, so that
+write time never coerces and read time is a similarity search, is written up as a research
+avenue in [`PredicateAsVector-research.md`](./PredicateAsVector-research.md). It keeps §3's
+ruling against write-time coercion.
