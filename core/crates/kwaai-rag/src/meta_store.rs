@@ -268,6 +268,38 @@ impl MetaStore {
         Ok(docs)
     }
 
+    /// Every document with the number of chunks it contributed.
+    ///
+    /// The chunk count comes free: the `docs` row already stores the id
+    /// list, so this reads the same rows as [`list_docs`] and measures
+    /// the value instead of discarding it — no per-document query.
+    ///
+    /// A row whose value doesn't deserialise counts 0 rather than failing
+    /// the listing, matching how the rest of this store treats damaged
+    /// metadata as missing rather than fatal.
+    pub fn list_docs_with_counts(&self) -> Result<Vec<(String, u32)>> {
+        let prefix = self.tenant_id.as_bytes();
+        let start: Vec<u8> = prefix.to_vec();
+        let db = self.db();
+        let mut stmt =
+            db.0.prepare("SELECT key, value FROM docs WHERE key >= ?1 ORDER BY key")?;
+        let rows: Vec<(Vec<u8>, Vec<u8>)> = stmt
+            .query_map(params![start.as_slice()], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut docs = Vec::new();
+        for (kb, v) in rows {
+            if kb.len() < 16 || &kb[..16] != prefix.as_ref() {
+                break;
+            }
+            let name = String::from_utf8_lossy(&kb[16..]).into_owned();
+            let ids: Vec<i64> = serde_json::from_slice(&v).unwrap_or_default();
+            docs.push((name, ids.len() as u32));
+        }
+        Ok(docs)
+    }
+
     /// Delete all chunks for a document. Returns the chunk IDs removed.
     pub fn delete_doc(&self, doc_name: &str) -> Result<Vec<i64>> {
         let doc_key = Self::doc_key(self.tenant_id, doc_name);
@@ -490,6 +522,51 @@ mod document_order_tests {
                 ("b".into(), 0),
                 ("b".into(), 1)
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod doc_count_tests {
+    use super::*;
+
+    fn chunk(doc: &str, i: u32) -> ChunkMeta {
+        ChunkMeta {
+            doc_name: doc.into(),
+            chunk_index: i,
+            text: format!("{doc} {i}"),
+            surrounding: String::new(),
+            page_num: None,
+            ingested_at: String::new(),
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: Default::default(),
+        }
+    }
+
+    /// Each document's chunk count, which `rag_status` reports, and the
+    /// count after a delete.
+    #[test]
+    fn counts_each_documents_chunks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ms = MetaStore::open(dir.path(), Uuid::from_u128(1)).expect("open");
+        assert!(ms.list_docs_with_counts().expect("counts").is_empty());
+
+        ms.put_chunks(
+            &[chunk("a", 0), chunk("a", 1), chunk("a", 2), chunk("b", 0)],
+            &[10, 11, 12, 20],
+        )
+        .expect("put");
+        assert_eq!(
+            ms.list_docs_with_counts().expect("counts"),
+            vec![("a".to_string(), 3), ("b".to_string(), 1)]
+        );
+
+        ms.delete_doc("a").expect("delete");
+        assert_eq!(
+            ms.list_docs_with_counts().expect("counts"),
+            vec![("b".to_string(), 1)]
         );
     }
 }

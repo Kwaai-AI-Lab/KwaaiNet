@@ -340,6 +340,158 @@ pub async fn run(args: RagArgs) -> Result<()> {
 
 // ── init ──────────────────────────────────────────────────────────────────────
 
+/// Outcome of [`init_kb`], so callers can report what actually happened
+/// without re-reading the config.
+#[cfg(feature = "storage")]
+pub(crate) struct InitOutcome {
+    pub tenant_id: Uuid,
+    pub data_dir: std::path::PathBuf,
+    pub embed_dim: usize,
+    /// True when the KB already existed and this call only refreshed the
+    /// embedding model / data dir rather than creating a tenant.
+    pub already_initialised: bool,
+}
+
+/// Create (or idempotently refresh) a knowledge base.
+///
+/// This is the whole of init's *state* handling — probe the embedding
+/// model, create the tenant and metadata store, persist the RagConfig.
+/// It is deliberately free of terminal output so both the CLI
+/// ([`cmd_init`]) and the gRPC handler can drive it; the CLI layers its
+/// own `print_*` calls around the result.
+///
+/// `progress` is invoked with short status strings at the points the CLI
+/// used to print them inline, so the CLI's output ordering is unchanged.
+#[cfg(feature = "storage")]
+pub(crate) async fn init_kb(
+    name: &str,
+    embed_model: String,
+    rag_dir: Option<std::path::PathBuf>,
+    progress: impl Fn(&str),
+) -> Result<InitOutcome> {
+    crate::config::validate_kb_name(name)?;
+    let data_dir = rag_dir
+        .clone()
+        .unwrap_or_else(|| RagConfig::default_data_dir_for(name));
+    // For non-default KBs, always persist the resolved path so data_dir() works
+    // correctly when the KB name is not available (e.g., in load_rag_config_for).
+    let rag_data_dir_str = if name == "default" {
+        rag_dir.as_ref().map(|p| p.to_string_lossy().into_owned())
+    } else {
+        Some(data_dir.to_string_lossy().into_owned())
+    };
+
+    // Probe embedding model before touching storage — auto-detect dimension.
+    let embed = EmbedClient::new(None, Some(embed_model.clone()));
+    progress(&format!("Probing Ollama ({embed_model})…"));
+    let embed_dim = embed.probe_dim().await.map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("404") || msg.contains("not found") {
+            anyhow::anyhow!(
+                "Embedding model '{}' is not available in Ollama.\n\
+                 Pull it first:  ollama pull {}\n\
+                 Other supported models: ollama pull mxbai-embed-large\n\
+                 Then re-run:    kwaainet rag init --kb {} --embed-model {}",
+                embed_model,
+                embed_model,
+                name,
+                embed_model
+            )
+        } else if msg.contains("Connection refused") || msg.contains("connect") {
+            anyhow::anyhow!("Cannot reach Ollama — is it running?\n  Start it with: ollama serve")
+        } else {
+            e
+        }
+    })?;
+
+    // If already initialised, verify the tenant exists in the DB (idempotent).
+    // If the DB was wiped or rebuilt from an old format, fall through to recreate.
+    let existing_cfg = KwaaiNetConfig::load_or_create()?;
+    if let Some(existing_rag) = existing_cfg.get_rag_kb(name) {
+        if existing_rag.storage_url.as_deref() == Some("local") {
+            if let Some(ref tid) = existing_rag.tenant_id {
+                let tenant_id: Uuid = tid.parse().context("invalid tenant_id in config")?;
+                let tenant_in_db = if let Ok(db) = open_storage_db(&data_dir).await {
+                    let tm = kwaai_storage::TenantManager::new(db);
+                    tm.get(tenant_id).await.ok().flatten().is_some()
+                } else {
+                    false
+                };
+                if tenant_in_db {
+                    let mut cfg = existing_cfg;
+                    if let Some(r) = cfg.rag_kbs.get_mut(name).or(cfg.rag.as_mut()) {
+                        r.embed_model = embed_model;
+                        if rag_data_dir_str.is_some() {
+                            r.rag_data_dir = rag_data_dir_str;
+                        }
+                    }
+                    cfg.save()?;
+                    return Ok(InitOutcome {
+                        tenant_id,
+                        data_dir,
+                        embed_dim,
+                        already_initialised: true,
+                    });
+                }
+                progress("Tenant record missing from local DB — recreating knowledge base.");
+            }
+        }
+    }
+
+    // Fresh init: create local embedded vector store + tenant.
+    let db = open_storage_db(&data_dir)
+        .await
+        .context("opening local vector store")?;
+    let tm = kwaai_storage::TenantManager::new(db);
+    let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
+    let info = tm
+        .create(
+            &local_peer_id.to_base58(),
+            0,
+            Some(&format!("kwaai-rag/{name}")),
+            embed_dim,
+        )
+        .await
+        .context("creating local tenant")?;
+    let tenant_id = info.tenant_id;
+
+    MetaStore::open(&data_dir, tenant_id)?;
+
+    let mut cfg = KwaaiNetConfig::load_or_create()?;
+    cfg.set_rag_kb(
+        name,
+        RagConfig {
+            tenant_id: Some(tenant_id.to_string()),
+            eve_peer_id: None,
+            embed_model,
+            embed_dim,
+            embed_url: None,
+            inference_url: "http://localhost:8080".to_string(),
+            top_k: 5,
+            storage_url: Some("local".to_string()),
+            rag_data_dir: rag_data_dir_str,
+        },
+    );
+    cfg.save()?;
+
+    Ok(InitOutcome {
+        tenant_id,
+        data_dir,
+        embed_dim,
+        already_initialised: false,
+    })
+}
+
+/// `StorageDb::open` replays every stored vector into the in-memory index —
+/// O(corpus) sync work — so it runs on the blocking pool, not the reactor.
+#[cfg(feature = "storage")]
+async fn open_storage_db(data_dir: &std::path::Path) -> Result<kwaai_storage::StorageDb> {
+    let dir = data_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || kwaai_storage::StorageDb::open(&dir))
+        .await
+        .context("storage open task panicked")?
+}
+
 async fn cmd_init(
     name: String,
     embed_model: String,
@@ -353,125 +505,44 @@ async fn cmd_init(
     {
         print_box_header(&format!("RAG Init ({})", name));
 
-        let data_dir = rag_dir
-            .clone()
-            .unwrap_or_else(|| RagConfig::default_data_dir_for(&name));
-        // For non-default KBs, always persist the resolved path so data_dir() works
-        // correctly when the KB name is not available (e.g., in load_rag_config_for).
-        let rag_data_dir_str = if name == "default" {
-            rag_dir.as_ref().map(|p| p.to_string_lossy().into_owned())
-        } else {
-            Some(data_dir.to_string_lossy().into_owned())
-        };
-
-        // Probe embedding model before touching storage — auto-detect dimension.
-        let embed = EmbedClient::new(None, Some(embed_model.clone()));
-        print_info(&format!("Probing Ollama ({embed_model})…"));
-        let embed_dim = embed.probe_dim().await.map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("404") || msg.contains("not found") {
-                anyhow::anyhow!(
-                    "Embedding model '{}' is not available in Ollama.\n\
-                     Pull it first:  ollama pull {}\n\
-                     Other supported models: ollama pull mxbai-embed-large\n\
-                     Then re-run:    kwaainet rag init --kb {} --embed-model {}",
-                    embed_model,
-                    embed_model,
-                    name,
-                    embed_model
-                )
-            } else if msg.contains("Connection refused") || msg.contains("connect") {
-                anyhow::anyhow!(
-                    "Cannot reach Ollama — is it running?\n  Start it with: ollama serve"
-                )
+        // `init_kb` emits the two status lines the CLI used to print
+        // mid-function (the Ollama probe, and the recreate warning) via
+        // this callback. The remaining lines are printed from the
+        // outcome below; the only ordering change from the pre-refactor
+        // version is that "Embedding model OK" now lands just after
+        // init_kb returns rather than immediately after the probe, which
+        // puts it next to the other result lines it belongs with.
+        let outcome = init_kb(&name, embed_model, rag_dir, |msg| {
+            if msg.starts_with("Probing") {
+                print_info(msg);
             } else {
-                e
+                print_warning(msg);
             }
-        })?;
-        print_success(&format!("Embedding model OK ({embed_dim} dimensions)"));
+        })
+        .await?;
 
-        // If already initialised, verify the tenant exists in the DB (idempotent).
-        // If the DB was wiped or rebuilt from an old format, fall through to recreate.
-        let existing_cfg = KwaaiNetConfig::load_or_create()?;
-        if let Some(existing_rag) = existing_cfg.get_rag_kb(&name) {
-            if existing_rag.storage_url.as_deref() == Some("local") {
-                if let Some(ref tid) = existing_rag.tenant_id {
-                    let tenant_id: Uuid = tid.parse().context("invalid tenant_id in config")?;
-                    let tenant_in_db = if let Ok(db) = kwaai_storage::StorageDb::open(&data_dir) {
-                        let tm = kwaai_storage::TenantManager::new(db);
-                        tm.get(tenant_id).await.ok().flatten().is_some()
-                    } else {
-                        false
-                    };
-                    if tenant_in_db {
-                        print_info(&format!(
-                            "Knowledge base '{}':  {}",
-                            name,
-                            data_dir.display()
-                        ));
-                        print_success(&format!(
-                            "Already initialised (tenant {tenant_id}) — embedding model updated."
-                        ));
-                        let mut cfg = existing_cfg;
-                        if let Some(r) = cfg.rag_kbs.get_mut(&name).or(cfg.rag.as_mut()) {
-                            r.embed_model = embed_model;
-                            if rag_data_dir_str.is_some() {
-                                r.rag_data_dir = rag_data_dir_str;
-                            }
-                        }
-                        cfg.save()?;
-                        println!("  Next:  kwaainet rag ingest <file> --kb {name}");
-                        return Ok(());
-                    }
-                    print_warning(
-                        "Tenant record missing from local DB — recreating knowledge base.",
-                    );
-                }
-            }
-        }
-
-        // Fresh init: create local embedded vector store + tenant.
-        let db = kwaai_storage::StorageDb::open(&data_dir).context("opening local vector store")?;
-        let tm = kwaai_storage::TenantManager::new(db);
-        let local_peer_id = crate::identity::NodeIdentity::load_or_create()?.peer_id;
-        let info = tm
-            .create(
-                &local_peer_id.to_base58(),
-                0,
-                Some(&format!("kwaai-rag/{name}")),
-                embed_dim,
-            )
-            .await
-            .context("creating local tenant")?;
-        let tenant_id = info.tenant_id;
-
-        MetaStore::open(&data_dir, tenant_id)?;
+        print_success(&format!(
+            "Embedding model OK ({} dimensions)",
+            outcome.embed_dim
+        ));
         print_info(&format!(
             "Knowledge base '{}':  {}",
             name,
-            data_dir.display()
+            outcome.data_dir.display()
         ));
 
-        let mut cfg = KwaaiNetConfig::load_or_create()?;
-        cfg.set_rag_kb(
-            &name,
-            RagConfig {
-                tenant_id: Some(tenant_id.to_string()),
-                eve_peer_id: None,
-                embed_model,
-                embed_dim,
-                embed_url: None,
-                inference_url: "http://localhost:8080".to_string(),
-                top_k: 5,
-                storage_url: Some("local".to_string()),
-                rag_data_dir: rag_data_dir_str,
-            },
-        );
-        cfg.save()?;
+        if outcome.already_initialised {
+            print_success(&format!(
+                "Already initialised (tenant {}) — embedding model updated.",
+                outcome.tenant_id
+            ));
+            println!("  Next:  kwaainet rag ingest <file> --kb {name}");
+            return Ok(());
+        }
 
         print_success(&format!(
-            "Knowledge base '{}' initialised  (tenant {tenant_id})",
-            name
+            "Knowledge base '{}' initialised  (tenant {})",
+            name, outcome.tenant_id
         ));
         if graph {
             print_info("Graph extraction ready — use --extract-entities when ingesting");
@@ -613,6 +684,79 @@ fn select_document_ontology(
     Ok(())
 }
 
+/// The per-document steps every ingest takes before chunking, shared by the
+/// CLI and the daemon so one file chunks the same way through either: record
+/// the document's title, load its doc schema from `doc_schema_path` or
+/// auto-detect one from its header, and persist the schema's metadata.
+///
+/// `note` receives the status lines: the CLI prints them, the daemon logs
+/// them. Returns the schema for `IngestConfig::doc_schema`. Sync (graph-store
+/// writes); the daemon runs it on the blocking pool.
+#[cfg(feature = "storage")]
+pub(crate) fn prepare_document(
+    rag_cfg: &RagConfig,
+    tenant_id: Uuid,
+    doc_name: &str,
+    text: &str,
+    doc_schema_path: Option<&std::path::Path>,
+    note: &mut dyn FnMut(&str),
+) -> Result<Option<kwaai_rag::doc_schema::DocSchema>> {
+    // Store document title in graph store for LLM prompt injection
+    if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+        let _ = g.set_document_titles(&[doc_name.to_string()]);
+    }
+
+    // Doc schema: load from YAML, or auto-detect from the document header.
+    let schema = if let Some(path) = doc_schema_path {
+        let schema = kwaai_rag::doc_schema::load_doc_schema(path)?;
+        let skip_count = schema.sections.iter().filter(|s| s.skip).count();
+        let seed_count = schema.sections.iter().filter(|s| s.index_seeds).count();
+        let note_count = schema
+            .sections
+            .iter()
+            .filter(|s| s.narrator_note.is_some())
+            .count();
+        note(&format!(
+            "Doc-schema loaded: type={} sections={} (skip={}, index_seeds={}, narrator_notes={})",
+            schema.schema_type.as_deref().unwrap_or("untyped"),
+            schema.sections.len(),
+            skip_count,
+            seed_count,
+            note_count
+        ));
+        schema
+    } else {
+        let preview = &text[..text.floor_char_boundary(text.len().min(4000))];
+        let detected = kwaai_rag::doc_schema::auto_detect_schema(preview);
+        if detected.schema_type.is_none() && detected.metadata.is_empty() {
+            return Ok(None);
+        }
+        note(&format!(
+            "Doc-schema auto-detected: type={}, metadata_keys=[{}]",
+            detected.schema_type.as_deref().unwrap_or("unknown"),
+            detected
+                .metadata
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        detected
+    };
+
+    // Persist document metadata into the graph store for use at query/dream time.
+    if !schema.metadata.is_empty() {
+        if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
+            let _ = g.set_doc_metadata(&schema.metadata);
+            note(&format!(
+                "Doc metadata persisted: {} key(s)",
+                schema.metadata.len()
+            ));
+        }
+    }
+    Ok(Some(schema))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_ingest(
     file: std::path::PathBuf,
@@ -668,13 +812,6 @@ async fn cmd_ingest(
         let embed = EmbedClient::new(rag_cfg.embed_url.clone(), Some(rag_cfg.embed_model.clone()));
         let meta = MetaStore::open(&rag_cfg.data_dir(), tenant_id)?;
 
-        // Store document title in graph store for LLM prompt injection
-        {
-            if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                let _ = g.set_document_titles(std::slice::from_ref(&doc_name));
-            }
-        }
-
         let mut cfg = IngestConfig::new(embed);
         cfg.chunk_cfg.chunk_size = chunk_size;
         cfg.chunk_cfg.chunk_overlap = chunk_overlap;
@@ -688,57 +825,15 @@ async fn cmd_ingest(
             print_info(&format!("Doc-meta loaded: {} entries", cfg.doc_meta.len()));
         }
 
-        // Doc schema: load from YAML, or auto-detect from the document header.
-        let loaded_schema: Option<kwaai_rag::doc_schema::DocSchema> = if let Some(path) =
-            doc_schema_path
-        {
-            let schema = kwaai_rag::doc_schema::load_doc_schema(&path)?;
-            let skip_count = schema.sections.iter().filter(|s| s.skip).count();
-            let seed_count = schema.sections.iter().filter(|s| s.index_seeds).count();
-            let note_count = schema
-                .sections
-                .iter()
-                .filter(|s| s.narrator_note.is_some())
-                .count();
-            print_info(&format!(
-                "Doc-schema loaded: type={} sections={} (skip={}, index_seeds={}, narrator_notes={})",
-                schema.schema_type.as_deref().unwrap_or("untyped"),
-                schema.sections.len(), skip_count, seed_count, note_count
-            ));
-            Some(schema)
-        } else {
-            let preview = &text[..text.floor_char_boundary(text.len().min(4000))];
-            let detected = kwaai_rag::doc_schema::auto_detect_schema(preview);
-            if detected.schema_type.is_some() || !detected.metadata.is_empty() {
-                print_info(&format!(
-                    "Doc-schema auto-detected: type={}, metadata_keys=[{}]",
-                    detected.schema_type.as_deref().unwrap_or("unknown"),
-                    detected
-                        .metadata
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
-                Some(detected)
-            } else {
-                None
-            }
-        };
-
-        if let Some(ref schema) = loaded_schema {
-            // Persist document metadata into the graph store for use at query/dream time.
-            if !schema.metadata.is_empty() {
-                if let Ok(mut g) = GraphStore::open(&rag_cfg.data_dir(), tenant_id) {
-                    let _ = g.set_doc_metadata(&schema.metadata);
-                    print_info(&format!(
-                        "Doc metadata persisted: {} key(s)",
-                        schema.metadata.len()
-                    ));
-                }
-            }
-            cfg.doc_schema = Some(schema.clone());
-        }
+        let loaded_schema = prepare_document(
+            &rag_cfg,
+            tenant_id,
+            &doc_name,
+            &text,
+            doc_schema_path.as_deref(),
+            &mut |line| print_info(line),
+        )?;
+        cfg.doc_schema = loaded_schema.clone();
 
         if extract_entities {
             let infer_url = inference_url
@@ -2615,7 +2710,7 @@ fn open_bm25(rag_cfg: &RagConfig, meta: &MetaStore, label: &str) -> Option<Arc<B
     }
 }
 
-fn load_rag_config_for(kb: &str) -> Result<(RagConfig, Uuid)> {
+pub(crate) fn load_rag_config_for(kb: &str) -> Result<(RagConfig, Uuid)> {
     let cfg = KwaaiNetConfig::load_or_create()?;
     let rag = cfg
         .get_rag_kb(kb)
@@ -2641,7 +2736,7 @@ fn eve_peer_id(rag: &RagConfig) -> Result<PeerId> {
 }
 
 #[cfg(feature = "storage")]
-fn open_local_vs(data_dir: &std::path::Path) -> Result<kwaai_storage::VectorStore> {
+pub(crate) fn open_local_vs(data_dir: &std::path::Path) -> Result<kwaai_storage::VectorStore> {
     let db = kwaai_storage::StorageDb::open(data_dir).context("opening local vector store")?;
     Ok(kwaai_storage::VectorStore::new(db))
 }
