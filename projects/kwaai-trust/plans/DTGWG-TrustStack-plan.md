@@ -123,14 +123,15 @@ A node may be a member of the **community**, the Kwaai VTC. The community issues
 
 ![Request, response and identity mismatch](../design/img/dtgwg-trust-stack/3-sequence-request-response.png)
 
-The coloured bands repeat the ownership split. Steps 1–5 open the stream: node A's client
-derives its issuer VID and asks `kwaai-p2p` for a stream; node B's `kwaai-p2p` hands the
-crate the stream with the remote PeerId and mode. The crate then checks the frame size and
-resolves the parties. If the issuer matches the transport identity (or was omitted and is
-filled in from it), upstream checks replay and freshness and the handler answers on the
-same stream. If it does not match, the crate's `reject()` returns `identity_mismatch` and
-nothing reaches the handler. Closing the stream ends the exchange but changes no task
-state.
+The coloured bands repeat the ownership split. Each node has its own seam, so the two
+`kwaai-p2p` bands are separate components, joined only by the libp2p stream in step 4.
+Steps 1–5 open the stream: node A's client derives its issuer VID and asks node A's
+`kwaai-p2p` for a stream; node B's `kwaai-p2p` hands node B's crate the stream with the
+remote PeerId and mode. The crate then checks the frame size and resolves the parties. If
+the issuer matches the transport identity (or was omitted and is filled in from it),
+upstream checks replay and freshness and the handler answers on the same stream. If it
+does not match, the crate's `reject()` returns `identity_mismatch` and nothing reaches the
+handler. Closing the stream ends the exchange but changes no task state.
 
 ### Sequence: work that outlives its stream
 
