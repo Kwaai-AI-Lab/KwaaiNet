@@ -722,6 +722,7 @@ impl RagConfig {
     }
 
     /// Return the data dir scoped to a KB name (used by rag init for non-default KBs).
+    /// The name is joined as a path, so callers check it with [`validate_kb_name`].
     pub fn default_data_dir_for(name: &str) -> std::path::PathBuf {
         if name == "default" {
             kwaainet_dir().join("rag")
@@ -729,6 +730,32 @@ impl RagConfig {
             kwaainet_dir().join("rag").join(name)
         }
     }
+}
+
+/// Longest KB name [`validate_kb_name`] accepts.
+const KB_NAME_MAX_LEN: usize = 64;
+
+/// Refuse a KB name that is not a plain directory name.
+///
+/// A new KB's data dir is `~/.kwaainet/rag/<name>`, so `../x` would land
+/// outside it and `/tmp/x` would replace it outright (`Path::join` discards
+/// the base for an absolute path). `all` is refused because `rag query --kb
+/// all` means every KB.
+pub fn validate_kb_name(name: &str) -> Result<()> {
+    let plain = !name.is_empty()
+        && name.len() <= KB_NAME_MAX_LEN
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+    if !plain {
+        anyhow::bail!(
+            "invalid KB name {name:?}: use 1-{KB_NAME_MAX_LEN} letters, digits, '_' or '-'"
+        );
+    }
+    if name == "all" {
+        anyhow::bail!("invalid KB name \"all\": it means every KB in `rag query --kb all`");
+    }
+    Ok(())
 }
 
 impl Default for RagConfig {
@@ -802,6 +829,13 @@ fn default_port() -> u16 {
 }
 fn default_true() -> bool {
     true
+}
+
+/// Every read of config.yaml parses through here. It drops a leading UTF-8
+/// BOM: PowerShell 5.1 and Notepad write one, and serde_yaml reports it as
+/// "more than one document".
+fn from_yaml<T: serde::de::DeserializeOwned>(text: &str) -> serde_yaml::Result<T> {
+    serde_yaml::from_str(text.strip_prefix('\u{feff}').unwrap_or(text))
 }
 
 /// Returns true when the running binary is a pre-v1.0 build (major version == 0).
@@ -1118,7 +1152,7 @@ impl KwaaiNetConfig {
             log_level: Option<String>,
         }
         let text = std::fs::read_to_string(config_file()).ok()?;
-        serde_yaml::from_str::<LogLevelOnly>(&text).ok()?.log_level
+        from_yaml::<LogLevelOnly>(&text).ok()?.log_level
     }
 
     /// Load config from `~/.kwaainet/config.yaml`, creating it with defaults if absent.
@@ -1129,8 +1163,8 @@ impl KwaaiNetConfig {
         if cfg_file.exists() {
             let text = std::fs::read_to_string(&cfg_file)
                 .with_context(|| format!("reading {}", cfg_file.display()))?;
-            let mut cfg: KwaaiNetConfig = serde_yaml::from_str(&text)
-                .with_context(|| format!("parsing {}", cfg_file.display()))?;
+            let mut cfg: KwaaiNetConfig =
+                from_yaml(&text).with_context(|| format!("parsing {}", cfg_file.display()))?;
             // Map-derived fields are only valid for the model that was active when
             // the map was consulted. If the configured model is an explicit HF path,
             // clear them so node.rs derives the correct values from the model name.
@@ -1588,6 +1622,16 @@ mod tests {
             blocks,
             ..KwaaiNetConfig::default()
         }
+    }
+
+    /// PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM; unstripped, any
+    /// multi-line config fails as "more than one document".
+    #[test]
+    fn config_with_utf8_bom_parses() {
+        let text = "\u{feff}port: 8080\r\nblocks: 4\r\n";
+        assert!(serde_yaml::from_str::<KwaaiNetConfig>(text).is_err());
+        let cfg: KwaaiNetConfig = from_yaml(text).expect("the loader strips the BOM");
+        assert_eq!((cfg.port, cfg.blocks), (8080, 4));
     }
 
     #[test]
@@ -2173,5 +2217,30 @@ mod dnsaddr_bootstrap {
         let mut peers: Vec<String> = Vec::new();
         assert!(!migrate_default_peers(&mut peers));
         assert!(peers.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod kb_name_tests {
+    use super::validate_kb_name;
+
+    #[test]
+    fn plain_names_are_accepted() {
+        for name in ["default", "D6", "Manhattan_v3_df1R2", "my-kb", "a"] {
+            assert!(validate_kb_name(name).is_ok(), "{name}");
+        }
+    }
+
+    /// Each of these would put the KB's data dir somewhere other than
+    /// `~/.kwaainet/rag/<name>`, or collide with `--kb all`.
+    #[test]
+    fn names_that_are_not_a_plain_directory_are_refused() {
+        let long = "x".repeat(65);
+        for name in [
+            "", "..", "../x", "../../x", "/tmp/x", "a/b", r"a\b", "C:x", "a.b", " a", "kb\0",
+            "all", &long,
+        ] {
+            assert!(validate_kb_name(name).is_err(), "{name:?}");
+        }
     }
 }

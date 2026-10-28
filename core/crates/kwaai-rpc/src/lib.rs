@@ -35,3 +35,6 @@ pub mod v1 {
 // dependency on the exact tonic version we generated against. This keeps
 // the wire types and the transport pinned together.
 pub use tonic;
+
+// And prost, so a caller can measure a message's encoded size on the same line.
+pub use prost;
