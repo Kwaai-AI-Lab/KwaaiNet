@@ -235,18 +235,23 @@ struct TaskPayload {
     #[serde(default, deserialize_with = "null_as_default")]
     description: String,
     /// Structured fields returned by Biography/Geography/OrgProfile tasks.
-    /// A `null` value is dropped like an empty one.
-    #[serde(default, deserialize_with = "null_as_default")]
-    fields: HashMap<String, Option<String>>,
+    /// A number or boolean reads as its text (`"birthYear": 1945`); a `null`
+    /// value is dropped like an empty one.
+    #[serde(default, deserialize_with = "crate::graph::field_values_as_text")]
+    fields: HashMap<String, String>,
     #[serde(default, deserialize_with = "null_as_default")]
     relations: Vec<TaskRelation>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TaskRelation {
-    #[serde(rename = "type", default, deserialize_with = "null_as_default")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "crate::graph::text_or_default"
+    )]
     relation_type: String,
-    #[serde(default, deserialize_with = "null_as_default")]
+    #[serde(default, deserialize_with = "crate::graph::text_or_default")]
     target: String,
 }
 
@@ -362,7 +367,7 @@ fn parse_result_with(
     let fields: HashMap<String, FieldValue> = payload
         .fields
         .into_iter()
-        .filter_map(|(k, v)| v.filter(|v| !v.is_empty()).map(|v| (k, v)))
+        .filter(|(_, v)| !v.is_empty())
         .map(|(k, v)| {
             let mut fv = FieldValue::new(v, *evidence_chunks.first().unwrap_or(&0));
             for &cid in evidence_chunks.iter().skip(1) {
@@ -1408,6 +1413,23 @@ mod ontology_task_tests {
         let c = parse_result_with(all_null, 1, "", &[1], &|r: &str| m.declared_relation(r));
         assert_eq!(c.failure, None);
         assert!(c.relations.is_empty() && c.fields.is_empty());
+    }
+
+    /// A number where text was expected reads as its text, as extraction now
+    /// reads it, rather than rejecting the whole completion.
+    #[test]
+    fn numeric_fields_and_targets_are_read_as_text() {
+        let m = shipped("Manhattan");
+        let raw = r#"{"description":"",
+            "fields":{"birthYear":1898,"role":"physicist","alive":false},
+            "relations":[{"type":"wrote","target":1945}]}"#;
+        let c = parse_result_with(raw, 1, "", &[1], &|r: &str| m.declared_relation(r));
+        assert_eq!(c.failure, None);
+        let year = c.fields.get("birthYear").map(|f| f.value.as_str());
+        assert_eq!(year, Some("1898"));
+        assert_eq!(c.fields.len(), 3);
+        assert_eq!(c.relations.len(), 1);
+        assert_eq!(c.relations[0].1, "1945");
     }
 
     #[test]

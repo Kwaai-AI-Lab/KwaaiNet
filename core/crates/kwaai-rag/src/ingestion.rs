@@ -154,6 +154,30 @@ impl ChunkDropStats {
     }
 }
 
+/// A chunk's entities: its axiomatic ones, then whatever the LLM returned.
+///
+/// A failed LLM call is counted and contributes nothing, but never costs the
+/// chunk its axiomatic entities. Returning early on the error used to send them
+/// on without embeddings, and the drain's zip dropped them.
+fn merge_llm_answer(
+    mut axiomatic: Vec<ExtractedEntity>,
+    llm_answer: Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)>,
+    chunk_id: i64,
+    drop_stats: &ChunkDropStats,
+) -> (Vec<ExtractedEntity>, Vec<ExtractedRelation>) {
+    match llm_answer {
+        Ok((mut llm, relations)) => {
+            axiomatic.append(&mut llm);
+            (axiomatic, relations)
+        }
+        Err(e) => {
+            warn!("entity extraction error for chunk {chunk_id}: {e}");
+            drop_stats.record(&e);
+            (axiomatic, vec![])
+        }
+    }
+}
+
 impl GraphIngestConfig {
     fn effective_urls(&self) -> Vec<String> {
         if self.inference_urls.is_empty() {
@@ -903,10 +927,10 @@ pub async fn extract_and_store_entities_pub(
             };
 
             // ── Phase 4: LLM fallback for low-confidence candidates ───────────────
-            let (mut llm_entities, relations) = if llm_candidates.is_empty() {
-                (vec![], vec![])
+            let llm_answer = if llm_candidates.is_empty() {
+                Ok((vec![], vec![]))
             } else {
-                match extract_from_text(
+                extract_from_text(
                     &text,
                     &llm_candidates,
                     &pronoun_map,
@@ -926,20 +950,11 @@ pub async fn extract_and_store_entities_pub(
                     ontology.as_ref().as_ref().map(|o| o.ontology()),
                 )
                 .await
-                {
-                    Ok(r) => r,
-                    // Counted, then carried on with no LLM entities, as Ok(empty) used to
-                    // be: the chunk's axiomatic entities are still embedded and stored,
-                    // and the type filter, timeline and metrics still run. Returning
-                    // early here sent them without embeddings, which the drain's zip
-                    // dropped.
-                    Err(e) => {
-                        warn!("entity extraction error for chunk {chunk_id}: {e}");
-                        drop_stats.record(&e);
-                        (vec![], vec![])
-                    }
-                }
             };
+            let n_axio = axio_entities.len();
+            let (mut entities, relations) =
+                merge_llm_answer(axio_entities, llm_answer, chunk_id, &drop_stats);
+            let n_llm = entities.len() - n_axio;
 
             // Record chunk metrics for non-FullAxiomatic paths (after LLM completes).
             if axiomatic_threshold > 0.0
@@ -951,17 +966,13 @@ pub async fn extract_and_store_entities_pub(
                         a.record_chunk(
                             chunk_path,
                             elapsed_ms,
-                            axio_entities.len(),
-                            llm_entities.len(),
+                            n_axio,
+                            n_llm,
                             &axio_methods_for_record,
                         );
                     }
                 }
             }
-
-            // Merge axiomatic and LLM-extracted entities.
-            let mut entities = axio_entities;
-            entities.append(&mut llm_entities);
 
             // Drop entities whose type the LLM returned outside the allowed list.
             if !et.is_empty() {
@@ -2649,5 +2660,45 @@ mod drop_stats_tests {
             s.summary(),
             "Chunks lost:       4 (parse 1 · truncated 1 · request 2) · all entities filtered: 1"
         );
+    }
+    fn entity(name: &str) -> ExtractedEntity {
+        ExtractedEntity {
+            name: name.into(),
+            entity_type: "Person".into(),
+            description: String::new(),
+            fields: HashMap::new(),
+            extraction_confidence: 1.0,
+        }
+    }
+
+    /// A failed LLM call is counted, and the chunk keeps the entities the
+    /// axiomatic pass already found.
+    #[test]
+    fn a_failed_llm_answer_keeps_the_axiomatic_entities() {
+        let s = ChunkDropStats::default();
+        let (entities, relations) = merge_llm_answer(
+            vec![entity("Leo Szilard"), entity("Enrico Fermi")],
+            Err(anyhow::Error::new(ExtractionFailure::Parse("x".into()))),
+            7,
+            &s,
+        );
+        let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Leo Szilard", "Enrico Fermi"]);
+        assert!(relations.is_empty());
+        assert_eq!(s.parse.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn an_llm_answer_follows_the_axiomatic_entities() {
+        let s = ChunkDropStats::default();
+        let (entities, _) = merge_llm_answer(
+            vec![entity("Leo Szilard")],
+            Ok((vec![entity("Albert Einstein")], vec![])),
+            7,
+            &s,
+        );
+        let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Leo Szilard", "Albert Einstein"]);
+        assert_eq!(s.lost(), 0);
     }
 }

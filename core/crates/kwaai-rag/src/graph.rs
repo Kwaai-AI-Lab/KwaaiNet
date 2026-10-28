@@ -368,20 +368,38 @@ fn default_extraction_confidence() -> f32 {
     1.0
 }
 
-/// `extraction_confidence`: a number, or a numeric string; `null` or anything
-/// else reads as the default rather than rejecting the answer.
+/// `extraction_confidence` when the answer gives one the scale cannot read:
+/// "inferred", not "clearly stated". Reading it as the 1.0 default would
+/// promote an answer that said "low" to the highest confidence.
+const UNREADABLE_EXTRACTION_CONFIDENCE: f32 = 0.5;
+
+/// `extraction_confidence`: a number, a numeric string, or a word on the
+/// prompt's scale (high 1.0, medium 0.5, low 0.2). Missing or `null` is the
+/// 1.0 default, as for older prompts; anything else is
+/// [`UNREADABLE_EXTRACTION_CONFIDENCE`]. Never rejects the answer.
 fn confidence_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
     Ok(match Option::<serde_json::Value>::deserialize(d)? {
-        Some(serde_json::Value::Number(n)) => n.as_f64().map(|f| f as f32),
-        Some(serde_json::Value::String(s)) => s.trim().parse().ok(),
-        _ => None,
-    }
-    .unwrap_or_else(default_extraction_confidence))
+        None | Some(serde_json::Value::Null) => default_extraction_confidence(),
+        Some(serde_json::Value::Number(n)) => n
+            .as_f64()
+            .map_or(UNREADABLE_EXTRACTION_CONFIDENCE, |f| f as f32),
+        Some(serde_json::Value::String(s)) => {
+            let s = s.trim();
+            s.parse()
+                .unwrap_or_else(|_| match s.to_ascii_lowercase().as_str() {
+                    "high" => 1.0,
+                    "medium" => 0.5,
+                    "low" => 0.2,
+                    _ => UNREADABLE_EXTRACTION_CONFIDENCE,
+                })
+        }
+        Some(_) => UNREADABLE_EXTRACTION_CONFIDENCE,
+    })
 }
 
 /// A string as itself, a number or boolean as its JSON text, and `null`, an
 /// array or an object as empty.
-fn text_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+pub(crate) fn text_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     Ok(match Option::<serde_json::Value>::deserialize(d)? {
         Some(serde_json::Value::String(s)) => s,
         Some(serde_json::Value::Number(n)) => n.to_string(),
@@ -392,7 +410,7 @@ fn text_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::
 
 /// Field values as text: a string as itself, a number or boolean as its JSON
 /// text (`"year": 1945`), and `null`, an array or an object dropped.
-fn field_values_as_text<'de, D: serde::Deserializer<'de>>(
+pub(crate) fn field_values_as_text<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<HashMap<String, String>, D::Error> {
     let raw = Option::<HashMap<String, serde_json::Value>>::deserialize(d)?.unwrap_or_default();
@@ -590,14 +608,15 @@ pub fn best_ontology_trigger<'a>(
         .max_by_key(|t| t.phrase.len())
 }
 
-/// An empty endpoint (missing or `null`) is skipped when relations are written.
+/// A number or boolean reads as its text (`"to": 1945`); an empty endpoint or
+/// predicate (missing or `null`) is skipped when relations are written.
 #[derive(Debug, Deserialize)]
 pub struct ExtractedRelation {
-    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
+    #[serde(default, deserialize_with = "text_or_default")]
     pub from: String,
-    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
+    #[serde(default, deserialize_with = "text_or_default")]
     pub to: String,
-    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
+    #[serde(default, deserialize_with = "text_or_default")]
     pub relation: String,
 }
 
@@ -6371,8 +6390,11 @@ entities or omit the fictional one entirely.\n\n\
         .await
         .map_err(|e| anyhow::Error::new(ExtractionFailure::Request(e.to_string())))?;
 
-    // Accumulate content tokens from each streaming chunk
+    // Accumulate content tokens from each streaming chunk, and keep what the
+    // stream says about how it ended.
     let mut content_buf = String::new();
+    let mut done_reason: Option<String> = None;
+    let mut stream_error: Option<String> = None;
     for line in raw_text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -6381,6 +6403,12 @@ entities or omit the fictional one entirely.\n\n\
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             if let Some(c) = v["message"]["content"].as_str() {
                 content_buf.push_str(c);
+            }
+            if let Some(r) = v["done_reason"].as_str() {
+                done_reason = Some(r.to_string());
+            }
+            if let Some(e) = v["error"].as_str() {
+                stream_error = Some(e.to_string());
             }
         }
     }
@@ -6428,15 +6456,40 @@ entities or omit the fictional one entirely.\n\n\
         // with no entities (it was logged at debug only, and the build reported
         // success with most of D6's chunks unlinked).
         Err(e) => {
-            let failure = if e.is_eof() {
-                ExtractionFailure::Truncated(e.to_string())
-            } else {
-                ExtractionFailure::Parse(e.to_string())
-            };
+            let failure =
+                classify_unparsed(e, cleaned, done_reason.as_deref(), stream_error.as_deref());
             tracing::warn!("{failure}; raw: {cleaned:.200}");
             tracing::debug!("unparsed extraction answer in full: {cleaned}");
             Err(anyhow::Error::new(failure))
         }
+    }
+}
+
+/// Why an extraction answer that did not parse was lost.
+///
+/// Truncation is what the server said, not a guess from where the parse
+/// broke: Ollama's last line carries `done_reason: "length"` when the output
+/// cap stopped the answer. Calling an empty or error-only answer truncated
+/// would point at raising [`EXTRACTION_MAX_TOKENS`] for nothing. Without a
+/// `done_reason` (a server that does not send one), an answer that ends
+/// mid-JSON is still taken as truncated.
+fn classify_unparsed(
+    e: serde_json::Error,
+    cleaned: &str,
+    done_reason: Option<&str>,
+    stream_error: Option<&str>,
+) -> ExtractionFailure {
+    if let Some(err) = stream_error {
+        return ExtractionFailure::Request(format!("the stream reported an error: {err}"));
+    }
+    if cleaned.is_empty() {
+        return ExtractionFailure::Parse("the answer was empty".to_string());
+    }
+    match done_reason {
+        Some("length") => ExtractionFailure::Truncated(e.to_string()),
+        Some(_) => ExtractionFailure::Parse(e.to_string()),
+        None if e.is_eof() => ExtractionFailure::Truncated(e.to_string()),
+        None => ExtractionFailure::Parse(e.to_string()),
     }
 }
 
@@ -8037,5 +8090,87 @@ mod extraction_parse_tests {
             err.downcast_ref::<ExtractionFailure>(),
             Some(ExtractionFailure::Truncated(_))
         ));
+    }
+    fn eof_error() -> serde_json::Error {
+        parse_extraction(r#"[{"name":"Leo Szilard","type":"Pers"#).unwrap_err()
+    }
+
+    fn syntax_error() -> serde_json::Error {
+        parse_extraction(r#"[{"name":"Leo Szilard","type":"Person"},}]"#).unwrap_err()
+    }
+
+    /// Truncation is the server's word for it: a cap-stopped answer is
+    /// truncated wherever its parse broke, and a finished one never is.
+    #[test]
+    fn truncation_follows_the_done_reason() {
+        let cut = classify_unparsed(syntax_error(), "[{", Some("length"), None);
+        assert!(matches!(cut, ExtractionFailure::Truncated(_)), "{cut}");
+        let stopped = classify_unparsed(eof_error(), "[{", Some("stop"), None);
+        assert!(matches!(stopped, ExtractionFailure::Parse(_)), "{stopped}");
+    }
+
+    /// A server that sends no done_reason keeps the old reading: an answer
+    /// that ends mid-JSON was cut off.
+    #[test]
+    fn without_a_done_reason_an_answer_ending_mid_json_is_truncated() {
+        let f = classify_unparsed(eof_error(), "[{", None, None);
+        assert!(matches!(f, ExtractionFailure::Truncated(_)), "{f}");
+        let f = classify_unparsed(syntax_error(), "[{", None, None);
+        assert!(matches!(f, ExtractionFailure::Parse(_)), "{f}");
+    }
+
+    /// An empty answer and an error-only stream both fail to parse at EOF,
+    /// and neither is a truncation.
+    #[test]
+    fn an_empty_or_error_only_answer_is_not_truncated() {
+        let empty = serde_json::from_str::<ExtractionPayload>("").unwrap_err();
+        let f = classify_unparsed(empty, "", None, None);
+        assert!(
+            matches!(f, ExtractionFailure::Parse(ref m) if m.contains("empty")),
+            "{f}"
+        );
+
+        let empty = serde_json::from_str::<ExtractionPayload>("").unwrap_err();
+        let f = classify_unparsed(
+            empty,
+            "",
+            None,
+            Some("model runner has unexpectedly stopped"),
+        );
+        assert!(
+            matches!(f, ExtractionFailure::Request(ref m) if m.contains("unexpectedly")),
+            "{f}"
+        );
+    }
+
+    /// A number where a relation endpoint was expected reads as text, rather
+    /// than rejecting the chunk's whole answer, entities included.
+    #[test]
+    fn a_numeric_relation_endpoint_reads_as_text() {
+        let p = parse_extraction(
+            r#"{"entities":[{"name":"Trinity","type":"Event"}],
+                "relations":[{"from":"Trinity","to":1945,"relation":"occurred_in"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(p.entities.len(), 1);
+        assert_eq!(p.relations[0].to, "1945");
+    }
+
+    /// A confidence in words maps onto the prompt's scale; one the scale
+    /// cannot read is "inferred", never promoted to "clearly stated".
+    #[test]
+    fn a_worded_confidence_maps_onto_the_scale() {
+        let conf = |c: &str| {
+            let raw = format!(r#"[{{"name":"Leo Szilard","type":"Person"{c}}}]"#);
+            parse_extraction(&raw).unwrap().entities[0].extraction_confidence
+        };
+        assert_eq!(conf(r#","extraction_confidence":"low""#), 0.2);
+        assert_eq!(conf(r#","extraction_confidence":"Medium""#), 0.5);
+        assert_eq!(conf(r#","extraction_confidence":"high""#), 1.0);
+        assert_eq!(conf(r#","extraction_confidence":"0.4""#), 0.4);
+        assert_eq!(conf(r#","extraction_confidence":"unsure""#), 0.5);
+        assert_eq!(conf(r#","extraction_confidence":true"#), 0.5);
+        assert_eq!(conf(r#","extraction_confidence":null"#), 1.0);
+        assert_eq!(conf(""), 1.0);
     }
 }
