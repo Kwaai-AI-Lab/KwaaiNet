@@ -18,7 +18,7 @@ Ownership is the point of the design, so every diagram keeps it visible:
 
 | Colour | Owner | Changes when Trust Tasks changes? |
 |---|---|---|
-| Blue | KwaaiNet tree | **No** — only the `(PeerId, stream)` seam lives here |
+| Blue | KwaaiNet tree | **No** — only the `(PeerId, stream)` seam lives here, one per node |
 | Green | `trust-tasks-libp2p` — contributed by Kwaai, in the upstream workspace, co-maintained | Yes, carried by upstream's lockstep releases |
 | Grey | Upstream core (`trust-tasks-rs`) and third-party crates and services (OpenVTC, Affinidi) | Their releases |
 | Dashed | An open decision (diagram 6: the VTA) | — |
@@ -77,7 +77,7 @@ flowchart TB
     NET -- "authenticated PeerId + stream" --> B
 ```
 
-What crosses the KwaaiNet seam is only a stream, a `PeerId` and a direct/relayed flag.
+What crosses each node's KwaaiNet seam is only a stream, a `PeerId` and a direct/relayed flag.
 The Trust Task document, its parties, framing, the replay guard and the VID mapping all
 live in the contributed crate (green) or upstream (grey). That is why an upstream release
 does not touch our code.
@@ -212,8 +212,10 @@ sequenceDiagram
     box rgb(220,252,231) trust-tasks-libp2p, node A
     participant LA as client (A)
     end
-    box rgb(219,234,254) KwaaiNet seam
+    box rgb(219,234,254) KwaaiNet seam, node A
     participant PA as kwaai-p2p (A)
+    end
+    box rgb(219,234,254) KwaaiNet seam, node B
     participant PB as kwaai-p2p (B)
     end
     box rgb(220,252,231) trust-tasks-libp2p, node B
@@ -248,6 +250,13 @@ sequenceDiagram
     LA->>LB: half-close
     Note over LA,LB: half-close, reset and connection drop map to NO lifecycle state
 ```
+
+The two seams are separate components: `kwaai-p2p (A)` and `kwaai-p2p (B)` each run inside
+their own node's process, on their own machine, and share nothing. Step 4 is the only link
+between them, a Noise-authenticated libp2p stream over a direct or relayed connection. From
+step 6 on, frames travel over that stream, but the crate writes and reads them on each side;
+a seam only opens or accepts the stream and reports the remote PeerId and how it is
+connected.
 
 ## 4. Sequence — late response on a fresh stream
 
