@@ -36,6 +36,7 @@ use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tonic::{transport::Server, Request, Response, Status, Streaming};
 use tracing::{error, info, warn};
 
+use kwaai_hivemind_dht::DHTStorage;
 use kwaai_p2p::{
     reachability::{Reachability, Source},
     NetworkHandle,
@@ -45,11 +46,11 @@ use kwaai_rpc::v1::{
     error::Code as ErrorCode,
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
-    ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, Done, Error as RpcError,
-    GenerateRequest, HopFailure, InferenceEvent, InferenceHop, InferencePhase, NetworkRequest,
-    NetworkUpdate, PeerConnKind, PingReply, PingRequest, RoutingPeer, SelfStatus, ServerFrame,
-    ShardRunRequest, StatusReply, StorageDiscoveryRequest, StoragePeer, StorageReachability,
-    StorageUpdate, UpdateReason,
+    ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, DhtRecordsReply,
+    DhtRecordsRequest, Done, Error as RpcError, GenerateRequest, HopFailure, InferenceEvent,
+    InferenceHop, InferencePhase, NetworkRequest, NetworkUpdate, PeerConnKind, PingReply,
+    PingRequest, RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply,
+    StorageDiscoveryRequest, StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
 };
 #[cfg(feature = "rag")]
 use kwaai_rpc::v1::{
@@ -110,6 +111,9 @@ pub struct KwaaiNetService {
     /// so ping/status/generate answer while p2p is still coming up. Empty
     /// therefore means the node has not started yet.
     net: Arc<RwLock<Option<NetworkHandle>>>,
+    /// This node's own hivemind DHT store, filled in alongside `net`. Late-bound
+    /// for the same reason, and empty means the same two things.
+    dht: Arc<RwLock<Option<DHTStorage>>>,
     /// Captured at service construction so StatusReply.uptime_secs can
     /// report a process-level uptime without a separate clock.
     started_at: Instant,
@@ -157,6 +161,7 @@ impl KwaaiNetService {
             config: Arc::new(config),
             inference: Arc::new(Mutex::new(None)),
             net: Arc::new(RwLock::new(None)),
+            dht: Arc::new(RwLock::new(None)),
             started_at: Instant::now(),
             #[cfg(feature = "rag")]
             rag: RagShared {
@@ -255,6 +260,7 @@ impl KwaaiNet for KwaaiNetService {
         let cfg = self.config.clone();
         let inference_slot = self.inference.clone();
         let net_slot = self.net.clone();
+        let dht_slot = self.dht.clone();
         let started_at = self.started_at;
         #[cfg(feature = "rag")]
         let rag = self.rag.clone();
@@ -394,6 +400,17 @@ impl KwaaiNet for KwaaiNetService {
 
                     client_frame::Body::Connect(req) => {
                         spawn_session_connect(id, req, net_slot.clone(), out_tx.clone()).await;
+                    }
+
+                    client_frame::Body::DhtRecords(req) => {
+                        spawn_session_dht_records(
+                            id,
+                            req,
+                            dht_slot.clone(),
+                            cfg.clone(),
+                            out_tx.clone(),
+                        )
+                        .await;
                     }
 
                     client_frame::Body::Cancel(Cancel { target_id }) => {
@@ -2770,12 +2787,21 @@ fn network_identity(u: &NetworkUpdate) -> NetworkIdentity {
             // here would suppress the update that reports it.
             let mut addrs: Vec<&str> = r.addrs.iter().map(String::as_str).collect();
             addrs.sort_unstable();
+            // `last_contact_secs` is excluded for the same reason as `rtt_ms`:
+            // it moves every tick. `distance` and `bucket` are fixed for the
+            // life of an entry, so including them costs no wakeups and keeps
+            // the identity a complete description of what a client renders.
             format!(
-                "{}|{}|{}|{}",
+                "{}|{}|{}|{}|{}|{}|{}|{}|{}",
                 r.peer_id,
                 r.connected,
                 r.is_bootstrap,
-                addrs.join(",")
+                addrs.join(","),
+                r.kad_status,
+                r.bucket,
+                r.bucket_entries,
+                r.bucket_pending,
+                r.distance,
             )
         })
         .collect();
@@ -3008,6 +3034,149 @@ async fn spawn_session_connect(
     });
 }
 
+/// Records returned when the request names no `limit`, and the ceiling any
+/// `limit` is clamped to.
+///
+/// A reply has to fit one gRPC frame, and tonic's client default
+/// `max_decoding_message_size` is 4 MiB. The store's own bound is a million
+/// entries, whose metadata alone would be ~100 MB.
+const DHT_RECORDS_DEFAULT_LIMIT: usize = 500;
+const DHT_RECORDS_MAX_LIMIT: usize = 5_000;
+
+/// Serve a `dht_records` op: enumerate this node's own hivemind DHT store.
+///
+/// One-shot: the store moves on the ~120 s announce cycle, so a client that
+/// wants to watch it can poll.
+async fn spawn_session_dht_records(
+    id: u64,
+    req: DhtRecordsRequest,
+    dht: Arc<RwLock<Option<DHTStorage>>>,
+    cfg: Arc<KwaaiNetConfig>,
+    out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
+) {
+    tokio::spawn(async move {
+        let fail = |code, msg: String| {
+            let out_tx = out_tx.clone();
+            async move {
+                let _ = out_tx.send(Ok(error_frame(id, code, &msg))).await;
+            }
+        };
+        // The slot fills as the node starts, so retrying is right.
+        let Some(storage) = dht.read().await.clone() else {
+            let msg = "the p2p node is still starting; retry shortly";
+            return fail(ErrorCode::Unavailable, msg.to_string()).await;
+        };
+
+        // Values are up to MAX_VALUE_BYTES each, so a whole-store listing that
+        // carried them could not fit a frame at any useful limit.
+        if req.include_values && req.key_ids.is_empty() {
+            let msg = "include_values needs key_ids: values are only served for named records";
+            return fail(ErrorCode::InvalidArgument, msg.to_string()).await;
+        }
+        let keys = match parse_key_ids(&req.key_ids) {
+            Ok(keys) => keys,
+            Err(msg) => return fail(ErrorCode::InvalidArgument, msg).await,
+        };
+        let limit = match req.limit as usize {
+            0 => DHT_RECORDS_DEFAULT_LIMIT,
+            n => n.min(DHT_RECORDS_MAX_LIMIT),
+        };
+
+        // A full listing walks a million-entry store under its read lock.
+        let include_values = req.include_values;
+        let built = tokio::task::spawn_blocking(move || {
+            build_dht_records(&storage, &cfg, include_values, &keys, limit)
+        })
+        .await;
+        let reply = match built {
+            Ok(reply) => reply,
+            Err(e) => return fail(ErrorCode::Internal, format!("dht_records failed: {e}")).await,
+        };
+        let _ = out_tx
+            .send(Ok(ServerFrame {
+                id,
+                body: Some(server_frame::Body::DhtRecords(reply)),
+            }))
+            .await;
+        let _ = out_tx.send(Ok(done_frame(id))).await;
+    });
+}
+
+/// Decode `key_ids` to raw DHT keys, accepting either case and a `0x` prefix.
+fn parse_key_ids(ids: &[String]) -> Result<BTreeSet<Vec<u8>>, String> {
+    ids.iter()
+        .map(|id| {
+            let digits = id
+                .strip_prefix("0x")
+                .or_else(|| id.strip_prefix("0X"))
+                .unwrap_or(id);
+            match hex::decode(digits) {
+                Ok(key) if !key.is_empty() => Ok(key),
+                _ => Err(format!("key_ids: {id:?} is not a hex DHT id")),
+            }
+        })
+        .collect()
+}
+
+/// Build a `dht_records` reply. Blocking: it takes the store's locks.
+fn build_dht_records(
+    storage: &DHTStorage,
+    cfg: &KwaaiNetConfig,
+    include_values: bool,
+    keys: &BTreeSet<Vec<u8>>,
+    limit: usize,
+) -> DhtRecordsReply {
+    let known = crate::dht_records::known_keys(cfg);
+    let names: HashMap<&str, &str> = known
+        .iter()
+        .map(|k| (k.key_id.as_str(), k.name.as_str()))
+        .collect();
+    let now = kwaai_hivemind_dht::value::get_dht_time();
+
+    // Counted before truncation: a client comparing it against `records`
+    // is how it learns the listing was cut short.
+    let (matched, total_records) = if keys.is_empty() {
+        storage.local_records_page(limit)
+    } else {
+        let mut rows = storage.local_records_for(keys);
+        let total = rows.len();
+        rows.truncate(limit);
+        (rows, total)
+    };
+
+    let mut budget = crate::dht_records::ValueBudget::default();
+    let records: Vec<_> = matched
+        .iter()
+        .map(|record| {
+            let key_id = hex::encode(&record.summary.key);
+            // Read from this row's own tier, or a cache row would show the
+            // primary tier's value. A row gone since the listing is flagged.
+            let held = include_values.then(|| {
+                storage
+                    .with_local_record(&record.summary.key, record.in_cache, |v, _| {
+                        crate::dht_records::hold_value(v, &budget)
+                    })
+                    .unwrap_or(crate::dht_records::HeldValue::Vanished)
+            });
+            crate::dht_records::local_record(
+                record,
+                held,
+                names.get(key_id.as_str()).copied().unwrap_or_default(),
+                now,
+                &mut budget,
+            )
+        })
+        .collect();
+
+    DhtRecordsReply {
+        server_time: now_rfc3339(),
+        values_truncated: records.iter().any(|r| r.values_truncated),
+        records,
+        known_keys: known,
+        total_records: total_records as u32,
+    }
+}
+
 /// A bootstrap counts as reachable while it is connected or accepted a
 /// connection within this window. Recency rather than the live set because
 /// bootstraps close idle connections (~30 s), and the announce loop
@@ -3056,7 +3225,8 @@ fn build_network_update(
     reason: UpdateReason,
 ) -> NetworkUpdate {
     use crate::peers_view::{classify_addr, dht_role, group_index, ConnKind, DhtRole};
-    use kwaai_rpc::v1::DhtRole as WireDhtRole;
+    use kwaai_rpc::v1::{DhtRole as WireDhtRole, KadStatus as WireKadStatus};
+    use libp2p::kad::NodeStatus;
 
     let connected_ids: std::collections::HashSet<libp2p::PeerId> =
         snapshot.peers.iter().map(|p| p.peer_id).collect();
@@ -3108,6 +3278,14 @@ fn build_network_update(
     // view flicker as rows swap under the user.
     connected.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
+    // Linear scans over `last_contact` would be quadratic in the routing table;
+    // it is a small bounded cache, so one map serves the whole projection.
+    let last_contact: std::collections::HashMap<_, _> = snapshot
+        .last_contact
+        .iter()
+        .map(|(p, ago)| (*p, *ago))
+        .collect();
+
     let mut routing: Vec<RoutingPeer> = snapshot
         .routing
         .iter()
@@ -3116,6 +3294,18 @@ fn build_network_update(
             connected: connected_ids.contains(&p.peer_id),
             is_bootstrap: bootstraps.contains(&p.peer_id),
             addrs: p.addrs.iter().map(|a| a.to_string()).collect(),
+            kad_status: match p.status {
+                NodeStatus::Connected => WireKadStatus::Connected as i32,
+                NodeStatus::Disconnected => WireKadStatus::Disconnected as i32,
+            },
+            bucket: p.bucket as u32,
+            bucket_entries: p.bucket_entries as u32,
+            bucket_capacity: libp2p::kad::K_VALUE.get() as u32,
+            bucket_pending: p.bucket_pending,
+            // Fixed-width so distances sort and compare as strings, which is
+            // the only thing a client can usefully do with a 256-bit number.
+            distance: format!("{:064x}", p.distance.0),
+            last_contact_secs: last_contact.get(&p.peer_id).map(|ago| ago.as_secs() as u32),
         })
         .collect();
     routing.sort_by(|a, b| a.peer_id.cmp(&b.peer_id));
@@ -3418,6 +3608,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
 
     let svc_state = KwaaiNetService::new(config);
     let net_slot = svc_state.net.clone();
+    let dht_slot = svc_state.dht.clone();
     let service = KwaaiNetServer::new(svc_state);
 
     // Bind up front rather than inside the serve task: a clash has to be
@@ -3487,6 +3678,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
             #[cfg(unix)]
             shutdown_unix: Some(shutdown_unix_tx),
             net: net_slot,
+            dht: dht_slot,
             port_file,
         })
     }
@@ -3496,6 +3688,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
         Ok(GrpcServerHandle {
             shutdown_tcp,
             net: net_slot,
+            dht: dht_slot,
             port_file,
         })
     }
@@ -3565,6 +3758,8 @@ pub struct GrpcServerHandle {
     /// The service's swarm-handle slot, shared so the node can fill it once
     /// p2p is up. See [`GrpcServerHandle::attach_network`].
     net: Arc<RwLock<Option<NetworkHandle>>>,
+    /// The service's DHT-store slot; see [`GrpcServerHandle::attach_dht_storage`].
+    dht: Arc<RwLock<Option<DHTStorage>>>,
     /// `run/kwaainet.grpc`, when we managed to write it. Removed on shutdown.
     port_file: Option<PathBuf>,
 }
@@ -3578,6 +3773,12 @@ impl GrpcServerHandle {
     /// "unsupported" distinguishable from "still starting".
     pub async fn attach_network(&self, handle: NetworkHandle) {
         *self.net.write().await = Some(handle);
+    }
+
+    /// Hand this node's DHT store to the gRPC service, so the records op can
+    /// enumerate it. Same lifecycle as [`Self::attach_network`].
+    pub async fn attach_dht_storage(&self, storage: DHTStorage) {
+        *self.dht.write().await = Some(storage);
     }
 
     /// Trigger a graceful shutdown of both transports. Safe to call multiple
@@ -4333,6 +4534,7 @@ mod tests {
             connected: true,
             is_bootstrap: false,
             addrs: vec![],
+            ..Default::default()
         }];
         assert_ne!(network_identity(&a), network_identity(&routed));
 
@@ -4347,6 +4549,7 @@ mod tests {
             connected: false,
             is_bootstrap: false,
             addrs: vec!["/ip4/198.18.0.32/tcp/8080".into()],
+            ..Default::default()
         }];
         let mut stripped = addressed.clone();
         stripped.routing[0].addrs.clear();
@@ -4391,6 +4594,7 @@ mod tests {
             connected: false,
             is_bootstrap: true,
             addrs: vec![],
+            ..Default::default()
         }];
         let mut plain_routed = a.clone();
         plain_routed.routing = vec![RoutingPeer {
@@ -4398,10 +4602,61 @@ mod tests {
             connected: false,
             is_bootstrap: false,
             addrs: vec![],
+            ..Default::default()
         }];
         assert_ne!(
             network_identity(&bootstrap_routed),
             network_identity(&plain_routed)
+        );
+    }
+
+    /// The k-bucket detail behind the DHT-entry dialog: kad's own verdict and
+    /// the bucket's occupancy are things the client renders, so they have to
+    /// wake it — but `last_contact_secs` grows every tick and must not, or the
+    /// dialog's own detail fields would defeat suppression for the whole feed.
+    #[test]
+    fn network_identity_tracks_kad_detail_but_not_last_contact() {
+        let base = |f: fn(&mut RoutingPeer)| {
+            let mut u = net_update("2026-01-01T00:00:00Z", vec![net_peer("A")]);
+            let mut r = RoutingPeer {
+                peer_id: "A".into(),
+                connected: true,
+                kad_status: kwaai_rpc::v1::KadStatus::Connected as i32,
+                bucket: 250,
+                bucket_entries: 3,
+                bucket_capacity: 20,
+                ..Default::default()
+            };
+            f(&mut r);
+            u.routing = vec![r];
+            u
+        };
+
+        let a = base(|_| {});
+
+        // Kad lags the swarm by an event-loop turn, so this flips on its own.
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&base(
+                |r| r.kad_status = kwaai_rpc::v1::KadStatus::Disconnected as i32
+            ))
+        );
+
+        // Whether the bucket is full decides if a newly-found peer can be
+        // inserted at all — the dialog says so, so it must stay current.
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&base(|r| r.bucket_entries = 20))
+        );
+        assert_ne!(
+            network_identity(&a),
+            network_identity(&base(|r| r.bucket_pending = true))
+        );
+
+        // Elapsed time, on every entry, on every tick.
+        assert_eq!(
+            network_identity(&a),
+            network_identity(&base(|r| r.last_contact_secs = Some(41)))
         );
     }
 
@@ -5687,5 +5942,211 @@ mod tests {
             assert!(!stale.exists());
             assert!(live.exists() && other.exists());
         }
+    }
+
+    fn store_values(storage: &DHTStorage, rows: Vec<(&[u8], &[u8], Vec<u8>)>) {
+        use kwaai_hivemind_dht::protocol::{RequestAuthInfo, StoreRequest};
+        let n = rows.len();
+        let exp = kwaai_hivemind_dht::value::get_dht_time() + 3600.0;
+        let (keys, subkeys, values) = rows.into_iter().fold(
+            (vec![], vec![], vec![]),
+            |(mut k, mut s, mut v), (key, subkey, value)| {
+                k.push(key.to_vec());
+                s.push(subkey.to_vec());
+                v.push(value);
+                (k, s, v)
+            },
+        );
+        let ok = storage.handle_store(StoreRequest {
+            auth: Some(RequestAuthInfo::new()),
+            keys,
+            subkeys,
+            values,
+            expiration_time: vec![exp; n],
+            in_cache: vec![false; n],
+            peer: None,
+        });
+        assert!(ok.store_ok.iter().all(|ok| *ok), "fixture stores must land");
+    }
+
+    /// Values big enough to blow a 4 MiB frame many times over must come back
+    /// in one that fits, with every withheld value flagged.
+    #[test]
+    fn dht_records_values_stay_inside_one_frame() {
+        use kwaai_hivemind_dht::IS_REGULAR_VALUE;
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        // Not msgpack, so each renders as hex at twice its raw size.
+        let big = vec![0xc1u8; 900 * 1024];
+        let subkeys: Vec<[u8; 1]> = (0..8u8).map(|i| [i]).collect();
+        let mut rows: Vec<(&[u8], &[u8], Vec<u8>)> = subkeys
+            .iter()
+            .map(|sk| (b"dict".as_slice(), sk.as_slice(), big.clone()))
+            .collect();
+        for key in [b"r1", b"r2", b"r3"] {
+            rows.push((key.as_slice(), IS_REGULAR_VALUE, big.clone()));
+        }
+        store_values(&storage, rows);
+
+        let keys = [
+            b"dict".to_vec(),
+            b"r1".to_vec(),
+            b"r2".to_vec(),
+            b"r3".to_vec(),
+        ]
+        .into();
+        let reply = build_dht_records(&storage, &KwaaiNetConfig::default(), true, &keys, 100);
+        let frame = ServerFrame {
+            id: 1,
+            body: Some(server_frame::Body::DhtRecords(reply.clone())),
+        };
+        let len = kwaai_rpc::prost::Message::encoded_len(&frame);
+        assert!(len < 4 << 20, "{len} bytes");
+
+        assert_eq!(reply.records.len(), 4);
+        assert!(reply.values_truncated);
+        let dict = &reply.records[0];
+        assert_eq!(dict.subkey_count, 8);
+        assert!(!dict.subkeys.is_empty() && dict.subkeys.len() < 8);
+        assert!(dict.values_truncated);
+        // Once spent, nothing later is attached, however small.
+        for r in &reply.records[1..] {
+            assert!(r.value.is_none() && r.values_truncated, "{}", r.key_id);
+        }
+    }
+
+    /// Many small subkeys: their per-subkey framing must be charged too, or
+    /// 600 dictionaries of 256 tiny subkeys build a ~6 MiB frame.
+    #[test]
+    fn dht_records_subkey_overhead_counts_against_the_budget() {
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        let keys: Vec<[u8; 2]> = (0..600u16).map(u16::to_be_bytes).collect();
+        // Two bytes: a one-byte 0xc0 is the store's regular-value tag.
+        let subkeys: Vec<[u8; 2]> = (0..256u16).map(u16::to_be_bytes).collect();
+        // One dictionary per request: a store carries at most 1024 keys.
+        for k in &keys {
+            store_values(
+                &storage,
+                subkeys
+                    .iter()
+                    .map(|sk| (k.as_slice(), sk.as_slice(), vec![0x01]))
+                    .collect(),
+            );
+        }
+
+        let wanted = keys.iter().map(|k| k.to_vec()).collect();
+        let reply = build_dht_records(&storage, &KwaaiNetConfig::default(), true, &wanted, 5000);
+        let frame = ServerFrame {
+            id: 1,
+            body: Some(server_frame::Body::DhtRecords(reply.clone())),
+        };
+        let len = kwaai_rpc::prost::Message::encoded_len(&frame);
+        assert!(len < 4 << 20, "{len} bytes");
+        assert_eq!(reply.records.len(), 600);
+        assert!(
+            reply.values_truncated,
+            "the budget must have cut this reply"
+        );
+    }
+
+    /// The subkey cap truncates one record without spending the budget the
+    /// next record's value needs.
+    #[test]
+    fn dht_records_subkey_cap_is_per_record() {
+        use kwaai_hivemind_dht::IS_REGULAR_VALUE;
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        let n = crate::dht_records::MAX_SUBKEYS_PER_RECORD + 10;
+        let subkeys: Vec<[u8; 2]> = (0..n as u16).map(u16::to_be_bytes).collect();
+        let mut rows: Vec<(&[u8], &[u8], Vec<u8>)> = subkeys
+            .iter()
+            .map(|sk| (b"a-dict".as_slice(), sk.as_slice(), vec![0x01]))
+            .collect();
+        rows.push((b"b-plain", IS_REGULAR_VALUE, vec![0x2a]));
+        store_values(&storage, rows);
+
+        let keys = [b"a-dict".to_vec(), b"b-plain".to_vec()].into();
+        let reply = build_dht_records(&storage, &KwaaiNetConfig::default(), true, &keys, 100);
+        let (dict, plain) = (&reply.records[0], &reply.records[1]);
+        assert_eq!(dict.subkey_count as usize, n);
+        assert_eq!(
+            dict.subkeys.len(),
+            crate::dht_records::MAX_SUBKEYS_PER_RECORD
+        );
+        assert!(dict.values_truncated && reply.values_truncated);
+        assert_eq!(
+            plain.value.as_ref().map(|v| v.rendered.as_str()),
+            Some("42")
+        );
+        assert!(!plain.values_truncated);
+    }
+
+    /// A listing pages with the total still counting every match, and a
+    /// filtered one finds its keys by point lookup.
+    #[test]
+    fn dht_records_limit_and_key_filter() {
+        use kwaai_hivemind_dht::IS_REGULAR_VALUE;
+        let storage = DHTStorage::new(libp2p::PeerId::random());
+        let names: Vec<[u8; 1]> = (0..5u8).map(|i| [i]).collect();
+        store_values(
+            &storage,
+            names
+                .iter()
+                .map(|k| (k.as_slice(), IS_REGULAR_VALUE, vec![0xc0]))
+                .collect(),
+        );
+        let cfg = KwaaiNetConfig::default();
+
+        let page = build_dht_records(&storage, &cfg, false, &BTreeSet::new(), 2);
+        assert_eq!(page.total_records, 5);
+        let ids: Vec<_> = page.records.iter().map(|r| r.key_id.as_str()).collect();
+        assert_eq!(ids, ["00", "01"]);
+        assert!(page.records.iter().all(|r| r.value.is_none()));
+
+        let keys = parse_key_ids(&["0X03".into(), "ff".into()]).unwrap();
+        let picked = build_dht_records(&storage, &cfg, false, &keys, 100);
+        assert_eq!(picked.total_records, 1);
+        assert_eq!(picked.records[0].key_id, "03");
+    }
+
+    #[test]
+    fn dht_key_ids_accept_either_case_and_0x() {
+        let lower = parse_key_ids(&["abcd".into()]).unwrap();
+        assert_eq!(parse_key_ids(&["ABCD".into()]).unwrap(), lower);
+        assert_eq!(parse_key_ids(&["0xAbCd".into()]).unwrap(), lower);
+        for bad in ["xyz", "abc", "", "0x"] {
+            assert!(parse_key_ids(&[bad.into()]).is_err(), "{bad:?}");
+        }
+    }
+
+    /// The proto promises 64 lowercase hex digits with no `0x`; a small
+    /// distance is what exercises the zero padding.
+    #[test]
+    fn routing_distance_is_64_zero_padded_hex_digits() {
+        use libp2p::kad::{KBucketDistance, NodeStatus, U256};
+        let snapshot = kwaai_p2p::NetworkSnapshot {
+            local_peer_id: libp2p::PeerId::random(),
+            peers: vec![],
+            routing: vec![kwaai_p2p::handle::RoutingEntry {
+                peer_id: libp2p::PeerId::random(),
+                addrs: vec![],
+                status: NodeStatus::Disconnected,
+                bucket: 7,
+                bucket_entries: 1,
+                bucket_pending: false,
+                distance: KBucketDistance(U256::from(0xabu64)),
+            }],
+            reachability: kwaai_p2p::Reachability::Unknown,
+            relay_addrs: vec![],
+            observed_addrs: vec![],
+            listen_addrs: vec![],
+            ipv6: kwaai_p2p::Ipv6Status::Off,
+            local_protocols: vec![],
+            last_contact: vec![],
+        };
+        let none = std::collections::HashSet::new();
+        let update = build_network_update(&snapshot, &none, &none, UpdateReason::Tick);
+        let d = &update.routing[0].distance;
+        assert_eq!(d.len(), 64);
+        assert!(d.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')), "{d}");
+        assert_eq!(d, &format!("{}ab", "0".repeat(62)));
     }
 }

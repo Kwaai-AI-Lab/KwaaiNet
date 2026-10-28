@@ -19,6 +19,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
+use libp2p::kad::{KBucketDistance, NodeStatus};
 use libp2p::{Multiaddr, PeerId};
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -117,6 +118,19 @@ pub struct RoutingEntry {
     /// What kad holds for this peer, already filtered to addresses a third
     /// party could dial. Empty when kad knows the peer but no usable address.
     pub addrs: Vec<Multiaddr>,
+    /// Kad's own liveness verdict, which is not the swarm's connection set:
+    /// kad marks an entry disconnected on close but keeps it in the bucket.
+    pub status: NodeStatus,
+    /// The bucket holding this entry: `floor(log2(distance))`, 0-255.
+    pub bucket: u8,
+    /// How many entries that bucket holds, out of `k`. A full bucket cannot
+    /// take a newly-discovered peer at all — it only queues one as pending.
+    pub bucket_entries: usize,
+    /// Whether that bucket has a pending node waiting to replace a
+    /// disconnected occupant. Per bucket, so every entry in one agrees.
+    pub bucket_pending: bool,
+    /// XOR distance from our key to this peer's — the DHT's own metric.
+    pub distance: KBucketDistance,
 }
 
 /// Everything the Network view needs, captured in one pass over the service's
