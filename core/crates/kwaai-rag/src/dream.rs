@@ -115,20 +115,26 @@ pub struct EntityCompletion {
     pub fields: HashMap<String, crate::graph::FieldValue>,
 }
 
+// `null_as_default`: a `null` field must not reject the whole completion.
 #[derive(Debug, Deserialize)]
 struct CompletionPayload {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
     schema_type: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
     description: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
     relations: Vec<CompletionRelation>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CompletionRelation {
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "crate::dream_tasks::null_as_default"
+    )]
     relation_type: String,
+    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
     target: String,
 }
 
@@ -1135,6 +1141,28 @@ mod tests {
             accepted_relations(proposed(), false),
             vec![(RELATION_TYPES[0].to_string(), "Target Entity".to_string())]
         );
+    }
+
+    /// A `null` field parses as empty instead of rejecting the completion.
+    #[test]
+    fn completion_payload_reads_null_as_empty() {
+        let raw = format!(
+            r#"{{"schema_type":null,"description":null,"relations":[
+                {{"type":"{rt}","target":null}},
+                {{"type":null,"target":"Target Entity"}},
+                {{"type":"{rt}","target":"Target Entity"}}]}}"#,
+            rt = RELATION_TYPES[0]
+        );
+        let p: CompletionPayload = serde_json::from_str(&raw).unwrap();
+        assert!(p.schema_type.is_empty() && p.description.is_empty());
+        assert_eq!(
+            accepted_relations(p.relations, false),
+            vec![(RELATION_TYPES[0].to_string(), "Target Entity".to_string())]
+        );
+        let p: CompletionPayload =
+            serde_json::from_str(r#"{"schema_type":null,"description":null,"relations":null}"#)
+                .unwrap();
+        assert!(p.relations.is_empty());
     }
 
     fn sm(sentence: &str, entity_id: i64) -> SentenceMentions {

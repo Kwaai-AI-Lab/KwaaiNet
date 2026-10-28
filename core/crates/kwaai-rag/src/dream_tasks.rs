@@ -214,22 +214,44 @@ pub fn trim_evidence(text: &str) -> &str {
 
 // ── Shared LLM helpers ────────────────────────────────────────────────────────
 
+/// Read an explicit JSON `null` as the type's default.
+///
+/// `#[serde(default)]` covers a missing field, not a `null` one, and the model
+/// writes `"target": null` often enough to matter: the whole completion was
+/// rejected, and once a cycle's work had shrunk to that one entity the cycle
+/// failed (forgetting experiment, Manhattan_v3 and D6 at 1%, 2026-10-20).
+/// The empty value then meets the same filters an empty string always has.
+pub(crate) fn null_as_default<'de, D, T>(d: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(d)?.unwrap_or_default())
+}
+
 #[derive(Debug, Deserialize)]
 struct TaskPayload {
     /// Legacy prose description returned by General task and fallback paths.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     description: String,
     /// Structured fields returned by Biography/Geography/OrgProfile tasks.
-    #[serde(default)]
+    /// A number or boolean reads as its text (`"birthYear": 1945`); a `null`
+    /// value is dropped like an empty one.
+    #[serde(default, deserialize_with = "crate::graph::field_values_as_text")]
     fields: HashMap<String, String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     relations: Vec<TaskRelation>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TaskRelation {
-    #[serde(rename = "type")]
+    #[serde(
+        rename = "type",
+        default,
+        deserialize_with = "crate::graph::text_or_default"
+    )]
     relation_type: String,
+    #[serde(default, deserialize_with = "crate::graph::text_or_default")]
     target: String,
 }
 
@@ -1365,6 +1387,49 @@ mod ontology_task_tests {
             c.relations,
             vec![("authored".to_string(), "Franck Report".to_string())]
         );
+    }
+
+    /// Regression: one `null` used to reject the whole completion, and a cycle
+    /// left with only that entity failed (Manhattan_v3 and D6, 1% stage).
+    #[test]
+    fn null_fields_are_read_as_empty_not_a_parse_failure() {
+        let m = shipped("Manhattan");
+        let raw = r#"{"description":null,
+            "fields":{"birthDate":null,"role":"physicist"},
+            "relations":[
+            {"type":"authored","target":null},
+            {"type":null,"target":"Chicago"},
+            {"type":"wrote","target":"Franck Report"}]}"#;
+        let c = parse_result_with(raw, 1, "", &[1], &|r: &str| m.declared_relation(r));
+        assert_eq!(c.failure, None);
+        assert_eq!(c.description, None);
+        assert_eq!(
+            c.relations,
+            vec![("authored".to_string(), "Franck Report".to_string())]
+        );
+        assert_eq!(c.fields.keys().collect::<Vec<_>>(), vec!["role"]);
+
+        let all_null = r#"{"description":null,"fields":null,"relations":null}"#;
+        let c = parse_result_with(all_null, 1, "", &[1], &|r: &str| m.declared_relation(r));
+        assert_eq!(c.failure, None);
+        assert!(c.relations.is_empty() && c.fields.is_empty());
+    }
+
+    /// A number where text was expected reads as its text, as extraction now
+    /// reads it, rather than rejecting the whole completion.
+    #[test]
+    fn numeric_fields_and_targets_are_read_as_text() {
+        let m = shipped("Manhattan");
+        let raw = r#"{"description":"",
+            "fields":{"birthYear":1898,"role":"physicist","alive":false},
+            "relations":[{"type":"wrote","target":1945}]}"#;
+        let c = parse_result_with(raw, 1, "", &[1], &|r: &str| m.declared_relation(r));
+        assert_eq!(c.failure, None);
+        let year = c.fields.get("birthYear").map(|f| f.value.as_str());
+        assert_eq!(year, Some("1898"));
+        assert_eq!(c.fields.len(), 3);
+        assert_eq!(c.relations.len(), 1);
+        assert_eq!(c.relations[0].1, "1945");
     }
 
     #[test]

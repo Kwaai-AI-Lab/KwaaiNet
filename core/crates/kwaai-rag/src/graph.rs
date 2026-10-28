@@ -336,26 +336,93 @@ fn default_relation_source() -> String {
 }
 
 /// Raw extraction output from the LLM before embedding / storing.
+///
+/// Deserialization tolerates what an 8B model writes: a `null` anywhere reads
+/// as empty, a number or boolean where text is expected (here or in `fields`)
+/// as its text, and a numeric string as the confidence. Each of those used to
+/// reject the whole chunk's answer.
 #[derive(Debug, Deserialize)]
 pub struct ExtractedEntity {
+    /// Empty (missing or `null`) is dropped after parsing.
+    #[serde(default, deserialize_with = "text_or_default")]
     pub name: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", default, deserialize_with = "text_or_default")]
     pub entity_type: String,
     /// Legacy prose description; used when `fields` is empty (full 15-type extraction).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "text_or_default")]
     pub description: String,
     /// Structured fields returned by the 3-type (no_relations) extraction prompt.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "field_values_as_text")]
     pub fields: HashMap<String, String>,
     /// LLM-assigned extraction confidence: 1.0 = clearly stated in text, 0.5 = inferred
     /// from context, 0.2 = uncertain or possible hallucination. Defaults to 1.0 when
     /// the LLM omits the field (older prompts, backwards compatibility).
-    #[serde(default = "default_extraction_confidence")]
+    #[serde(
+        default = "default_extraction_confidence",
+        deserialize_with = "confidence_or_default"
+    )]
     pub extraction_confidence: f32,
 }
 
 fn default_extraction_confidence() -> f32 {
     1.0
+}
+
+/// `extraction_confidence` when the answer gives one the scale cannot read:
+/// "inferred", not "clearly stated". Reading it as the 1.0 default would
+/// promote an answer that said "low" to the highest confidence.
+const UNREADABLE_EXTRACTION_CONFIDENCE: f32 = 0.5;
+
+/// `extraction_confidence`: a number, a numeric string, or a word on the
+/// prompt's scale (high 1.0, medium 0.5, low 0.2). Missing or `null` is the
+/// 1.0 default, as for older prompts; anything else is
+/// [`UNREADABLE_EXTRACTION_CONFIDENCE`]. Never rejects the answer.
+fn confidence_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<f32, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        None | Some(serde_json::Value::Null) => default_extraction_confidence(),
+        Some(serde_json::Value::Number(n)) => n
+            .as_f64()
+            .map_or(UNREADABLE_EXTRACTION_CONFIDENCE, |f| f as f32),
+        Some(serde_json::Value::String(s)) => {
+            let s = s.trim();
+            s.parse()
+                .unwrap_or_else(|_| match s.to_ascii_lowercase().as_str() {
+                    "high" => 1.0,
+                    "medium" => 0.5,
+                    "low" => 0.2,
+                    _ => UNREADABLE_EXTRACTION_CONFIDENCE,
+                })
+        }
+        Some(_) => UNREADABLE_EXTRACTION_CONFIDENCE,
+    })
+}
+
+/// A string as itself, a number or boolean as its JSON text, and `null`, an
+/// array or an object as empty.
+pub(crate) fn text_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::String(s)) => s,
+        Some(serde_json::Value::Number(n)) => n.to_string(),
+        Some(serde_json::Value::Bool(b)) => b.to_string(),
+        _ => String::new(),
+    })
+}
+
+/// Field values as text: a string as itself, a number or boolean as its JSON
+/// text (`"year": 1945`), and `null`, an array or an object dropped.
+pub(crate) fn field_values_as_text<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<HashMap<String, String>, D::Error> {
+    let raw = Option::<HashMap<String, serde_json::Value>>::deserialize(d)?.unwrap_or_default();
+    Ok(raw
+        .into_iter()
+        .filter_map(|(k, v)| match v {
+            serde_json::Value::String(s) => Some((k, s)),
+            serde_json::Value::Number(n) => Some((k, n.to_string())),
+            serde_json::Value::Bool(b) => Some((k, b.to_string())),
+            _ => None,
+        })
+        .collect())
 }
 
 /// Per-KB type definition used by the 70b validation pass.
@@ -541,20 +608,71 @@ pub fn best_ontology_trigger<'a>(
         .max_by_key(|t| t.phrase.len())
 }
 
+/// A number or boolean reads as its text (`"to": 1945`); an empty endpoint or
+/// predicate (missing or `null`) is skipped when relations are written.
 #[derive(Debug, Deserialize)]
 pub struct ExtractedRelation {
+    #[serde(default, deserialize_with = "text_or_default")]
     pub from: String,
+    #[serde(default, deserialize_with = "text_or_default")]
     pub to: String,
+    #[serde(default, deserialize_with = "text_or_default")]
     pub relation: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct ExtractionPayload {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
     entities: Vec<ExtractedEntity>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::dream_tasks::null_as_default")]
     relations: Vec<ExtractedRelation>,
 }
+
+/// Parse an extraction answer: the `{"entities": [...], "relations": [...]}`
+/// object the prompt asks for, or a bare array of entities. llama3.1:8b
+/// answers with the bare array for some chunks, deterministically at
+/// temperature 0, and every such chunk used to be discarded with only a debug
+/// line: 6 of 6 unlinked D6 chunks probed, 14 of 41 Manhattan_v3 (2026-10-21).
+/// On failure the error returned is that of the shape the answer starts in:
+/// reporting the object form's error for an array hid why arrays failed.
+fn parse_extraction(cleaned: &str) -> Result<ExtractionPayload, serde_json::Error> {
+    match serde_json::from_str::<ExtractionPayload>(cleaned) {
+        Ok(p) => Ok(p),
+        Err(object_err) => match serde_json::from_str::<Vec<ExtractedEntity>>(cleaned) {
+            Ok(entities) => Ok(ExtractionPayload {
+                entities,
+                relations: Vec::new(),
+            }),
+            Err(array_err) if cleaned.starts_with('[') => Err(array_err),
+            Err(_) => Err(object_err),
+        },
+    }
+}
+
+/// Why a chunk's extraction yielded nothing usable. A typed error so callers
+/// can count each cause: `Ok` with no entities means the model found none,
+/// which is a different thing from its answer being lost.
+#[derive(Debug)]
+pub enum ExtractionFailure {
+    /// The answer was not JSON in either accepted shape.
+    Parse(String),
+    /// The answer ended mid-JSON: the output cap cut it off.
+    Truncated(String),
+    /// Every attempt failed in transport or with a non-2xx status.
+    Request(String),
+}
+
+impl std::fmt::Display for ExtractionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Parse(e) => write!(f, "extraction answer did not parse: {e}"),
+            Self::Truncated(e) => write!(f, "extraction answer was cut off: {e}"),
+            Self::Request(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for ExtractionFailure {}
 
 // ── Deterministic entity ID ───────────────────────────────────────────────────
 
@@ -6255,7 +6373,7 @@ entities or omit the fictional one entirely.\n\n\
         "stream": true,
         "options": {
             "temperature": extraction_temperature(),
-            "num_predict": 1024,
+            "num_predict": EXTRACTION_MAX_TOKENS,
             "num_ctx": 8192,
         },
     });
@@ -6266,12 +6384,17 @@ entities or omit the fictional one entirely.\n\n\
     // real network round-trip), and — since callers previously treated any
     // failure here as "legitimately zero entities" — a sustained peer outage
     // silently discarded every remaining chunk as a false "success" instead of
-    // surfacing as an error. Three attempts (immediate, +15s, +30s) give the
-    // breaker a real chance to reach HalfOpen and recover before giving up.
-    let raw_text = extract_request_with_retry(&url, &body, &EXTRACT_RETRY_BACKOFF_SECS).await?;
+    // surfacing as an error. The schedule (`EXTRACT_RETRY_BACKOFF_SECS`) gives the
+    // breaker, and a peer shedding load, a real chance to recover before giving up.
+    let raw_text = extract_request_with_retry(&url, &body, &EXTRACT_RETRY_BACKOFF_SECS)
+        .await
+        .map_err(|e| anyhow::Error::new(ExtractionFailure::Request(e.to_string())))?;
 
-    // Accumulate content tokens from each streaming chunk
+    // Accumulate content tokens from each streaming chunk, and keep what the
+    // stream says about how it ended.
     let mut content_buf = String::new();
+    let mut done_reason: Option<String> = None;
+    let mut stream_error: Option<String> = None;
     for line in raw_text.lines() {
         let line = line.trim();
         if line.is_empty() {
@@ -6280,6 +6403,12 @@ entities or omit the fictional one entirely.\n\n\
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
             if let Some(c) = v["message"]["content"].as_str() {
                 content_buf.push_str(c);
+            }
+            if let Some(r) = v["done_reason"].as_str() {
+                done_reason = Some(r.to_string());
+            }
+            if let Some(e) = v["error"].as_str() {
+                stream_error = Some(e.to_string());
             }
         }
     }
@@ -6292,7 +6421,7 @@ entities or omit the fictional one entirely.\n\n\
         .trim_end_matches("```")
         .trim();
 
-    match serde_json::from_str::<ExtractionPayload>(cleaned) {
+    match parse_extraction(cleaned) {
         Ok(p) => {
             let entities = p
                 .entities
@@ -6301,6 +6430,8 @@ entities or omit the fictional one entirely.\n\n\
                     e.name = clean_entity_name(&e.name);
                     e
                 })
+                // A null or missing name or type parses as empty: not an entity.
+                .filter(|e| !e.name.is_empty() && !e.entity_type.is_empty())
                 .filter(|e| !description_self_rejects(&e.description))
                 .collect();
             let relations = if effective_no_relations {
@@ -6313,14 +6444,52 @@ entities or omit the fictional one entirely.\n\n\
                         r.to = clean_entity_name(&r.to);
                         r
                     })
+                    // A null or missing predicate or endpoint parses as empty: no edge.
+                    // An empty predicate would otherwise be stored as-is (no ontology)
+                    // or become the fallback predicate.
+                    .filter(|r| !r.relation.is_empty() && !r.from.is_empty() && !r.to.is_empty())
                     .collect()
             };
             Ok((entities, relations))
         }
+        // An error, not an empty Ok: a lost answer must not pass for a chunk
+        // with no entities (it was logged at debug only, and the build reported
+        // success with most of D6's chunks unlinked).
         Err(e) => {
-            tracing::debug!("entity extraction JSON parse failed: {e}; raw: {cleaned:.200}");
-            Ok((vec![], vec![]))
+            let failure =
+                classify_unparsed(e, cleaned, done_reason.as_deref(), stream_error.as_deref());
+            tracing::warn!("{failure}; raw: {cleaned:.200}");
+            tracing::debug!("unparsed extraction answer in full: {cleaned}");
+            Err(anyhow::Error::new(failure))
         }
+    }
+}
+
+/// Why an extraction answer that did not parse was lost.
+///
+/// Truncation is what the server said, not a guess from where the parse
+/// broke: Ollama's last line carries `done_reason: "length"` when the output
+/// cap stopped the answer. Calling an empty or error-only answer truncated
+/// would point at raising [`EXTRACTION_MAX_TOKENS`] for nothing. Without a
+/// `done_reason` (a server that does not send one), an answer that ends
+/// mid-JSON is still taken as truncated.
+fn classify_unparsed(
+    e: serde_json::Error,
+    cleaned: &str,
+    done_reason: Option<&str>,
+    stream_error: Option<&str>,
+) -> ExtractionFailure {
+    if let Some(err) = stream_error {
+        return ExtractionFailure::Request(format!("the stream reported an error: {err}"));
+    }
+    if cleaned.is_empty() {
+        return ExtractionFailure::Parse("the answer was empty".to_string());
+    }
+    match done_reason {
+        Some("length") => ExtractionFailure::Truncated(e.to_string()),
+        Some(_) => ExtractionFailure::Parse(e.to_string()),
+        None if e.is_eof() => ExtractionFailure::Truncated(e.to_string()),
+        None => ExtractionFailure::Parse(e.to_string()),
     }
 }
 
@@ -6330,14 +6499,27 @@ entities or omit the fictional one entirely.\n\n\
 /// breaker just opened gets a real chance to hit a recovered (or HalfOpen-probed)
 /// peer on a later attempt, instead of exhausting all attempts against an instant
 /// local 503 in milliseconds.
-const EXTRACT_RETRY_BACKOFF_SECS: [u64; 3] = [0, 15, 30];
+///
+/// Five attempts over about four minutes. Three (0, 15, 30 s) were not enough for
+/// a peer shedding load: metro-linux answers 502/503 above about two concurrent
+/// requests, and a 10% NIST cycle-0 build lost 14 chunks after the third attempt
+/// (forgetting experiment, 2026-10-21).
+const EXTRACT_RETRY_BACKOFF_SECS: [u64; 5] = [0, 15, 30, 60, 120];
+
+/// Output cap on an entity-extraction answer. 1024 cut off legitimate answers:
+/// 11-16 entities with descriptions and fields run to about 4,000 characters,
+/// and every one of 5 re-extracted Manhattan_v3 chunks that "failed to parse"
+/// was such an answer stopped mid-array (2026-10-21). The prompt allows 20-25
+/// entities, so 3072 covers a full answer and still fits `num_ctx` 8192 with the
+/// prompt. A shorter answer costs nothing extra.
+const EXTRACTION_MAX_TOKENS: u64 = 3072;
 
 /// POST the extraction request and read its streamed NDJSON body, retrying
 /// transport failures and non-2xx responses per `backoff_secs` before giving up.
 /// Returns `Err` only after all attempts fail, so callers can distinguish a
 /// genuine outage from "the LLM found no entities." `backoff_secs` is a parameter
 /// (rather than a hardcoded sleep) purely so tests can exercise the retry loop
-/// without waiting on the real ~45s production schedule.
+/// without waiting on the real production schedule (about four minutes of sleeps).
 async fn extract_request_with_retry(
     url: &str,
     body: &serde_json::Value,
@@ -7719,5 +7901,276 @@ mod ontology_prompt_tests {
             "The wind blew across the square.",
             &memoir
         ));
+    }
+}
+
+#[cfg(test)]
+mod extraction_parse_tests {
+    use super::*;
+
+    #[test]
+    fn the_object_form_parses_as_before() {
+        let p = parse_extraction(
+            r#"{"entities":[{"name":"Leo Szilard","type":"Person","description":"A physicist."}],
+                "relations":[{"from":"Leo Szilard","to":"Einstein","relation":"wrote_to"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(p.entities.len(), 1);
+        assert_eq!(p.relations.len(), 1);
+    }
+
+    /// Regression: the bare array llama3.1:8b returns for some chunks was
+    /// rejected, and the chunk's entities silently lost (2026-10-21).
+    #[test]
+    fn a_bare_array_parses_as_the_entity_list() {
+        let p = parse_extraction(
+            r#"[
+              {"name": "Committee", "type": "Committee", "description": "A deliberative body."},
+              {"name": "Franck Report", "type": "Document", "description": "A report."}
+            ]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            p.entities
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Committee", "Franck Report"]
+        );
+        assert!(p.relations.is_empty());
+    }
+
+    #[test]
+    fn nulls_and_non_string_values_do_not_reject_the_answer() {
+        let p = parse_extraction(
+            r#"{"entities":[
+                {"name":"Trinity","type":"Event","description":null,
+                 "fields":{"year":1945,"secret":true,"place":"Alamogordo","note":null,"list":[1]},
+                 "extraction_confidence":null},
+                {"name":null,"type":"Person"}],
+               "relations":null}"#,
+        )
+        .unwrap();
+        let e = &p.entities[0];
+        assert_eq!(e.description, "");
+        assert_eq!(e.extraction_confidence, 1.0);
+        let mut fields: Vec<_> = e.fields.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        fields.sort();
+        assert_eq!(fields, ["place=Alamogordo", "secret=true", "year=1945"]);
+        assert_eq!(
+            p.entities[1].name, "",
+            "a null name parses as empty, to be dropped"
+        );
+        assert!(p.relations.is_empty());
+    }
+
+    #[test]
+    fn non_string_text_and_string_confidence_do_not_reject_the_answer() {
+        let p = parse_extraction(
+            r#"[{"name": 1945, "type": "Event", "description": ["x"], "extraction_confidence": "0.4"}]"#,
+        )
+        .unwrap();
+        let e = &p.entities[0];
+        assert_eq!((e.name.as_str(), e.description.as_str()), ("1945", ""));
+        assert_eq!(e.extraction_confidence, 0.4);
+    }
+
+    #[test]
+    fn a_truncated_answer_is_an_eof_error() {
+        let e = parse_extraction(r#"{"entities":[{"name":"Grov"#).unwrap_err();
+        assert!(e.is_eof());
+        let e = parse_extraction(r#"{"entities": "none"}"#).unwrap_err();
+        assert!(!e.is_eof());
+        // A bare array cut off at the output cap is truncation too. Reporting the
+        // object form's error ("map, expected a sequence") hid that it was.
+        let e = parse_extraction(r#"[{"name":"Leo Szilard","type":"Person"},{"name":"Ein"#)
+            .unwrap_err();
+        assert!(e.is_eof(), "got {e}");
+    }
+
+    /// One streamed /api/chat line carrying `content`.
+    fn serve_chat(content: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let port = std_listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let _ = socket.read(&mut buf).await;
+            let body = format!(
+                "{}\n",
+                serde_json::json!({"message": {"content": content}, "done": true})
+            );
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    async fn extract(url: &str) -> Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)> {
+        extract_from_text(
+            "Leo Szilard drafted the Einstein-Szilard letter.",
+            &["Leo Szilard".to_string()],
+            &[],
+            None,
+            url,
+            "m",
+            &["Person"],
+            &[],
+            true,
+            None,
+            &[],
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn extraction_keeps_the_entities_of_a_bare_array_answer() {
+        let url =
+            serve_chat(r#"[{"name":"Leo Szilard","type":"Person","description":"A physicist."}]"#);
+        let (entities, _) = extract(&url).await.unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "Leo Szilard");
+    }
+
+    /// Regression (review of the chunk-loss fix): a null predicate parsed as
+    /// empty and would have been written as an edge with no type.
+    #[tokio::test]
+    async fn a_relation_with_no_predicate_or_endpoint_is_dropped() {
+        let url = serve_chat(
+            r#"{"entities":[{"name":"Leo Szilard","type":"Person"},{"name":"Bela Szilard","type":"Person"}],
+                "relations":[{"from":"Leo Szilard","to":"Bela Szilard","relation":"sibling_of"},
+                             {"from":"Leo Szilard","to":"Bela Szilard","relation":null},
+                             {"from":null,"to":"Bela Szilard","relation":"sibling_of"}]}"#,
+        );
+        let (entities, relations) = extract_from_text(
+            "Bela Szilard was the brother of Leo Szilard.",
+            &["Leo Szilard".to_string(), "Bela Szilard".to_string()],
+            &[],
+            None,
+            &url,
+            "m",
+            &["Person"],
+            &[],
+            false,
+            None,
+            &[],
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(entities.len(), 2);
+        assert_eq!(
+            relations
+                .iter()
+                .map(|r| r.relation.as_str())
+                .collect::<Vec<_>>(),
+            ["sibling_of"]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unparseable_answer_is_a_typed_error_not_an_empty_success() {
+        let url = serve_chat("I could not find any entities, sorry.");
+        let err = extract(&url).await.unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<ExtractionFailure>(),
+            Some(ExtractionFailure::Parse(_))
+        ));
+        let url = serve_chat(r#"{"entities":[{"name":"Leo"#);
+        let err = extract(&url).await.unwrap_err();
+        assert!(matches!(
+            err.downcast_ref::<ExtractionFailure>(),
+            Some(ExtractionFailure::Truncated(_))
+        ));
+    }
+    fn eof_error() -> serde_json::Error {
+        parse_extraction(r#"[{"name":"Leo Szilard","type":"Pers"#).unwrap_err()
+    }
+
+    fn syntax_error() -> serde_json::Error {
+        parse_extraction(r#"[{"name":"Leo Szilard","type":"Person"},}]"#).unwrap_err()
+    }
+
+    /// Truncation is the server's word for it: a cap-stopped answer is
+    /// truncated wherever its parse broke, and a finished one never is.
+    #[test]
+    fn truncation_follows_the_done_reason() {
+        let cut = classify_unparsed(syntax_error(), "[{", Some("length"), None);
+        assert!(matches!(cut, ExtractionFailure::Truncated(_)), "{cut}");
+        let stopped = classify_unparsed(eof_error(), "[{", Some("stop"), None);
+        assert!(matches!(stopped, ExtractionFailure::Parse(_)), "{stopped}");
+    }
+
+    /// A server that sends no done_reason keeps the old reading: an answer
+    /// that ends mid-JSON was cut off.
+    #[test]
+    fn without_a_done_reason_an_answer_ending_mid_json_is_truncated() {
+        let f = classify_unparsed(eof_error(), "[{", None, None);
+        assert!(matches!(f, ExtractionFailure::Truncated(_)), "{f}");
+        let f = classify_unparsed(syntax_error(), "[{", None, None);
+        assert!(matches!(f, ExtractionFailure::Parse(_)), "{f}");
+    }
+
+    /// An empty answer and an error-only stream both fail to parse at EOF,
+    /// and neither is a truncation.
+    #[test]
+    fn an_empty_or_error_only_answer_is_not_truncated() {
+        let empty = serde_json::from_str::<ExtractionPayload>("").unwrap_err();
+        let f = classify_unparsed(empty, "", None, None);
+        assert!(
+            matches!(f, ExtractionFailure::Parse(ref m) if m.contains("empty")),
+            "{f}"
+        );
+
+        let empty = serde_json::from_str::<ExtractionPayload>("").unwrap_err();
+        let f = classify_unparsed(
+            empty,
+            "",
+            None,
+            Some("model runner has unexpectedly stopped"),
+        );
+        assert!(
+            matches!(f, ExtractionFailure::Request(ref m) if m.contains("unexpectedly")),
+            "{f}"
+        );
+    }
+
+    /// A number where a relation endpoint was expected reads as text, rather
+    /// than rejecting the chunk's whole answer, entities included.
+    #[test]
+    fn a_numeric_relation_endpoint_reads_as_text() {
+        let p = parse_extraction(
+            r#"{"entities":[{"name":"Trinity","type":"Event"}],
+                "relations":[{"from":"Trinity","to":1945,"relation":"occurred_in"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(p.entities.len(), 1);
+        assert_eq!(p.relations[0].to, "1945");
+    }
+
+    /// A confidence in words maps onto the prompt's scale; one the scale
+    /// cannot read is "inferred", never promoted to "clearly stated".
+    #[test]
+    fn a_worded_confidence_maps_onto_the_scale() {
+        let conf = |c: &str| {
+            let raw = format!(r#"[{{"name":"Leo Szilard","type":"Person"{c}}}]"#);
+            parse_extraction(&raw).unwrap().entities[0].extraction_confidence
+        };
+        assert_eq!(conf(r#","extraction_confidence":"low""#), 0.2);
+        assert_eq!(conf(r#","extraction_confidence":"Medium""#), 0.5);
+        assert_eq!(conf(r#","extraction_confidence":"high""#), 1.0);
+        assert_eq!(conf(r#","extraction_confidence":"0.4""#), 0.4);
+        assert_eq!(conf(r#","extraction_confidence":"unsure""#), 0.5);
+        assert_eq!(conf(r#","extraction_confidence":true"#), 0.5);
+        assert_eq!(conf(r#","extraction_confidence":null"#), 1.0);
+        assert_eq!(conf(""), 1.0);
     }
 }
