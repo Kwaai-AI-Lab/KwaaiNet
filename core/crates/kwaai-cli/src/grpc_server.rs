@@ -41,6 +41,8 @@ use kwaai_p2p::{
     reachability::{Reachability, Source},
     NetworkHandle,
 };
+use kwaai_rpc::auth::RequireBearer;
+use kwaai_rpc::tonic::service::interceptor::InterceptedService;
 use kwaai_rpc::v1::{
     client_frame,
     error::Code as ErrorCode,
@@ -3546,6 +3548,14 @@ pub fn grpc_port_file() -> PathBuf {
     crate::config::kwaainet_dir().join(GRPC_PORT_RELPATH)
 }
 
+/// Resolve `<kwaainet dir>/run/kwaainet.token`, the per-start bearer token.
+pub fn grpc_token_file() -> PathBuf {
+    kwaai_rpc::auth::token_path(&crate::config::run_dir())
+}
+
+/// The service as both transports serve it: every RPC needs the token.
+type AuthedService = InterceptedService<KwaaiNetServer<KwaaiNetService>, RequireBearer>;
+
 /// Resolve the TCP port: explicit request, then [`GRPC_PORT_ENV`], then the
 /// `grpc_port` config key, then the default. The env var sits above the file
 /// because it is a per-launch override (the GUI allocates a port per spawn).
@@ -3609,7 +3619,8 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
     let svc_state = KwaaiNetService::new(config);
     let net_slot = svc_state.net.clone();
     let dht_slot = svc_state.dht.clone();
-    let service = KwaaiNetServer::new(svc_state);
+    let token = kwaai_rpc::auth::generate().context("generating gRPC token")?;
+    let service = KwaaiNetServer::with_interceptor(svc_state, RequireBearer::new(&token));
 
     // Bind up front rather than inside the serve task: a clash has to be
     // visible here, and it is what resolves port 0 to a real number.
@@ -3628,6 +3639,12 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
             None
         }
     };
+
+    // Written only once the bind has succeeded, so a start that loses the port
+    // cannot overwrite a live daemon's token; still before anything serves,
+    // so a client that sees the port file or socket can always read it. The
+    // guard removes it again if anything below fails.
+    let token_file = TokenFileGuard::write(&token)?;
 
     let mut bound_port = None;
     let mut shutdown_tcp = None;
@@ -3680,6 +3697,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
             net: net_slot,
             dht: dht_slot,
             port_file,
+            token_file: token_file.keep(),
         })
     }
     #[cfg(not(unix))]
@@ -3690,7 +3708,35 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
             net: net_slot,
             dht: dht_slot,
             port_file,
+            token_file: token_file.keep(),
         })
+    }
+}
+
+/// The token file between writing it and handing it to the server handle:
+/// dropped on an early return, it removes the file it wrote.
+struct TokenFileGuard(Option<PathBuf>);
+
+impl TokenFileGuard {
+    /// No token, no daemon: a server nobody can authenticate to is just a
+    /// held port.
+    fn write(token: &str) -> Result<Self> {
+        let path = grpc_token_file();
+        kwaai_rpc::auth::write_token_file(&path, token)
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(Self(Some(path)))
+    }
+
+    fn keep(mut self) -> Option<PathBuf> {
+        self.0.take()
+    }
+}
+
+impl Drop for TokenFileGuard {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -3710,7 +3756,7 @@ fn write_port_file(port: u16) -> Result<PathBuf> {
 #[cfg(unix)]
 async fn serve_unix(
     path: PathBuf,
-    service: KwaaiNetServer<KwaaiNetService>,
+    service: AuthedService,
     shutdown: oneshot::Receiver<()>,
 ) -> Result<()> {
     use tokio::net::UnixListener;
@@ -3762,6 +3808,9 @@ pub struct GrpcServerHandle {
     dht: Arc<RwLock<Option<DHTStorage>>>,
     /// `run/kwaainet.grpc`, when we managed to write it. Removed on shutdown.
     port_file: Option<PathBuf>,
+    /// `run/kwaainet.token`. Removed on shutdown, so a stale token never
+    /// outlives the daemon it belonged to.
+    token_file: Option<PathBuf>,
 }
 
 impl GrpcServerHandle {
@@ -3789,6 +3838,9 @@ impl GrpcServerHandle {
         // before they observe the signal — and a stale socket file makes a
         // client's exists() check say yes to a daemon that has gone.
         if let Some(path) = self.port_file.take() {
+            let _ = std::fs::remove_file(path);
+        }
+        if let Some(path) = self.token_file.take() {
             let _ = std::fs::remove_file(path);
         }
         #[cfg(unix)]
@@ -3879,6 +3931,24 @@ mod tests {
                 None => std::env::remove_var("KWAAINET_HOME"),
             }
         }
+    }
+
+    /// A loopback client carrying the token the server under test wrote.
+    async fn authed_client(
+        port: u16,
+    ) -> kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient<
+        InterceptedService<tonic::transport::Channel, kwaai_rpc::auth::BearerAuth>,
+    > {
+        let token = kwaai_rpc::auth::read_token_file(&grpc_token_file()).expect("token file");
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .expect("valid endpoint")
+            .connect()
+            .await
+            .expect("connect to loopback gRPC server");
+        kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient::with_interceptor(
+            channel,
+            kwaai_rpc::auth::BearerAuth::new(&token).expect("token is a header value"),
+        )
     }
 
     /// Poll an async predicate until it succeeds or `timeout` elapses.
@@ -3997,6 +4067,130 @@ mod tests {
 
         drop(handle);
         assert!(!grpc_port_file().exists(), "port file removed on shutdown");
+    }
+
+    /// The token is on disk before the listener answers, changes on every
+    /// start, and is gone once the daemon stops.
+    #[tokio::test]
+    async fn token_file_is_fresh_per_start_and_removed_on_shutdown() {
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let first = spawn_bound(KwaaiNetConfig::default(), 0, true).expect("bind");
+        let a = kwaai_rpc::auth::read_token_file(&grpc_token_file()).expect("token written");
+        drop(first);
+        assert!(!grpc_token_file().exists(), "token removed on shutdown");
+
+        let second = spawn_bound(KwaaiNetConfig::default(), 0, true).expect("bind");
+        let b = kwaai_rpc::auth::read_token_file(&grpc_token_file()).expect("token written");
+        assert_ne!(a, b, "each start draws a new token");
+        drop(second);
+    }
+
+    /// A start that loses its port must not replace the running daemon's
+    /// token: that daemon would go on checking the old one.
+    #[tokio::test]
+    async fn failed_bind_leaves_the_live_token_alone() {
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let squatter = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = squatter.local_addr().unwrap().port();
+        kwaai_rpc::auth::write_token_file(&grpc_token_file(), "live").unwrap();
+
+        assert!(spawn_bound(KwaaiNetConfig::default(), port, true).is_err());
+        assert_eq!(
+            kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap(),
+            "live"
+        );
+    }
+
+    /// No header, a wrong token, and the right one, over TCP.
+    #[tokio::test]
+    async fn tcp_rejects_requests_without_the_token() {
+        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
+
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+        let port = ephemeral_port();
+        let _handle = spawn_on_tcp_port(KwaaiNetConfig::default(), port);
+        assert!(wait_for(Duration::from_secs(2), || tcp_accepting(port)).await);
+
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://127.0.0.1:{port}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let err = KwaaiNetClient::new(channel.clone())
+            .ping(PingRequest {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        let wrong = kwaai_rpc::auth::BearerAuth::new(&"0".repeat(64)).unwrap();
+        let err = KwaaiNetClient::with_interceptor(channel, wrong)
+            .ping(PingRequest {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        authed_client(port)
+            .await
+            .ping(PingRequest {})
+            .await
+            .expect("the right token is accepted");
+    }
+
+    /// The socket's 0600 is not a substitute: it checks the token as well.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unix_socket_rejects_requests_without_the_token() {
+        use hyper_util::rt::TokioIo;
+        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
+
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+        let _handle = spawn_on_tcp_port(KwaaiNetConfig::default(), ephemeral_port());
+        let path = unix_socket_path();
+        assert!(
+            wait_for(Duration::from_secs(2), || async {
+                tokio::net::UnixStream::connect(&path).await.is_ok()
+            })
+            .await,
+            "Unix socket never came up"
+        );
+
+        let dial = path.clone();
+        let channel = tonic::transport::Endpoint::from_static("http://[::]:50051")
+            .connect_with_connector(tower::service_fn(move |_| {
+                let dial = dial.clone();
+                async move {
+                    Ok::<_, std::io::Error>(TokioIo::new(
+                        tokio::net::UnixStream::connect(dial).await?,
+                    ))
+                }
+            }))
+            .await
+            .expect("connect over the Unix socket");
+
+        let err = KwaaiNetClient::new(channel.clone())
+            .ping(PingRequest {})
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::Unauthenticated);
+
+        let token = kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap();
+        KwaaiNetClient::with_interceptor(
+            channel,
+            kwaai_rpc::auth::BearerAuth::new(&token).unwrap(),
+        )
+        .ping(PingRequest {})
+        .await
+        .expect("the right token is accepted over the socket");
     }
 
     /// Ask the OS for a free loopback port.
@@ -4188,7 +4382,6 @@ mod tests {
     /// branch without needing a GGUF on disk.
     #[tokio::test]
     async fn chat_returns_invalid_argument_on_empty_inbound_stream() {
-        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
         use tokio_stream::wrappers::ReceiverStream;
 
         let _serial = TEST_LOCK.lock().await;
@@ -4203,14 +4396,7 @@ mod tests {
         let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
         assert!(up, "gRPC TCP listener never came up");
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let channel = tonic::transport::Endpoint::from_shared(endpoint)
-            .expect("valid endpoint")
-            .connect()
-            .await
-            .expect("connect to loopback gRPC server");
-
-        let mut client = KwaaiNetClient::new(channel);
+        let mut client = authed_client(port).await;
 
         // Build an outbound stream that produces zero messages — the
         // moment the client gives this to chat(), the server sees an
@@ -4699,7 +4885,6 @@ mod tests {
     #[tokio::test]
     async fn shard_run_streams_inference_events_when_requested() {
         use futures::StreamExt as _;
-        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
         use kwaai_rpc::v1::InferencePhase;
         use tokio_stream::wrappers::ReceiverStream;
 
@@ -4713,13 +4898,7 @@ mod tests {
         let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
         assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let channel = tonic::transport::Endpoint::from_shared(endpoint)
-            .expect("valid endpoint")
-            .connect()
-            .await
-            .expect("connect to loopback gRPC server");
-        let mut client = KwaaiNetClient::new(channel);
+        let mut client = authed_client(port).await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
         tx.send(ClientFrame {
@@ -4776,7 +4955,6 @@ mod tests {
     #[tokio::test]
     async fn shard_run_stays_silent_without_the_events_flag() {
         use futures::StreamExt as _;
-        use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
         use tokio_stream::wrappers::ReceiverStream;
 
         let _serial = TEST_LOCK.lock().await;
@@ -4789,13 +4967,7 @@ mod tests {
         let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
         assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
 
-        let endpoint = format!("http://127.0.0.1:{port}");
-        let channel = tonic::transport::Endpoint::from_shared(endpoint)
-            .expect("valid endpoint")
-            .connect()
-            .await
-            .expect("connect to loopback gRPC server");
-        let mut client = KwaaiNetClient::new(channel);
+        let mut client = authed_client(port).await;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
         tx.send(ClientFrame {
@@ -4857,8 +5029,8 @@ mod tests {
     mod rag {
         use super::*;
         use kwaai_rpc::v1::{
-            client_frame, kwaai_net_client::KwaaiNetClient, rag_progress::RagPhase, server_frame,
-            ClientFrame, RagIngestData, RagIngestRequest, RagQueryRequest, RagStatusRequest,
+            client_frame, rag_progress::RagPhase, server_frame, ClientFrame, RagIngestData,
+            RagIngestRequest, RagQueryRequest, RagStatusRequest,
         };
         use tokio_stream::wrappers::ReceiverStream;
         use tokio_stream::StreamExt as _;
@@ -4904,13 +5076,7 @@ mod tests {
             terminals: usize,
             close: bool,
         ) -> Vec<(u64, server_frame::Body)> {
-            let endpoint = format!("http://127.0.0.1:{port}");
-            let channel = tonic::transport::Endpoint::from_shared(endpoint)
-                .expect("valid endpoint")
-                .connect()
-                .await
-                .expect("connect to the test server");
-            let mut client = KwaaiNetClient::new(channel);
+            let mut client = authed_client(port).await;
 
             // Sized to hold every frame, so all are queued before the
             // session opens.

@@ -18,6 +18,11 @@ description = "gRPC IPC surface for the kwaainet daemon (used by GUI/CLI clients
 # for the same reason — generated-code crates have their own prost line.)
 tonic = "0.12"
 prost = "0.13"
+# Token generation for gRPC auth; already in the lockfile via other crates.
+getrandom = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 tonic-build = "0.12"
