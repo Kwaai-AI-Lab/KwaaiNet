@@ -3167,6 +3167,7 @@ dependencies = [
  "tempfile",
  "tonic",
  "tonic-build",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

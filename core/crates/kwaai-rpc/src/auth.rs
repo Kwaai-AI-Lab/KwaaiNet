@@ -33,8 +33,8 @@ pub fn generate() -> io::Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// Write `token` to `path`, owner-only on Unix, replacing any previous file
-/// atomically so a client never reads a half-written token.
+/// Write `token` to `path`, readable by the current user only, replacing any
+/// previous file atomically so a client never reads a half-written token.
 pub fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -48,10 +48,28 @@ pub fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
     {
         use std::io::Write as _;
         let mut f = opts.open(&tmp)?;
+        // Before the secret goes in, so the file is never readable by others.
+        #[cfg(windows)]
+        windows_acl::restrict_to_current_user(&tmp)?;
         f.write_all(token.as_bytes())?;
         f.sync_all()?;
     }
-    std::fs::rename(&tmp, path)
+    replace(&tmp, path)
+}
+
+/// Windows refuses to replace a file another process has open without
+/// FILE_SHARE_DELETE, and a client may be mid-read; retry briefly.
+fn replace(from: &Path, to: &Path) -> io::Result<()> {
+    let mut attempt = 1u64;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(_) if cfg!(windows) && attempt < 5 => {
+                std::thread::sleep(std::time::Duration::from_millis(20 * attempt));
+                attempt += 1;
+            }
+            r => return r,
+        }
+    }
 }
 
 /// Read a token file, trimming the trailing newline an operator may add.
@@ -136,6 +154,98 @@ impl Interceptor for BearerAuth {
     }
 }
 
+/// Owner-only access on Windows: a protected DACL (nothing inherited from the
+/// directory) with one ACE granting the current user full control.
+#[cfg(windows)]
+pub(crate) mod windows_acl {
+    use std::ffi::OsStr;
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+    use std::ptr::null_mut;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    fn wide(s: &OsStr) -> Vec<u16> {
+        s.encode_wide().chain(Some(0)).collect()
+    }
+
+    /// The current user's SID as an `S-1-5-…` string.
+    pub(crate) fn current_user_sid() -> io::Result<String> {
+        unsafe {
+            let mut token: HANDLE = null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut len = 0u32;
+            GetTokenInformation(token, TokenUser, null_mut(), 0, &mut len);
+            // u64 storage keeps TOKEN_USER's pointer field aligned.
+            let mut buf = vec![0u64; (len as usize).div_ceil(8)];
+            let ok = GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), len, &mut len);
+            CloseHandle(token);
+            if ok == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let user = &*(buf.as_ptr() as *const TOKEN_USER);
+            let mut sid_str: *mut u16 = null_mut();
+            if ConvertSidToStringSidW(user.User.Sid, &mut sid_str) == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let n = (0..).take_while(|&i| *sid_str.add(i) != 0).count();
+            let sid = String::from_utf16_lossy(std::slice::from_raw_parts(sid_str, n));
+            LocalFree(sid_str.cast());
+            Ok(sid)
+        }
+    }
+
+    pub(crate) fn restrict_to_current_user(path: &Path) -> io::Result<()> {
+        let sddl = wide(OsStr::new(&format!("D:P(A;;FA;;;{})", current_user_sid()?)));
+        let path = wide(path.as_os_str());
+        unsafe {
+            let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+            if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                null_mut(),
+            ) == 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            let (mut present, mut defaulted) = (0, 0);
+            let mut dacl: *mut ACL = null_mut();
+            let got = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted);
+            let rc = if got == 0 {
+                io::Error::last_os_error().raw_os_error().unwrap_or(1) as u32
+            } else {
+                SetNamedSecurityInfoW(
+                    path.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    dacl,
+                    null_mut(),
+                )
+            };
+            LocalFree(sd);
+            if rc != ERROR_SUCCESS {
+                return Err(io::Error::from_raw_os_error(rc as i32));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Length leaks, content does not: every token is the same length anyway.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
@@ -199,6 +309,61 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+    }
+
+    /// The DACL is exactly "this user, full control", with nothing inherited.
+    #[cfg(windows)]
+    #[test]
+    fn token_file_dacl_is_current_user_only() {
+        use std::os::windows::ffi::OsStrExt;
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SDDL_REVISION_1, SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = token_path(dir.path());
+        write_token_file(&path, "secret").unwrap();
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let sddl = unsafe {
+            let mut sd: PSECURITY_DESCRIPTOR = null_mut();
+            let rc = GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                null_mut(),
+                &mut sd,
+            );
+            assert_eq!(rc, 0, "GetNamedSecurityInfoW");
+            let mut out: *mut u16 = null_mut();
+            let ok = ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                sd,
+                SDDL_REVISION_1,
+                DACL_SECURITY_INFORMATION,
+                &mut out,
+                null_mut(),
+            );
+            assert_ne!(
+                ok, 0,
+                "ConvertSecurityDescriptorToStringSecurityDescriptorW"
+            );
+            let n = (0..).take_while(|&i| *out.add(i) != 0).count();
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(out, n));
+            LocalFree(out.cast());
+            LocalFree(sd);
+            s
+        };
+        let sid = windows_acl::current_user_sid().unwrap();
+        // Flags: P (protected) is what matters; Windows adds AI on every write.
+        let (flags, aces) = sddl.split_at(sddl.find('(').expect("one ACE"));
+        assert!(flags.starts_with("D:P"), "DACL not protected: {sddl}");
+        assert_eq!(aces, format!("(A;;FA;;;{sid})"));
     }
 
     #[test]
