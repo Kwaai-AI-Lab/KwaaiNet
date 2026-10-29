@@ -395,7 +395,7 @@ impl UpdateChecker {
 
     /// Download and install the CUDA-enabled Linux binary directly.
     /// When the CUDA archive isn't published yet (async CI, ~90 min after release),
-    /// falls back to the CPU installer with a clear warning rather than blocking.
+    /// fails with a clear message and leaves the current binary in place.
     ///
     /// The archive with the CUDA runtime is used unless the runtime is already
     /// beside the binary, and nothing is installed until the new binary has
@@ -441,11 +441,12 @@ impl UpdateChecker {
         let runtime_beside = CUDA_LINUX_RUNTIME
             .iter()
             .all(|lib| install_dir.join(lib).exists());
+        let archives = linux_cuda_archives(version, runtime_beside);
         let mut published = false;
-        let mut last_err = None;
-        for archive_url in linux_cuda_archives(version, runtime_beside) {
+        let mut failures: Vec<String> = Vec::new();
+        for (i, archive_url) in archives.iter().enumerate() {
             let available = client
-                .head(&archive_url)
+                .head(archive_url)
                 .send()
                 .await
                 .map(|r| r.status().is_success())
@@ -455,7 +456,7 @@ impl UpdateChecker {
             }
             published = true;
             match self
-                .fetch_cuda_linux(version, &archive_url, &install_dir)
+                .fetch_cuda_linux(version, archive_url, &install_dir)
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -463,18 +464,20 @@ impl UpdateChecker {
                     if ensure_not_cancelled(&CANCEL_UPDATE).is_err() {
                         return Err(e);
                     }
-                    println!(" failed: {e:#}");
-                    last_err = Some(e);
+                    if i + 1 < archives.len() {
+                        println!("  ⚠  {e:#} — trying the archive with the CUDA runtime");
+                    }
+                    failures.push(format!("{e:#}"));
                 }
             }
         }
 
-        if let Some(e) = last_err {
-            return Err(e.context(format!(
-                "The CUDA build for v{version} was not installed; \
-                 your current binary is unchanged"
-            )));
-        }
+        anyhow::ensure!(
+            failures.is_empty(),
+            "The CUDA build for v{version} was not installed; your current binary is \
+             unchanged: {}",
+            failures.join("; then ")
+        );
         anyhow::ensure!(
             published,
             "NVIDIA GPU detected but the CUDA build for v{version} isn't published yet \
@@ -496,20 +499,21 @@ impl UpdateChecker {
         install_dir: &std::path::Path,
     ) -> Result<()> {
         if archive_url.ends_with("-lean.tar.xz") {
-            print!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
+            println!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
         } else {
-            print!(
+            println!(
                 "  NVIDIA GPU detected — downloading CUDA build for v{version} \
                  (includes the CUDA runtime)…"
             );
         }
-        let _ = std::io::Write::flush(&mut std::io::stdout());
 
         let archive = std::env::temp_dir().join("kwaainet-cuda-update.tar.xz");
         self.download_to(archive_url, &archive).await?;
-        println!(" done.");
 
-        let tmp = std::env::temp_dir().join("kwaainet-cuda-extract");
+        // Extracted beside the install, not in /tmp: the start check runs the new
+        // binary, and /tmp is often mounted noexec. `$ORIGIN` is then also on the
+        // filesystem the binary will run from.
+        let tmp = install_dir.join(".kwaainet-cuda-extract");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp)?;
 
@@ -532,6 +536,7 @@ impl UpdateChecker {
             // The libraries it brings are found beside it (RPATH $ORIGIN); a lean
             // binary finds the ones already installed, as it will once moved there.
             binary_starts(&subdir.join("kwaainet"), install_dir).await?;
+            ensure_not_cancelled(&CANCEL_UPDATE)?;
             install_extracted(&subdir, install_dir)
         }
         .await;

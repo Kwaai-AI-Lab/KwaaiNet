@@ -403,9 +403,10 @@ jobs:
           CUDA_COMPUTE_CAP: "80"
           # $ORIGIN: find the CUDA runtime bundled beside the binary (#240).
           # --disable-new-dtags writes RPATH, which also covers libcublas's own
-          # dependency on libcublasLt; RUNPATH would not. This replaces
-          # core/.cargo/config.toml's rustflags for the target, so its -L is
-          # repeated. Not shell-expanded: $ORIGIN reaches the linker literally.
+          # dependency on libcublasLt; RUNPATH would not. core/.cargo/config.toml's
+          # -L for this target is repeated in case the variable replaces it
+          # rather than adding to it. Not shell-expanded: $ORIGIN reaches the
+          # linker literally.
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-L /usr/lib64 -C link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN"
         shell: bash
         run: |

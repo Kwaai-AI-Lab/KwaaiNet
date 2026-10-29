@@ -62,7 +62,7 @@ while read -r name path; do
 done <<< "$cuda_libs"
 
 # ── Verify the full archive resolves against itself ────────────────────
-FULL_DIR="$(cd "$OUT/$LABEL" && pwd)"
+FULL_DIR="$(cd "$OUT/$LABEL" && pwd -P)"
 resolved="$(env -u LD_LIBRARY_PATH ldd "$FULL_DIR/kwaainet")"
 while read -r name _; do
     printf '%s\n' "$resolved" | grep -qF "$name => $FULL_DIR/$name " \
