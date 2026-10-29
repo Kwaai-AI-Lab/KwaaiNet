@@ -51,11 +51,9 @@
           pkgs = pkgsCuda;
           inherit (pkgsCuda) lib makeWrapper;
           cudaFeature = true;
-          # This box isn't NixOS — its NVIDIA driver (libcuda.so.1) is
-          # installed system-wide at /usr/lib64, not under /run/opengl-driver.
-          # See the postFixup comment in crane.nix for why this is needed.
-          # On a different machine, override or drop this to match its own
-          # driver install location.
+          # Where the host's NVIDIA driver (libcuda.so.1) is installed:
+          # /usr/lib64 on RHEL/Fedora. Edit for other distros, e.g.
+          # /usr/lib/x86_64-linux-gnu on Debian/Ubuntu. See crane.nix.
           cudaDriverLibPath = "/usr/lib64";
         };
         containers = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
@@ -158,6 +156,8 @@
             cargoArtifacts
             ;
           inherit protoRs;
+        }
+        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           kwaainet-cuda = cranePkgsCuda.kwaainet;
         }
         // containers
