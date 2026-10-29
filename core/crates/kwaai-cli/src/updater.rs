@@ -395,41 +395,14 @@ impl UpdateChecker {
 
     /// Download and install the CUDA-enabled Linux binary directly.
     /// When the CUDA archive isn't published yet (async CI, ~90 min after release),
-    /// falls back to the CPU installer with a clear warning rather than blocking.
+    /// fails with a clear message and leaves the current binary in place.
+    ///
+    /// The archive with the CUDA runtime is used unless the runtime is already
+    /// beside the binary, and nothing is installed until the new binary has
+    /// started: before #240 the archive had no libraries, and a host without a
+    /// system CUDA 12 toolkit was updated into a binary that could not run.
     #[cfg(all(unix, not(target_os = "macos")))]
     async fn install_cuda_linux(&self, version: &str) -> Result<()> {
-        let cuda_url = format!(
-            "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-unknown-linux-gnu-cuda.tar.xz"
-        );
-
-        let client = client_builder()
-            .await
-            .timeout(std::time::Duration::from_secs(10))
-            .build()?;
-        let cuda_available = client
-            .head(&cuda_url)
-            .send()
-            .await
-            .map(|r| r.status().is_success())
-            .unwrap_or(false);
-
-        if !cuda_available {
-            anyhow::bail!(
-                "NVIDIA GPU detected but the CUDA build for v{version} isn't published yet \
-                 (CI takes ~90 min after release).\n\
-                 Update skipped — your current GPU-enabled binary is unchanged.\n\
-                 Try again in ~1 hour or watch: \
-                 https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/tag/v{version}"
-            );
-        }
-
-        print!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-
-        let archive = std::env::temp_dir().join("kwaainet-cuda-update.tar.xz");
-        self.download_to(&cuda_url, &archive).await?;
-        println!(" done.");
-
         // Derive install dir from the running binary's path.
         let exe_path = current_exe_path();
         let install_dir_candidate = exe_path
@@ -461,7 +434,86 @@ impl UpdateChecker {
         };
         debug!("CUDA install dir: {}", install_dir.display());
 
-        let tmp = std::env::temp_dir().join("kwaainet-cuda-extract");
+        let client = client_builder()
+            .await
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let runtime_beside = CUDA_LINUX_RUNTIME
+            .iter()
+            .all(|lib| install_dir.join(lib).exists());
+        let archives = linux_cuda_archives(version, runtime_beside);
+        let mut published = false;
+        let mut failures: Vec<String> = Vec::new();
+        for (i, archive_url) in archives.iter().enumerate() {
+            let available = client
+                .head(archive_url)
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false);
+            if !available {
+                continue;
+            }
+            published = true;
+            match self
+                .fetch_cuda_linux(version, archive_url, &install_dir)
+                .await
+            {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    if ensure_not_cancelled(&CANCEL_UPDATE).is_err() {
+                        return Err(e);
+                    }
+                    if i + 1 < archives.len() {
+                        println!("  ⚠  {e:#} — trying the archive with the CUDA runtime");
+                    }
+                    failures.push(format!("{e:#}"));
+                }
+            }
+        }
+
+        anyhow::ensure!(
+            failures.is_empty(),
+            "The CUDA build for v{version} was not installed; your current binary is \
+             unchanged: {}",
+            failures.join("; then ")
+        );
+        anyhow::ensure!(
+            published,
+            "NVIDIA GPU detected but the CUDA build for v{version} isn't published yet \
+             (CI takes ~90 min after release).\n\
+             Update skipped — your current GPU-enabled binary is unchanged.\n\
+             Try again in ~1 hour or watch: \
+             https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/tag/v{version}"
+        );
+        Ok(())
+    }
+
+    /// Download one Linux CUDA archive, check that its binary starts, and only
+    /// then install every file in it into `install_dir`.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    async fn fetch_cuda_linux(
+        &self,
+        version: &str,
+        archive_url: &str,
+        install_dir: &std::path::Path,
+    ) -> Result<()> {
+        if archive_url.ends_with("-lean.tar.xz") {
+            println!("  NVIDIA GPU detected — downloading CUDA binary for v{version}…");
+        } else {
+            println!(
+                "  NVIDIA GPU detected — downloading CUDA build for v{version} \
+                 (includes the CUDA runtime)…"
+            );
+        }
+
+        let archive = std::env::temp_dir().join("kwaainet-cuda-update.tar.xz");
+        self.download_to(archive_url, &archive).await?;
+
+        // Extracted beside the install, not in /tmp: the start check runs the new
+        // binary, and /tmp is often mounted noexec. `$ORIGIN` is then also on the
+        // filesystem the binary will run from.
+        let tmp = install_dir.join(".kwaainet-cuda-extract");
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp)?;
 
@@ -478,43 +530,18 @@ impl UpdateChecker {
             anyhow::bail!("tar exited with {status}");
         }
 
-        if let Err(e) = ensure_not_cancelled(&CANCEL_UPDATE) {
-            let _ = std::fs::remove_dir_all(&tmp);
-            return Err(e);
-        }
-
         let subdir = tmp.join("kwaainet-x86_64-unknown-linux-gnu-cuda");
-        use std::os::unix::fs::PermissionsExt;
-        for entry in std::fs::read_dir(&subdir)
-            .with_context(|| format!("Reading extracted archive at {}", subdir.display()))?
-        {
-            let entry = entry?;
-            let name = entry.file_name();
-            let dest = install_dir.join(&name);
-            // Write to a temp file then rename atomically to avoid ETXTBSY
-            // (Linux won't let you overwrite a binary that is currently executing).
-            let tmp_dest = install_dir.join(format!(".{}.tmp", name.to_string_lossy()));
-            std::fs::copy(entry.path(), &tmp_dest)
-                .with_context(|| format!("Installing {} (staging)", name.to_string_lossy()))?;
-            let name_str = name.to_string_lossy();
-            if name_str == "kwaainet" {
-                std::fs::set_permissions(&tmp_dest, std::fs::Permissions::from_mode(0o755))?;
-            }
-            // Unlink the destination first so rename() succeeds even when `dest`
-            // is the currently-executing binary (some Linux kernels return ETXTBSY
-            // for rename(2) over a running ELF; unlink always succeeds and the old
-            // inode stays alive until the process exits).
-            let _ = std::fs::remove_file(&dest);
-            std::fs::rename(&tmp_dest, &dest).with_context(|| {
-                format!(
-                    "Installing {} ({} -> {})",
-                    name_str,
-                    tmp_dest.display(),
-                    dest.display()
-                )
-            })?;
+        let installed = async {
+            ensure_not_cancelled(&CANCEL_UPDATE)?;
+            // The libraries it brings are found beside it (RPATH $ORIGIN); a lean
+            // binary finds the ones already installed, as it will once moved there.
+            binary_starts(&subdir.join("kwaainet"), install_dir).await?;
+            ensure_not_cancelled(&CANCEL_UPDATE)?;
+            install_extracted(&subdir, install_dir)
         }
+        .await;
         let _ = std::fs::remove_dir_all(&tmp);
+        installed?;
         println!("  CUDA binary installed to {}.", install_dir.display());
         Ok(())
     }
@@ -546,10 +573,9 @@ enum LinuxUpdate {
 ///   build (`scripts/patch-installer-cuda.sh → _try_cuda_upgrade`). The updater
 ///   follows the same decision rather than overriding it from inside the node.
 ///
-/// This does not make the CUDA build safe on the hosts it does allow: the
-/// archive ships the binary without the CUDA runtime libraries it links
-/// against, so a gnu host with no system CUDA 12 toolkit still gets a binary
-/// that fails on `libcudart.so.12` (#240).
+/// What it installs there is safe on a host without a CUDA toolkit: the archive
+/// brings the CUDA runtime, and `install_cuda_linux` checks the new binary
+/// starts before installing it (#240).
 #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
 fn linux_update_variant(is_musl: bool, is_x86_64: bool, has_nvidia: bool) -> LinuxUpdate {
     if has_nvidia && is_x86_64 && !is_musl {
@@ -557,6 +583,112 @@ fn linux_update_variant(is_musl: bool, is_x86_64: bool, has_nvidia: bool) -> Lin
     } else {
         LinuxUpdate::Cpu
     }
+}
+
+/// The CUDA runtime the Linux CUDA build links, as its full archive bundles it
+/// (`scripts/package-cuda-linux.sh`). The driver's `libcuda.so.1` is the host's.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+const CUDA_LINUX_RUNTIME: [&str; 4] = [
+    "libcudart.so.12",
+    "libcublas.so.12",
+    "libcublasLt.so.12",
+    "libcurand.so.10",
+];
+
+/// The Linux CUDA archives to try, in order. `<label>.tar.xz` carries the CUDA
+/// runtime; `<label>-lean.tar.xz` is the binary alone, and is worth trying
+/// first only when the runtime is already installed beside the binary.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+fn linux_cuda_archives(version: &str, runtime_beside: bool) -> Vec<String> {
+    let base = format!(
+        "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v{version}/kwaainet-x86_64-unknown-linux-gnu-cuda"
+    );
+    let full = format!("{base}.tar.xz");
+    if runtime_beside {
+        vec![format!("{base}-lean.tar.xz"), full]
+    } else {
+        vec![full]
+    }
+}
+
+/// Run `bin --version`, with `lib_dir` searched for libraries after the
+/// binary's own directory. Fails when the binary cannot start, which is what a
+/// missing shared library looks like.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+async fn binary_starts(bin: &std::path::Path, lib_dir: &std::path::Path) -> Result<()> {
+    let lib_path = lib_search_path(lib_dir, std::env::var_os("LD_LIBRARY_PATH"))?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio::process::Command::new(bin)
+            .arg("--version")
+            .env("LD_LIBRARY_PATH", lib_path)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .with_context(|| format!("{} --version did not exit within 30 s", bin.display()))?
+    .with_context(|| format!("Could not run {}", bin.display()))?;
+    anyhow::ensure!(
+        out.status.success(),
+        "the new binary does not start ({}): {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(())
+}
+
+/// `LD_LIBRARY_PATH` with `lib_dir` searched before what was already there.
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+fn lib_search_path(
+    lib_dir: &std::path::Path,
+    existing: Option<std::ffi::OsString>,
+) -> Result<std::ffi::OsString> {
+    let mut paths = vec![lib_dir.to_path_buf()];
+    if let Some(existing) = existing {
+        paths.extend(std::env::split_paths(&existing));
+    }
+    Ok(std::env::join_paths(paths)?)
+}
+
+/// Install every file in `extracted` into `install_dir`, the libraries first
+/// and `kwaainet` last, so an interrupted install never leaves a new binary
+/// without the libraries it needs.
+#[cfg(unix)]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn install_extracted(extracted: &std::path::Path, install_dir: &std::path::Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut entries = std::fs::read_dir(extracted)
+        .with_context(|| format!("Reading extracted archive at {}", extracted.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|e| (e.file_name() == "kwaainet", e.file_name()));
+    for entry in entries {
+        let name = entry.file_name();
+        let dest = install_dir.join(&name);
+        // Write to a temp file then rename atomically to avoid ETXTBSY
+        // (Linux won't let you overwrite a binary that is currently executing).
+        let tmp_dest = install_dir.join(format!(".{}.tmp", name.to_string_lossy()));
+        std::fs::copy(entry.path(), &tmp_dest)
+            .with_context(|| format!("Installing {} (staging)", name.to_string_lossy()))?;
+        let name_str = name.to_string_lossy();
+        if name_str == "kwaainet" {
+            std::fs::set_permissions(&tmp_dest, std::fs::Permissions::from_mode(0o755))?;
+        }
+        // Unlink the destination first so rename() succeeds even when `dest`
+        // is the currently-executing binary (some Linux kernels return ETXTBSY
+        // for rename(2) over a running ELF; unlink always succeeds and the old
+        // inode stays alive until the process exits). The same holds for a
+        // library the running binary has mapped.
+        let _ = std::fs::remove_file(&dest);
+        std::fs::rename(&tmp_dest, &dest).with_context(|| {
+            format!(
+                "Installing {} ({} -> {})",
+                name_str,
+                tmp_dest.display(),
+                dest.display()
+            )
+        })?;
+    }
+    Ok(())
 }
 
 static CANCEL_UPDATE: AtomicBool = AtomicBool::new(false);
@@ -951,6 +1083,95 @@ mod tests {
                 "musl={musl} x86_64={x86_64} gpu={gpu}"
             );
         }
+    }
+
+    #[test]
+    fn the_lean_cuda_archive_is_tried_only_with_the_runtime_installed() {
+        let full = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.8.0/kwaainet-x86_64-unknown-linux-gnu-cuda.tar.xz";
+        let lean = "https://github.com/Kwaai-AI-Lab/KwaaiNet/releases/download/v0.8.0/kwaainet-x86_64-unknown-linux-gnu-cuda-lean.tar.xz";
+        // The full archive keeps the name earlier updaters download (#240).
+        assert_eq!(linux_cuda_archives("0.8.0", false), [full]);
+        assert_eq!(linux_cuda_archives("0.8.0", true), [lean, full]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_install_dir_is_searched_first_for_libraries() {
+        let lib_dir = std::path::Path::new("/home/u/.cargo/bin");
+        assert_eq!(
+            lib_search_path(lib_dir, None).unwrap(),
+            "/home/u/.cargo/bin"
+        );
+        assert_eq!(
+            lib_search_path(lib_dir, Some("/opt/cuda/lib64:/usr/lib".into())).unwrap(),
+            "/home/u/.cargo/bin:/opt/cuda/lib64:/usr/lib"
+        );
+    }
+
+    #[cfg(unix)]
+    fn script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_new_binary_must_start_before_it_is_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let libs = dir.path().join("libs");
+        // Starts only when the install dir is searched first for libraries.
+        let ok = script(
+            dir.path(),
+            "ok",
+            &format!(
+                "case \"$LD_LIBRARY_PATH\" in \"{}\"*) exit 0;; esac; exit 3",
+                libs.display()
+            ),
+        );
+        binary_starts(&ok, &libs).await.unwrap();
+
+        let missing_lib = script(
+            dir.path(),
+            "missing",
+            "echo 'error while loading shared libraries: libcublas.so.12' >&2; exit 127",
+        );
+        let err = binary_starts(&missing_lib, &libs).await.unwrap_err();
+        assert!(format!("{err:#}").contains("libcublas.so.12"), "{err:#}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_binary_is_installed_after_its_libraries() {
+        let dir = tempfile::tempdir().unwrap();
+        let (extracted, install) = (dir.path().join("x"), dir.path().join("bin"));
+        std::fs::create_dir_all(&extracted).unwrap();
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::write(extracted.join("kwaainet"), "new").unwrap();
+        std::fs::write(extracted.join("libcublas.so.12"), "lib").unwrap();
+        std::fs::write(install.join("kwaainet"), "old").unwrap();
+        // A library that cannot be installed: a non-empty directory is in its way.
+        std::fs::create_dir_all(install.join("libcublas.so.12").join("in-the-way")).unwrap();
+
+        install_extracted(&extracted, &install).unwrap_err();
+        assert_eq!(
+            std::fs::read_to_string(install.join("kwaainet")).unwrap(),
+            "old",
+            "the new binary went in without its library"
+        );
+
+        std::fs::remove_dir_all(install.join("libcublas.so.12")).unwrap();
+        install_extracted(&extracted, &install).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(install.join("kwaainet")).unwrap(),
+            "new"
+        );
+        assert_eq!(
+            std::fs::read_to_string(install.join("libcublas.so.12")).unwrap(),
+            "lib"
+        );
     }
 
     #[test]
