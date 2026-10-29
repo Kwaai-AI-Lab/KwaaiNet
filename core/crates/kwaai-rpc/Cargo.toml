@@ -18,6 +18,21 @@ description = "gRPC IPC surface for the kwaainet daemon (used by GUI/CLI clients
 # for the same reason — generated-code crates have their own prost line.)
 tonic = "0.12"
 prost = "0.13"
+# Token generation for gRPC auth; already in the lockfile via other crates.
+getrandom = "0.2"
+
+# Owner-only DACL on the token file, the Windows half of Unix's 0600.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 tonic-build = "0.12"

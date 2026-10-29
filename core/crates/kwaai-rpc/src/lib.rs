@@ -19,7 +19,11 @@
 //! use kwaai_rpc::v1::kwaai_net_client::KwaaiNetClient;
 //! let channel = tonic::transport::Endpoint::try_from("http://[::]:8093")?
 //!     .connect().await?;
-//! let mut client = KwaaiNetClient::new(channel);
+//! let token = kwaai_rpc::auth::client_token(&run_dir)?;
+//! let mut client = KwaaiNetClient::with_interceptor(
+//!     channel,
+//!     kwaai_rpc::auth::BearerAuth::new(&token)?,
+//! );
 //! ```
 
 /// Generated protobuf + tonic code for the `kwaai.v1` package.
@@ -30,6 +34,9 @@
 pub mod v1 {
     tonic::include_proto!("kwaai.v1");
 }
+
+/// Bearer-token auth shared by the daemon and its Rust clients.
+pub mod auth;
 
 // Re-export tonic so downstream crates don't have to add their own
 // dependency on the exact tonic version we generated against. This keeps
