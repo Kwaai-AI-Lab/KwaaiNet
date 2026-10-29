@@ -23,12 +23,13 @@
   # every CUDA call fails with CUDA_ERROR_STUB_LIBRARY. NixOS
   # (/run/opengl-driver/lib) isn't wired up. See the postFixup comment below.
   cudaDriverLibPath ? null,
-  # GPU architecture the kernels are compiled for (86 = Ampere, e.g. RTX
-  # A5000). Must be set explicitly: the build sandbox has no GPU to detect.
+  # GPU architecture the kernels are compiled for. Defaults to 86 (Ampere,
+  # e.g. RTX A5000), since the build sandbox has no GPU to detect it from.
   cudaComputeCap ? "86",
-  # Parallel nvcc/cicc processes for the CUDA kernel crates. Each takes ~3 GB,
-  # and uncapped they scale with core count — on a 72-core host that ran the
-  # machine out of memory.
+  # Parallel nvcc/cicc processes *per kernel crate* (candle-kernels and
+  # candle-flash-attn may build at once). Each takes ~3 GB, and uncapped they
+  # scale with core count — on a 72-core host that ran the machine out of
+  # memory.
   cudaBuildThreads ? 8,
 }:
 
@@ -307,6 +308,9 @@ let
         # the already-loaded SONAME. Not a wrapper setting LD_LIBRARY_PATH:
         # `kwaainet service install` writes current_exe() — the unwrapped
         # binary — into the systemd unit, which would bypass it.
+        # Consequence: the binary won't start at all (not even --version) if
+        # the driver isn't at cudaDriverLibPath. Deliberate: this is a
+        # GPU-only package, and without libcuda it has no GPU anyway.
         postFixup = ''
           mkdir -p $out/libexec/cuda-driver-shim
           for lib in libcuda.so.1 libnvidia-ml.so.1 libnvidia-ptxjitcompiler.so.1; do

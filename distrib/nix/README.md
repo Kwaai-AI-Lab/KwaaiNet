@@ -142,6 +142,9 @@ packages.kwaainet-container     OCI image stream script — kwaainet (Linux only
 packages.kwaainet-all-container OCI image — all binaries in one image (Linux only)
 packages.test-two-node          two-node integration test script
 packages.test-containers        container image test suite (Linux only)
+packages.kwaainet-cuda          kwaainet with --features cuda (x86_64-linux only; unfree;
+                                expects the host NVIDIA driver in /usr/lib64 — edit
+                                cudaDriverLibPath in flake.nix for other distros)
 
 # Cross-compiled packages (x86_64-linux only):
 packages.kwaainet-aarch64-linux-gnu         ARM64 dynamic binary

@@ -47,7 +47,8 @@
         craneLibCuda = crane.mkLib pkgsCuda;
         cranePkgsCuda = import ./distrib/nix/crane.nix {
           craneLib = craneLibCuda;
-          inherit protoRs packages;
+          inherit protoRs;
+          packages = import ./distrib/nix/packages.nix { pkgs = pkgsCuda; };
           pkgs = pkgsCuda;
           inherit (pkgsCuda) lib makeWrapper;
           cudaFeature = true;
@@ -157,7 +158,9 @@
             ;
           inherit protoRs;
         }
-        // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # Only the tested target: aarch64 (e.g. Jetson) needs a different
+        # driver path and compute capability.
+        // lib.optionalAttrs (system == "x86_64-linux") {
           kwaainet-cuda = cranePkgsCuda.kwaainet;
         }
         // containers
