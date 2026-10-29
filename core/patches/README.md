@@ -120,3 +120,26 @@ unit-file edit. CI checks that the patch is still what cargo resolves, so a
 candle bump past cudarc 0.19 fails there instead of silently dropping it.
 
 [cudarc]: https://github.com/coreylowman/cudarc
+
+## mlx-sys (embedded MLX kernels)
+
+`mlx-sys 0.2.0` (from [mlx-rs], MIT/Apache-2.0) plus one patch to the MLX
+v0.25.1 source it fetches at build time (`mlx-metallib.patch`, applied by
+cmake's `PATCH_COMMAND`). MLX finds its GPU kernels, `mlx.metallib` (~90 MB),
+beside the binary or at the absolute build-directory path compiled into it —
+on a release binary, a path on the CI runner. No install channel (shell
+installer, Homebrew, the GUI bundle, `kwaainet update`) ships a second file.
+
+The patch makes the binary self-contained instead:
+
+- `mlx-sys` declares `links = "mlx"` and reports the kernels' path, which
+  `kwaai-inference`'s build script embeds with `include_bytes!`.
+- MLX gains `kwaai_mlx_set_metallib_path()`, tried before its own lookup.
+  `kwaai-inference` unpacks the kernels to `$KWAAINET_HOME/mlx/` before the
+  first MLX op and calls it. Never called, MLX behaves exactly as upstream.
+- MLX is built for macOS 14 (Metal 3.1) whatever SDK builds it
+  (`MLX_MACOS_DEPLOYMENT_TARGET` overrides), so kernels from a newer runner
+  still load on Sonoma; `kwaai-inference` refuses MLX below 14. Only pulled
+  in by the `mlx` feature on Apple Silicon.
+
+[mlx-rs]: https://github.com/oxideai/mlx-rs

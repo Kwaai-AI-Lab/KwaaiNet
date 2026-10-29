@@ -37,12 +37,12 @@ pub mod model;
 pub mod shard;
 pub mod tokenizer;
 
-#[cfg(feature = "mlx")]
+#[cfg(mlx)]
 pub mod mlx_shard;
 
 /// Re-exported so downstream crates can handle MLX arrays without taking a
 /// direct mlx-rs dependency (and without it drifting from the version we link).
-#[cfg(feature = "mlx")]
+#[cfg(mlx)]
 pub use mlx_rs;
 
 pub use config::EngineConfig;
@@ -166,12 +166,6 @@ impl DeviceType {
             return Self::Cuda(0);
         }
 
-        #[cfg(feature = "mlx")]
-        if crate::mlx_shard::mlx_available() {
-            tracing::info!("MLX device detected");
-            return Self::Mlx;
-        }
-
         // Metal is skipped: candle's Metal backend has ~3% GPU utilization for
         // single-token decode due to per-op kernel launch overhead.
         #[cfg(feature = "metal")]
@@ -198,12 +192,6 @@ impl DeviceType {
             // cuInit(). But we know the binary was compiled with CUDA support.
             tracing::info!("CUDA feature compiled in — selecting CUDA device");
             return Ok(Self::Cuda(0));
-        }
-
-        #[cfg(feature = "mlx")]
-        if crate::mlx_shard::mlx_available() {
-            tracing::info!("MLX device detected");
-            return Ok(Self::Mlx);
         }
 
         // Build a diagnostic message
