@@ -31,6 +31,32 @@
             ;
           inherit (pkgs) lib makeWrapper;
         };
+
+        # CUDA build: a separate `pkgs` instance with cudaSupport (and the
+        # unfree license acceptance it requires) enabled, using nixpkgs'
+        # own compatible compiler for nvcc rather than mixing stdenvs.
+        # Isolated from the default `pkgs` above so the ordinary CPU build
+        # never needs unfree packages accepted.
+        pkgsCuda = import nixpkgs {
+          inherit system;
+          config = {
+            allowUnfree = true;
+            cudaSupport = true;
+          };
+        };
+        craneLibCuda = crane.mkLib pkgsCuda;
+        cranePkgsCuda = import ./distrib/nix/crane.nix {
+          craneLib = craneLibCuda;
+          inherit protoRs;
+          packages = import ./distrib/nix/packages.nix { pkgs = pkgsCuda; };
+          pkgs = pkgsCuda;
+          inherit (pkgsCuda) lib makeWrapper;
+          cudaFeature = true;
+          # Where the host's NVIDIA driver (libcuda.so.1) is installed:
+          # /usr/lib64 on RHEL/Fedora. Edit for other distros, e.g.
+          # /usr/lib/x86_64-linux-gnu on Debian/Ubuntu. See crane.nix.
+          cudaDriverLibPath = "/usr/lib64";
+        };
         containers = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           import ./distrib/nix/containers.nix {
             inherit pkgs;
@@ -131,6 +157,11 @@
             cargoArtifacts
             ;
           inherit protoRs;
+        }
+        # Only the tested target: aarch64 (e.g. Jetson) needs a different
+        # driver path and compute capability.
+        // lib.optionalAttrs (system == "x86_64-linux") {
+          kwaainet-cuda = cranePkgsCuda.kwaainet;
         }
         // containers
         // crossPackages

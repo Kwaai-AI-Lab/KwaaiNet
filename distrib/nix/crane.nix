@@ -14,7 +14,28 @@
   makeWrapper,
   pkgs,
   cargoTarget ? null, # e.g., "aarch64-unknown-linux-gnu" — null for native builds
+  cudaFeature ? false, # build kwaainet with `--features cuda` against `pkgs.cudaPackages`
+  # Directory holding the *host's* real libcuda.so.1 (the NVIDIA driver's
+  # userspace library, installed outside Nix by the system package manager or
+  # the driver .run installer) — e.g. "/usr/lib64" on RHEL/Fedora,
+  # "/usr/lib/x86_64-linux-gnu" on Debian/Ubuntu. Required with cudaFeature:
+  # without it the binary resolves cudatoolkit's linker stub at runtime and
+  # every CUDA call fails with CUDA_ERROR_STUB_LIBRARY. NixOS
+  # (/run/opengl-driver/lib) isn't wired up. See the postFixup comment below.
+  cudaDriverLibPath ? null,
+  # GPU architecture the kernels are compiled for. Defaults to 86 (Ampere,
+  # e.g. RTX A5000), since the build sandbox has no GPU to detect it from.
+  cudaComputeCap ? "86",
+  # Parallel nvcc/cicc processes *per kernel crate* (candle-kernels and
+  # candle-flash-attn may build at once). Each takes ~3 GB, and uncapped they
+  # scale with core count — on a 72-core host that ran the machine out of
+  # memory.
+  cudaBuildThreads ? 8,
 }:
+
+assert lib.assertMsg (
+  cudaFeature -> cudaDriverLibPath != null
+) "crane.nix: cudaFeature requires cudaDriverLibPath (the host's NVIDIA driver library directory)";
 
 let
   # Read version from Cargo.toml so it stays in sync automatically.
@@ -124,14 +145,46 @@ let
     ${restorePatchedDeps}
   '';
 
+  # candle-core's "cuda" feature (pulled in transitively by kwaainet's own
+  # `cuda` feature) needs nvcc at build time and libcudart/libcublas/libcurand
+  # at both build and run time. `pkgs` is expected to already be a
+  # cudaSupport-enabled instance (config.cudaSupport = true;
+  # config.allowUnfree = true;) when cudaFeature is set — see flake.nix.
+  cudaBuildInputs = lib.optionals cudaFeature (
+    [ pkgs.git ] # cudaforge (candle-flash-attn's build helper) shells out to git
+    ++ (with pkgs.cudaPackages; [
+      cudatoolkit
+      libcublas
+      libcurand
+      cuda_nvrtc
+    ])
+  );
+
+  # candle-flash-attn's build.rs (via the `cudaforge` crate) shells out to
+  # `git clone https://github.com/NVIDIA/cutlass.git`, which the Nix sandbox
+  # blocks (no network during the build phase). `cudaforge` checks a cache
+  # dir keyed by commit prefix *before* cloning (src/dependency.rs,
+  # `fetch_with_lock`) and honours `$CUDAFORGE_HOME` as an override for where
+  # that cache lives — pre-seeding it here with a Nix-fetched checkout at the
+  # exact pinned commit (network access is fine in fetchgit's own fixed-output
+  # derivation) means the real build never needs to reach the network.
+  cutlassCommit = "7d49e6c7e2f8896c47f586706e67e1fb215529dc";
+  cutlassSrc = pkgs.fetchgit {
+    url = "https://github.com/NVIDIA/cutlass.git";
+    rev = cutlassCommit;
+    leaveDotGit = true;
+    fetchSubmodules = true;
+    sha256 = "sha256-cSWVzyuDC8EidTAZzHbVz0jUNK4zx5AAwfUV6lUXTXs=";
+  };
+
   commonArgs = {
     inherit src version;
     pname = "kwaainet";
 
     strictDeps = true;
 
-    nativeBuildInputs = packages.nativeBuildInputs ++ [ makeWrapper ];
-    inherit (packages) buildInputs;
+    nativeBuildInputs = packages.nativeBuildInputs ++ [ makeWrapper ] ++ cudaBuildInputs;
+    buildInputs = packages.buildInputs ++ cudaBuildInputs;
 
     # Runs after crane's own `mkDummySrc` stubbing (buildDepsOnly and
     # anything else that dummies `src`) — see restorePatchedDeps above.
@@ -159,13 +212,49 @@ let
   // lib.optionalAttrs (cargoTarget != null) {
     CARGO_BUILD_TARGET = cargoTarget;
     HOST_CC = "cc"; # ensure build scripts use host compiler
+  }
+  // lib.optionalAttrs cudaFeature {
+    # cudarc's build.rs (core/patches/cudarc) looks for the toolkit under any
+    # of these; cudatoolkit is nixpkgs' traditional bin/include/lib64 layout.
+    CUDA_PATH = "${pkgs.cudaPackages.cudatoolkit}";
+    CUDA_HOME = "${pkgs.cudaPackages.cudatoolkit}";
+    CUDA_ROOT = "${pkgs.cudaPackages.cudatoolkit}";
+    # nvcc needs a host C++ compiler it actually supports — same reasoning as
+    # release.yml's manylinux CUDA job (nvcc 12.x doesn't support the very
+    # latest gcc). Point it at cudaPackages' own known-compatible compiler
+    # rather than swapping the whole stdenv (which self-recurses: cudaPackages
+    # is itself built with the ordinary stdenv).
+    NVCC_CCBIN = "${pkgs.cudaPackages.backendStdenv.cc}/bin/cc";
+    CC = "${pkgs.cudaPackages.backendStdenv.cc}/bin/cc";
+    CXX = "${pkgs.cudaPackages.backendStdenv.cc}/bin/c++";
+
+    # candle-kernels' build.rs shells out to nvidia-smi to detect the target
+    # GPU's compute capability; there's no GPU (and no nvidia-smi) in the
+    # build sandbox by design, so it must be given explicitly.
+    CUDA_COMPUTE_CAP = cudaComputeCap;
+
+    # cudaforge (candle-flash-attn's build helper) reads CUDAFORGE_THREADS,
+    # then RAYON_NUM_THREADS, and otherwise uses half the host's cores.
+    CUDAFORGE_THREADS = toString cudaBuildThreads;
+    RAYON_NUM_THREADS = toString cudaBuildThreads;
+
+    preBuild = ''
+      export CUDAFORGE_HOME="$TMPDIR/cudaforge-home"
+      cutlass_cache="$CUDAFORGE_HOME/git/checkouts/cutlass-${builtins.substring 0 16 cutlassCommit}"
+      mkdir -p "$cutlass_cache"
+      cp -r --no-preserve=mode,ownership ${cutlassSrc}/. "$cutlass_cache"
+      chmod -R u+w "$cutlass_cache"
+    '';
   };
 
   # Phase 1: compile all workspace dependencies.
   cargoArtifacts = craneLib.buildDepsOnly (
     commonArgs
     // {
-      cargoExtraArgs = "--workspace";
+      # `--features kwaainet/cuda`, not `--features cuda`: cargo requires the
+      # pkg/feature form to target one workspace member's feature under
+      # `--workspace`, since `cuda` isn't a feature of every crate being built.
+      cargoExtraArgs = if cudaFeature then "--workspace --features kwaainet/cuda" else "--workspace";
     }
   );
 
@@ -176,8 +265,61 @@ let
       commonArgs
       // {
         inherit pname cargoArtifacts;
-        cargoExtraArgs = "-p ${pname}";
+        cargoExtraArgs = if cudaFeature then "-p ${pname} --features cuda" else "-p ${pname}";
         doCheck = false; # tests run separately below
+      }
+      // lib.optionalAttrs cudaFeature {
+        # `cudatoolkit` only carries a linker *stub* libcuda.so.1 (there's no
+        # real driver in the Nix build sandbox), which lands on the binary's
+        # RUNPATH — so without this, the binary loads the stub at runtime and
+        # every CUDA call fails with CUDA_ERROR_STUB_LIBRARY. On NixOS,
+        # nixpkgs papers over this with `/run/opengl-driver/lib`, populated
+        # by the OS from the host driver; off NixOS that path doesn't exist,
+        # and — because this is Nix's own dynamic loader, not the host's —
+        # there's no ld.so.cache fallback to catch it either.
+        #
+        # Prepending `cudaDriverLibPath` itself (e.g. `/usr/lib64`) to the
+        # RUNPATH is *not* safe: that directory also holds the host's own
+        # libc/libpthread/librt, and those shadow the Nix-built glibc this
+        # binary actually needs (GLIBC_2.39/2.36/GLIBC_ABI_DT_RELR not found).
+        # So symlink only the driver libraries we actually need into a
+        # private shim dir and point the RUNPATH at that instead — narrow
+        # enough that nothing but these ever resolves from it:
+        #   - libcuda.so.1: the driver itself.
+        #   - libnvidia-ml.so.1: NVML, in case it's dlopened for device
+        #     queries.
+        #   - libnvidia-ptxjitcompiler.so.1: candle/cudarc kernels are
+        #     compiled to PTX and JIT'd by the driver at load time; without
+        #     this, that JIT step fails with CUDA_ERROR_JIT_COMPILER_NOT_FOUND
+        #     even though libcuda.so.1 itself loaded fine.
+        # Note: the build itself runs sandboxed with no access to
+        # `cudaDriverLibPath` (that's the host's filesystem, not the Nix
+        # store), so this can't check the target exists — `ln -s` doesn't
+        # need to, it just records the path string, and it's only resolved
+        # later when the binary actually runs outside the sandbox.
+        # RUNPATH only covers the *executable's own* direct dependencies —
+        # libcuda.so.1 itself, found via the patchelf step below. It does
+        # nothing for libnvidia-ptxjitcompiler.so.1, which libcuda.so.1
+        # dlopen's on its own account at PTX JIT time: since the real
+        # (unmodified, system-installed) libcuda.so.1 carries no RUNPATH of
+        # its own, that nested lookup never sees ours. So make it a direct
+        # dependency of the executable (--add-needed): it then loads at
+        # startup through our RUNPATH, and libcuda's later dlopen matches
+        # the already-loaded SONAME. Not a wrapper setting LD_LIBRARY_PATH:
+        # `kwaainet service install` writes current_exe() — the unwrapped
+        # binary — into the systemd unit, which would bypass it.
+        # Consequence: the binary won't start at all (not even --version) if
+        # the driver isn't at cudaDriverLibPath. Deliberate: this is a
+        # GPU-only package, and without libcuda it has no GPU anyway.
+        postFixup = ''
+          mkdir -p $out/libexec/cuda-driver-shim
+          for lib in libcuda.so.1 libnvidia-ml.so.1 libnvidia-ptxjitcompiler.so.1; do
+            ln -s "${cudaDriverLibPath}/$lib" "$out/libexec/cuda-driver-shim/$lib"
+          done
+          origRpath=$(patchelf --print-rpath $out/bin/${pname})
+          patchelf --set-rpath "$out/libexec/cuda-driver-shim:$origRpath" $out/bin/${pname}
+          patchelf --add-needed libnvidia-ptxjitcompiler.so.1 $out/bin/${pname}
+        '';
       }
       // extra
     );
