@@ -75,7 +75,10 @@ jobs:
         run: |
           nvcc --version | tail -1
           start=$(date +%s)
-          cargo build --release -p candle-flash-attn
+          # candle-flash-attn is optional, so it's only selectable with the
+          # workspace feature that enables it (features can't be set on a
+          # non-workspace package directly).
+          cargo build --release -p kwaai-inference -p candle-flash-attn --features kwaai-inference/flash-attn
           echo "Built in $(( $(date +%s) - start ))s"
           test -s "$CANDLE_FLASH_ATTN_BUILD_DIR/libflashattention.a"
       - name: Upload flash-attn kernels
