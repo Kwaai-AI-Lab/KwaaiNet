@@ -302,9 +302,10 @@ fn genealogy_module() -> Vec<RelationTypeDef> {
 
 /// Built-in modules an ontology may name in `extends:`.
 ///
-/// `genealogy` is compiled. The others are the shared YAML modules in
-/// `tests/kwaai-knowledge/ontologies/`, embedded at build time so the binary
-/// and the analysis scripts read one copy.
+/// `genealogy` is compiled. The others are the shared YAML modules in this
+/// crate's `ontologies/`, embedded at build time so the binary and the
+/// analysis scripts read one copy. They live inside the crate, not under
+/// `tests/`, so a build that has only `core/` (Nix, `cargo package`) has them.
 pub const BUILTIN_MODULES: &[&str] = &[
     "genealogy",
     "narrative-history",
@@ -315,11 +316,7 @@ pub const BUILTIN_MODULES: &[&str] = &[
 fn builtin_module(name: &str, chain: &mut Vec<String>) -> anyhow::Result<Ontology> {
     macro_rules! module_yaml {
         ($file:literal) => {
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../../tests/kwaai-knowledge/ontologies/",
-                $file
-            ))
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/ontologies/", $file))
         };
     }
     let src = match name {
@@ -1830,11 +1827,17 @@ mod consistency_tests {
     /// Every authored ontology in the repo must be internally consistent.
     #[test]
     fn shipped_ontologies_have_no_dangling_references() {
-        let dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../tests/kwaai-knowledge/ontologies"
-        );
-        let entries = std::fs::read_dir(dir).expect("shipped ontologies directory");
+        // The per-KB files, and the shared modules embedded from this crate.
+        let dirs = [
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../tests/kwaai-knowledge/ontologies"
+            ),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/ontologies"),
+        ];
+        let entries = dirs
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).expect("shipped ontologies directory"));
         let mut failures = Vec::new();
         let mut checked = 0;
         for e in entries.filter_map(|e| e.ok()) {

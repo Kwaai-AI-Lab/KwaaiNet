@@ -23,8 +23,11 @@ ESCAPE = {"associated_with", "related_to"}
 def declared_predicates():
     import yaml, glob
     names = set()
-    for f in glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                    "ontologies", "*.yaml")):
+    here = os.path.dirname(os.path.abspath(__file__))
+    # Per-KB files, plus the shared modules in the crate that embeds them.
+    for f in (glob.glob(os.path.join(here, "ontologies", "*.yaml")) +
+              glob.glob(os.path.join(here, "..", "..", "core", "crates", "kwaai-rag",
+                                     "ontologies", "*.yaml"))):
         d = yaml.safe_load(open(f)) or {}
         for r in (d.get("relation_types") or []):
             names.add(r["name"])

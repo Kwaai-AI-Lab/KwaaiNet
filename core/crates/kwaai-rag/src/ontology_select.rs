@@ -590,6 +590,8 @@ mod tests {
     fn the_shipped_library_loads_without_errors() {
         let (lib, errors) = Library::load_dir(&shipped_dir()).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
+        // 15 per-KB ontologies. The `_module_*` genre modules moved into the
+        // crate and are no longer selection candidates.
         assert!(lib.candidates.len() >= 15, "{}", lib.candidates.len());
         for name in [
             "us-case-law",
