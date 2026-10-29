@@ -65,7 +65,10 @@ use display::*;
 use kwaai_inference::{EngineConfig, InferenceEngine, InferenceProvider, ModelFormat};
 
 /// Add the binary's directory to the library search path so bundled CUDA
-/// runtime libraries (.so/.dll) are found by cudarc's dynamic loading.
+/// runtime libraries (.so/.dll) are found by what loads after start-up: child
+/// processes and anything dlopen'd. On Linux it cannot help the libraries this
+/// binary links, which the loader resolves before `main`; the CUDA build finds
+/// those through its RPATH `$ORIGIN` (#240).
 fn setup_cuda_library_path() {
     let exe = match std::env::current_exe() {
         Ok(p) => p,

@@ -401,6 +401,12 @@ jobs:
         working-directory: core
         env:
           CUDA_COMPUTE_CAP: "80"
+          # $ORIGIN: find the CUDA runtime bundled beside the binary (#240).
+          # --disable-new-dtags writes RPATH, which also covers libcublas's own
+          # dependency on libcublasLt; RUNPATH would not. This replaces
+          # core/.cargo/config.toml's rustflags for the target, so its -L is
+          # repeated. Not shell-expanded: $ORIGIN reaches the linker literally.
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-L /usr/lib64 -C link-arg=-Wl,--disable-new-dtags,-rpath,$ORIGIN"
         shell: bash
         run: |
           nvcc --version
@@ -408,23 +414,12 @@ jobs:
       - name: Package CUDA archive (Unix)
         if: runner.os == 'Linux'
         working-directory: core
+        shell: bash
         run: |
-          LABEL="${{ matrix.label }}"
-          mkdir -p "${LABEL}"
-          cp target/release/${{ matrix.bin }} "${LABEL}/"
-          # Bundle CUDA runtime libraries so end users don't need the toolkit
-          CUDA_LIB="/usr/local/cuda-12.6/lib64"
-          for lib in libcudart.so* libcublas.so* libcublasLt.so* libcurand.so* libcusolver.so* libcusparse.so* libcufft.so* libnvrtc.so* libnvrtc-builtins.so*; do
-            found=$(find "${CUDA_LIB}" -name "${lib}" -type f -o -name "${lib}" -type l 2>/dev/null)
-            for f in $found; do
-              cp -P "$f" "${LABEL}/"
-            done
-          done
-          echo "CUDA libs bundled: $(ls ${LABEL}/*.so* 2>/dev/null | wc -l) files"
-          chmod +x "${LABEL}"/*
-          tar -cJf "${LABEL}.${{ matrix.ext }}" "${LABEL}"
-          sha256sum "${LABEL}.${{ matrix.ext }}" | awk '{print $1, "*" FILENAME}' FILENAME="${LABEL}.${{ matrix.ext }}" > "${LABEL}.${{ matrix.ext }}.sha256"
-          echo "CUDA archive: $(ls -lh ${LABEL}.${{ matrix.ext }})"
+          # Fails, rather than publishing an archive whose binary cannot start
+          # on a host with only an NVIDIA driver.
+          bash ../scripts/package-cuda-linux.sh \
+            target/release/${{ matrix.bin }} "${{ matrix.label }}" /usr/local/cuda-12.6/lib64 .
       - name: Save CUDA archive as Actions artifact
         uses: actions/upload-artifact@v6
         with:
@@ -434,6 +429,8 @@ jobs:
             core/${{ matrix.label }}.${{ matrix.ext }}.sha256
             core/${{ matrix.label }}-full.${{ matrix.ext }}
             core/${{ matrix.label }}-full.${{ matrix.ext }}.sha256
+            core/${{ matrix.label }}-lean.${{ matrix.ext }}
+            core/${{ matrix.label }}-lean.${{ matrix.ext }}.sha256
           retention-days: 3
 
   # Upload the pre-built CUDA archive to the GitHub Release once it exists.
@@ -465,13 +462,16 @@ jobs:
       - name: Upload to GitHub Release
         run: |
           TAG="${{ needs.plan.outputs.tag }}"
-          # Upload lean zip (binary only) + full zip (binary + DLLs) for Windows.
-          # Linux only has the one archive so the glob safely finds nothing extra.
+          # Windows: <label>.zip is binary only, <label>-full.zip adds the DLLs.
+          # Linux: <label>.tar.xz carries the libraries, <label>-lean.tar.xz is
+          # binary only. Each finds nothing for the other's suffix.
           gh release upload "$TAG" \
             cuda-dist/${{ matrix.label }}.${{ matrix.ext }} \
             cuda-dist/${{ matrix.label }}.${{ matrix.ext }}.sha256 \
             $(ls cuda-dist/${{ matrix.label }}-full.${{ matrix.ext }} 2>/dev/null || true) \
             $(ls cuda-dist/${{ matrix.label }}-full.${{ matrix.ext }}.sha256 2>/dev/null || true) \
+            $(ls cuda-dist/${{ matrix.label }}-lean.${{ matrix.ext }} 2>/dev/null || true) \
+            $(ls cuda-dist/${{ matrix.label }}-lean.${{ matrix.ext }}.sha256 2>/dev/null || true) \
             --repo "${{ github.repository }}" \
             --clobber
 
