@@ -234,6 +234,12 @@ jobs:
             ext: zip
             bin: kwaainet.exe
     name: build-cuda-artifacts (${{ matrix.target }})
+    # actions: read lets scripts/ci/fetch-flash-attn-kernels.sh download the
+    # kernel artifact from cuda-kernel-cache.yml's runs. Nothing here writes
+    # to the repo (upload-cuda-to-release does), so contents is read-only.
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ matrix.os }}
     continue-on-error: true
     container: ${{ matrix.container || null }}
@@ -251,31 +257,11 @@ jobs:
         if: matrix.container
         shell: bash
         run: |
-          # manylinux_2_28 is AlmaLinux 8 — install Rust, CUDA, OpenSSL
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          # GCC 12 — manylinux ships GCC 14 but CUDA 12.6 nvcc only supports up to GCC 13
-          dnf install -y -q gcc-toolset-12-gcc gcc-toolset-12-gcc-c++
-          echo "NVCC_CCBIN=/opt/rh/gcc-toolset-12/root/usr/bin/gcc" >> $GITHUB_ENV
-          echo "CC=/opt/rh/gcc-toolset-12/root/usr/bin/gcc" >> $GITHUB_ENV
-          echo "CXX=/opt/rh/gcc-toolset-12/root/usr/bin/g++" >> $GITHUB_ENV
-          # CUDA toolkit (RHEL 8 repo)
-          dnf install -y -q 'dnf-command(config-manager)'
-          dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
-          dnf install -y -q cuda-toolkit-12-6 openssl-devel perl-IPC-Cmd
-          echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
-          # gh CLI — needed by the "Upload CUDA artifact to GitHub Release" step
-          # (manylinux container doesn't include gh; install from the official RPM repo)
-          curl -fsSL https://cli.github.com/packages/rpm/gh-cli.repo -o /etc/yum.repos.d/gh-cli.repo
-          dnf install -y -q gh
-          # sccache for faster incremental Rust compilation
-          SCCACHE_VERSION="v0.8.1"
-          curl -sSfL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-            | tar -xzf - --strip-components=1 -C /usr/local/bin "sccache-${SCCACHE_VERSION}-x86_64-unknown-linux-musl/sccache"
-          chmod +x /usr/local/bin/sccache
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
-          # GHA cache service is not available inside containers — use local disk cache
-          echo "SCCACHE_DIR=/tmp/sccache" >> "$GITHUB_ENV"
+          # manylinux_2_28 is AlmaLinux 8 — Rust, gcc 12, CUDA 12.6, OpenSSL,
+          # sccache, and the flash-attn kernel cache location. Shared with
+          # cuda-kernel-cache.yml, which must produce an identical environment.
+          # Also installs gh, used by the kernel fetch.
+          bash scripts/ci/setup-cuda-manylinux.sh
       - name: Restore sccache (Linux container)
         if: matrix.container
         uses: actions/cache@v4
@@ -320,15 +306,13 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q cuda-toolkit-12-6 libssl-dev pkg-config
           echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
-      - name: Cache candle CUDA kernel build artifacts (Linux)
-        if: runner.os == 'Linux'
-        uses: actions/cache@v4
-        with:
-          path: |
-            core/target/release/build/candle-core-*
-            core/target/release/.fingerprint/candle-core-*
-          key: cuda-kernels-linux-80-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cuda-kernels-linux-80-
+      # candle-flash-attn's kernels are ~53 of the ~64 minutes of this build.
+      # cuda-kernel-cache.yml builds them on main and uploads an artifact;
+      # restoring it lets cudaforge skip nvcc. Never fails the release.
+      - name: Restore flash-attn kernels (Linux container)
+        if: matrix.container
+        shell: bash
+        run: bash scripts/ci/fetch-flash-attn-kernels.sh main
       - name: Install CUDA toolkit (Windows)
         if: runner.os == 'Windows'
         uses: Jimver/cuda-toolkit@v0.2.22
@@ -400,11 +384,18 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: core
         env:
+          # Must match setup-cuda-manylinux.sh, which names the kernel artifact
+          # after it.
           CUDA_COMPUTE_CAP: "80"
         shell: bash
         run: |
           nvcc --version
           cargo build --release -p kwaainet --features cuda
+      - name: Report flash-attn kernel reuse (Linux container)
+        if: matrix.container
+        continue-on-error: true
+        shell: bash
+        run: bash scripts/ci/check-flash-attn-reuse.sh core/target
       - name: Package CUDA archive (Unix)
         if: runner.os == 'Linux'
         working-directory: core

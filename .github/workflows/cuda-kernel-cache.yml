@@ -1,0 +1,93 @@
+# Builds candle-flash-attn's CUDA kernels on main and uploads them as an
+# artifact, so release.yml's Linux CUDA build restores them instead of
+# spending ~53 of its ~64 minutes in nvcc.
+#
+# An artifact rather than the Actions cache: the repo's cache sits at its
+# 10 GB limit and evicts within hours, and a cache saved from a release tag
+# is invisible to the next tag. Artifacts are kept 90 days and any run can
+# download them (scripts/ci/fetch-flash-attn-kernels.sh).
+#
+# Both workflows build in the same container with the same setup script
+# (scripts/ci/setup-cuda-manylinux.sh). cudaforge reuses an object only when
+# its source, GPU arch, nvcc args and paths all match, so this workflow checks
+# that a restored artifact really is reused (scripts/ci/check-flash-attn-reuse.sh)
+# and fails loudly when it isn't, after uploading a fresh build.
+name: CUDA kernel cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - core/Cargo.lock
+      - rust-toolchain.toml
+      - scripts/ci/*flash-attn*.sh
+      - scripts/ci/setup-cuda-manylinux.sh
+      - .github/workflows/cuda-kernel-cache.yml
+  schedule:
+    # Monthly, so main always has an artifact well inside its 90-day retention
+    # and the reuse check runs against whatever the toolchain has become.
+    - cron: "23 4 1 * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - core/Cargo.lock
+      - rust-toolchain.toml
+      - scripts/ci/*flash-attn*.sh
+      - scripts/ci/setup-cuda-manylinux.sh
+      - .github/workflows/cuda-kernel-cache.yml
+
+concurrency:
+  group: cuda-kernel-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  build:
+    # Same runner and container as release.yml's build-cuda-artifacts.
+    runs-on: ubuntu-22.04
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: fetch patched deps
+        run: bash core/patches/fetch-patches.sh
+      - name: Install build deps
+        shell: bash
+        run: bash scripts/ci/setup-cuda-manylinux.sh
+      - name: Restore flash-attn kernels
+        shell: bash
+        # main's artifact, or on a PR the PR's own from an earlier run.
+        # Through env, not ${{ }} in the script: PR authors choose branch names.
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: bash scripts/ci/fetch-flash-attn-kernels.sh main ${HEAD_REF:+"$HEAD_REF"}
+      - name: Build candle-flash-attn kernels
+        working-directory: core
+        shell: bash
+        run: |
+          nvcc --version | tail -1
+          start=$(date +%s)
+          cargo build --release -p candle-flash-attn
+          echo "Built in $(( $(date +%s) - start ))s"
+          test -s "$CANDLE_FLASH_ATTN_BUILD_DIR/libflashattention.a"
+      - name: Upload flash-attn kernels
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ env.FLASH_ATTN_KERNELS }}
+          path: /tmp/flash-attn-build
+          # .cudaforge_cache.json is what makes the objects reusable.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 90
+      # After the upload, so a mismatch still leaves a fresh artifact behind.
+      - name: Check restored kernels were reused
+        shell: bash
+        run: bash scripts/ci/check-flash-attn-reuse.sh core/target
