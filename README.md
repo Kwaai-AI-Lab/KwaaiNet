@@ -352,8 +352,8 @@ Pinned path:
 Add `--stats` for a per-token timing breakdown (prefill, decode, throughput). For local-only
 inference without networking: `kwaainet shard run "prompt" --local`.
 
-On Apple Silicon, pass `--force-blocks` if you want the block path anyway for testing or
-benchmarking — it is not a useful way to contribute. The daemon's own shard child takes no
+On Apple Silicon (macOS 14+), `--mlx` serves blocks on the GPU with MLX, which release builds
+include; `--force-blocks` alone uses candle on CPU and is only for testing. The daemon's own shard child takes no
 flags; it reads `shard.backend` (`auto`, `candle` or `mlx`) from `config.yaml` instead.
 
 See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.

@@ -51,7 +51,7 @@ pub type ShardCell = Arc<RwLock<Option<Arc<LoadedShard>>>>;
 #[allow(clippy::large_enum_variant)]
 pub enum LoadedShard {
     Candle(TransformerShard),
-    #[cfg(feature = "mlx")]
+    #[cfg(mlx)]
     Mlx {
         blocks: (usize, usize),
         is_first: bool,
@@ -65,13 +65,13 @@ pub enum LoadedShard {
 
 /// Lock, recovering from poison: a forward that panicked leaves the weights
 /// untouched and its session dropped, so the shard is still usable.
-#[cfg_attr(not(feature = "mlx"), allow(dead_code))]
+#[cfg_attr(not(mlx), allow(dead_code))]
 fn lock_recover<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 impl LoadedShard {
-    #[cfg(feature = "mlx")]
+    #[cfg(mlx)]
     pub fn mlx(shard: kwaai_inference::mlx_shard::MlxTransformerShard) -> Self {
         Self::Mlx {
             blocks: (shard.start_block, shard.end_block),
@@ -84,7 +84,7 @@ impl LoadedShard {
     pub fn blocks(&self) -> (usize, usize) {
         match self {
             Self::Candle(s) => (s.start_block, s.end_block),
-            #[cfg(feature = "mlx")]
+            #[cfg(mlx)]
             Self::Mlx { blocks, .. } => *blocks,
             #[cfg(feature = "synthetic")]
             Self::Synthetic(s) => s.blocks(),
@@ -93,7 +93,7 @@ impl LoadedShard {
     pub fn is_first(&self) -> bool {
         match self {
             Self::Candle(s) => s.is_first(),
-            #[cfg(feature = "mlx")]
+            #[cfg(mlx)]
             Self::Mlx { is_first, .. } => *is_first,
             #[cfg(feature = "synthetic")]
             Self::Synthetic(s) => s.is_first(),
@@ -102,7 +102,7 @@ impl LoadedShard {
     pub fn is_last(&self) -> bool {
         match self {
             Self::Candle(s) => s.is_last(),
-            #[cfg(feature = "mlx")]
+            #[cfg(mlx)]
             Self::Mlx { is_last, .. } => *is_last,
             #[cfg(feature = "synthetic")]
             Self::Synthetic(s) => s.is_last(),
@@ -111,7 +111,7 @@ impl LoadedShard {
     pub fn gc_sessions(&self) {
         match self {
             Self::Candle(s) => s.gc_sessions(),
-            #[cfg(feature = "mlx")]
+            #[cfg(mlx)]
             Self::Mlx { sessions, .. } => sessions.gc(),
             #[cfg(feature = "synthetic")]
             Self::Synthetic(s) => s.gc_sessions(),
@@ -240,7 +240,7 @@ pub fn f16_bytes_to_tensor(bytes: &[u8], shape: &[u32], device: &Device) -> Resu
 }
 
 /// Same wire format as [`tensor_to_f16_bytes`], for an MLX array.
-#[cfg(feature = "mlx")]
+#[cfg(mlx)]
 pub fn array_to_f16_bytes(a: &kwaai_inference::mlx_rs::Array) -> Result<(Vec<u32>, Vec<u8>)> {
     use kwaai_inference::mlx_rs::Dtype;
     let a = a
@@ -257,7 +257,7 @@ pub fn array_to_f16_bytes(a: &kwaai_inference::mlx_rs::Array) -> Result<(Vec<u32
 }
 
 /// Same wire format as [`f16_bytes_to_tensor`], into an MLX array.
-#[cfg(feature = "mlx")]
+#[cfg(mlx)]
 pub fn f16_bytes_to_array(bytes: &[u8], shape: &[u32]) -> Result<kwaai_inference::mlx_rs::Array> {
     if !bytes.len().is_multiple_of(2) {
         bail!(
@@ -562,7 +562,7 @@ pub async fn run_inference_request(
                         tensor_to_f16_bytes(&out).context("serialise output tensor")?;
                     (shape, data, is_logits)
                 }
-                #[cfg(feature = "mlx")]
+                #[cfg(mlx)]
                 LoadedShard::Mlx { shard: m, .. } => {
                     let mut m = lock_recover(m);
                     let (out, is_logits) = match req.payload_type {
@@ -776,7 +776,7 @@ mod tests {
         assert!(f16_bytes_to_tensor(&[], &[1 << 16; 4], &Device::Cpu).is_err());
     }
 
-    #[cfg(feature = "mlx")]
+    #[cfg(mlx)]
     #[test]
     fn f16_bytes_to_array_shape_mismatch_errs() {
         let bytes = vec![0u8; 8]; // four f16

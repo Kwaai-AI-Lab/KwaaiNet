@@ -31,6 +31,8 @@ multistream-select = { path = "patches/multistream-select" }
 libp2p-kad = { path = "patches/libp2p-kad" }
 # Behaves exactly as upstream unless CUDARC_DISABLE_ASYNC_ALLOC is set; see patches/README.md.
 cudarc = { path = "patches/cudarc" }
+# Reports mlx.metallib to dependents and lets the binary point MLX at it; see patches/README.md.
+mlx-sys = { path = "patches/mlx-sys" }
 
 # Root package for examples
 [package]
@@ -210,6 +212,8 @@ publish-jobs = ["homebrew"]
 # The release.yml has been manually patched (working-directory: core) for our
 # nested workspace layout.  Suppress cargo-dist's "file is out of date" check.
 allow-dirty = ["ci"]
+# TEMPORARY (feat/mlx-release): build every artifact on the PR without publishing. Remove before merge.
+pr-run-mode = "upload"
 targets = [
     "aarch64-apple-darwin",        # Apple Silicon (most common dev machine)
     "x86_64-apple-darwin",         # Intel Mac

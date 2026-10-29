@@ -1,0 +1,40 @@
+--- a/mlx/backend/metal/device.cpp
++++ b/mlx/backend/metal/device.cpp
+@@ -24,6 +24,12 @@
+ 
+ constexpr const char* default_mtllib_path = METAL_PATH;
+ 
++// kwaai: set by the embedding binary, tried before every other location.
++std::string& metallib_override() {
++  static std::string path;
++  return path;
++}
++
+ auto get_metal_version() {
+   auto get_metal_version_ = []() {
+     if (__builtin_available(macOS 15, iOS 18, tvOS 18, visionOS 2, *)) {
+@@ -120,6 +126,13 @@
+ MTL::Library* load_default_library(MTL::Device* device) {
+   NS::Error* error[4];
+   MTL::Library* lib;
++  if (!metallib_override().empty()) {
++    std::tie(lib, error[0]) =
++        load_library_from_path(device, metallib_override().c_str());
++    if (lib) {
++      return lib;
++    }
++  }
+   // First try the colocated mlx.metallib
+   std::tie(lib, error[0]) = load_colocated_library(device, "mlx");
+   if (lib) {
+@@ -208,6 +221,10 @@
+ 
+ } // namespace
+ 
++extern "C" void kwaai_mlx_set_metallib_path(const char* path) {
++  metallib_override() = path ? path : "";
++}
++
+ CommandEncoder::CommandEncoder(DeviceStream& stream) : stream_(stream) {
+   enc_ = stream_.buffer->computeCommandEncoder(MTL::DispatchTypeConcurrent);
+   enc_->retain();
