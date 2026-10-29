@@ -31,6 +31,33 @@
             ;
           inherit (pkgs) lib makeWrapper;
         };
+
+        # CUDA build: a separate `pkgs` instance with cudaSupport (and the
+        # unfree license acceptance it requires) enabled, using nixpkgs'
+        # own compatible compiler for nvcc rather than mixing stdenvs.
+        # Isolated from the default `pkgs` above so the ordinary CPU build
+        # never needs unfree packages accepted.
+        pkgsCuda = import nixpkgs {
+          inherit system;
+          config = {
+            allowUnfree = true;
+            cudaSupport = true;
+          };
+        };
+        craneLibCuda = crane.mkLib pkgsCuda;
+        cranePkgsCuda = import ./distrib/nix/crane.nix {
+          craneLib = craneLibCuda;
+          inherit protoRs packages;
+          pkgs = pkgsCuda;
+          inherit (pkgsCuda) lib makeWrapper;
+          cudaFeature = true;
+          # This box isn't NixOS — its NVIDIA driver (libcuda.so.1) is
+          # installed system-wide at /usr/lib64, not under /run/opengl-driver.
+          # See the postFixup comment in crane.nix for why this is needed.
+          # On a different machine, override or drop this to match its own
+          # driver install location.
+          cudaDriverLibPath = "/usr/lib64";
+        };
         containers = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux (
           import ./distrib/nix/containers.nix {
             inherit pkgs;
@@ -131,6 +158,7 @@
             cargoArtifacts
             ;
           inherit protoRs;
+          kwaainet-cuda = cranePkgsCuda.kwaainet;
         }
         // containers
         // crossPackages
