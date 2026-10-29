@@ -10,7 +10,7 @@ hyg, base = om.load_metrics()
 
 MODULES = {"narrative-history", "scholarly", "software-docs"}
 docs = {}
-for f in sorted(glob.glob(os.path.join(HERE, "ontologies", "*.yaml"))):
+for f in sorted(glob.glob(os.path.join(HERE, "ontologies", "*.yaml")) + glob.glob(os.path.join(om.MODULES_DIR, "*.yaml"))):
     n = os.path.basename(f)[:-5]
     key = n.replace("_module_", "").replace("_", "-") if n.startswith("_module_") else n
     docs[key] = yaml.safe_load(open(f))

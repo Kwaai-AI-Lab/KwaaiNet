@@ -62,7 +62,9 @@ what stops that.
 
 ## Layout
 
-Three shared modules, then thin per-KB files that extend them:
+Three shared modules, then thin per-KB files that extend them. The modules
+live in [`core/crates/kwaai-rag/ontologies/`](../../../core/crates/kwaai-rag/ontologies/),
+because the binary embeds them at build time:
 
 | module | covers |
 |---|---|

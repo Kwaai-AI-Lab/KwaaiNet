@@ -79,10 +79,10 @@ let
       '';
 
   # Source filter: keep .rs, .toml, .lock, .proto, and non-code assets
-  # that are embedded at compile time via include_str!() (.html, .sql).
+  # that are embedded at compile time via include_str!() (.html, .sql, .yaml).
   filteredSrc =
     let
-      extraFilter = path: _type: builtins.match ".*\\.(proto|html|sql)$" path != null;
+      extraFilter = path: _type: builtins.match ".*\\.(proto|html|sql|yaml)$" path != null;
       sourceFilter = path: type: (extraFilter path type) || (craneLib.filterCargoSources path type);
     in
     lib.cleanSourceWith {
