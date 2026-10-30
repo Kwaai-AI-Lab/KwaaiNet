@@ -102,6 +102,16 @@ This quickstart shows how to install the native Rust CLI, start a node, and send
 
 ### 1. Install the `kwaainet` CLI
 
+**Supported platforms** (minimums of the published release binaries):
+
+| Platform | Minimum | Notes |
+| --- | --- | --- |
+| macOS, Apple Silicon | macOS 12.3 | MLX block serving (`--mlx`) needs macOS 14 |
+| macOS, Intel | macOS 10.12 | |
+| Linux x86_64 / arm64 (glibc) | glibc 2.34 | e.g. Ubuntu 22.04, Debian 12, RHEL 9 |
+| Linux x86_64 / arm64 (musl) | — | Statically linked, no glibc requirement |
+| Windows x86_64 | Windows 10 | |
+
 **Shell installer (macOS / Linux):**
 
 ```bash
