@@ -5,7 +5,8 @@ name: CI
 #
 # What changed vs the old ci.yml:
 #   - protoc installed via apt instead of downloaded at runtime by build.rs
-#   - Single unified cargo cache key shared by clippy + test (same artifacts)
+#   - one cargo cache per job (cargo-<job>-<os>-<rustc>-…), saved from main
+#     only; see the note above Clippy's cache step
 #   - clippy uses default features only (was --all-features; CUDA/Metal are
 #     only needed for the release build, not the lint gate)
 #   - test matrix: ubuntu only on PRs; ubuntu + macOS + Windows on pushes to
@@ -92,6 +93,7 @@ jobs:
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
+        id: toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -107,21 +109,45 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
 
+      # Each job's cargo cache is keyed cargo-<job>-<os>-<rustc>-<hash>, job
+      # first, so no restore prefix reaches another job's, and with the rustc
+      # version, so a toolchain update doesn't keep restoring a dead target/. They used to share
+      # `<os>-cargo-<hash>`: Clippy and Test (ubuntu) raced for one key, as did
+      # Test (windows) and Windows check, and the `<os>-cargo-` prefix also
+      # matched the release-profile `-dev-` caches (main run 40765771119: both
+      # Linux jobs restored the Dev binary's target/).
+      #
+      # The repo's Actions cache is capped at 10 GB, so these caches are
+      # restored everywhere but saved only from main: a PR that changes
+      # Cargo.lock or a build.rs would otherwise save its own multi-GB copy and
+      # evict main's. (sccache still writes from PRs.)
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          key: cargo-clippy-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-clippy-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Clippy
         working-directory: core
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ── 3. Tests (ubuntu for PRs; ubuntu + macOS on pushes to main) ────────────
   test:
@@ -138,6 +164,7 @@ jobs:
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
+        id: toolchain
         uses: dtolnay/rust-toolchain@stable
 
       # Skipped on Windows: sccache cannot spawn rustc for web-sys there, because
@@ -173,21 +200,37 @@ jobs:
             echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
           }
 
-      - name: Cache cargo + target
-        uses: actions/cache@v4
+      # Registry only, no target/: a test build's target/ is several GB (a
+      # Linux one saved from PR #255 was 6193 MB, a macOS one ~3.3 GB), too
+      # much of the repo's 10 GB. Linux and macOS get compiled crates from
+      # sccache (Linux hit ~92% on a main push with main's sccache warm);
+      # Windows has no sccache and stays as uncached as it effectively was
+      # when it restored Windows check's check-only target/.
+      - name: Cache cargo registry
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          key: cargo-test-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-test-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Run tests
         working-directory: core
         run: cargo test --all
+
+      - name: Save cargo registry (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       # The bootstrap-grade build: the one artifact that must not break is
       # otherwise the only one nothing compiles. This also builds the
@@ -253,6 +296,7 @@ jobs:
         run: bash core/patches/fetch-patches.sh
 
       - name: Install Rust
+        id: toolchain
         uses: dtolnay/rust-toolchain@stable
 
       # Deliberately no sccache here. Windows caps a command line at 32,767
@@ -280,16 +324,17 @@ jobs:
           }
 
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          key: cargo-windows-check-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-windows-check-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       # --workspace: `default-members` is only kwaai-cli, so a bare check leaves
       # every other crate's Windows build unguarded — the same blind spot that
@@ -299,6 +344,17 @@ jobs:
       - name: Check
         working-directory: core
         run: cargo check --workspace --all-targets
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ── 4. WASM build (wasm-pack cached to avoid reinstall every run) ──────────
   wasm:
@@ -311,6 +367,7 @@ jobs:
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
+        id: toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -335,20 +392,32 @@ jobs:
         run: cargo install wasm-pack
 
       - name: Cache cargo + target (wasm)
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-wasm-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-wasm-
+            cargo-wasm-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Build WASM
         working-directory: core/crates/kwaai-wasm
         run: wasm-pack build --target web
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ── 5. Dev binaries (push to main only — gives devs/QA a downloadable build) ─
   dev-binary:
@@ -370,6 +439,7 @@ jobs:
         working-directory: ${{ github.workspace }}
 
       - name: Install Rust
+        id: toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install sccache
@@ -389,20 +459,32 @@ jobs:
         run: brew install protobuf
 
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-dev-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-dev-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-dev-
+            cargo-dev-${{ runner.os }}-${{ steps.toolchain.outputs.cachekey }}-
 
       - name: Build
         working-directory: core
         run: cargo build --release -p kwaainet
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       - name: Upload
         uses: actions/upload-artifact@v4
