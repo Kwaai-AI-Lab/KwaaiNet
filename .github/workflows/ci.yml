@@ -5,7 +5,8 @@ name: CI
 #
 # What changed vs the old ci.yml:
 #   - protoc installed via apt instead of downloaded at runtime by build.rs
-#   - Single unified cargo cache key shared by clippy + test (same artifacts)
+#   - one target/ cache per job (cargo-<job>-<os>-…), saved from main only;
+#     see the note above Clippy's cache step
 #   - clippy uses default features only (was --all-features; CUDA/Metal are
 #     only needed for the release build, not the lint gate)
 #   - test matrix: ubuntu only on PRs; ubuntu + macOS + Windows on pushes to
@@ -107,13 +108,19 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
 
-      # Every job's target/ cache is keyed cargo-<job>-<os>-…, job first. Jobs
-      # used to share `<os>-cargo-<hash>`: Clippy, Test and Windows check
-      # overwrote each other (first to finish kept it), and the `<os>-cargo-`
-      # restore prefix also matched the release-profile `-dev-` and `-wasm-`
-      # caches, which is what Clippy and Test actually restored.
+      # Each job's cargo cache is keyed cargo-<job>-<os>-…, job first, so no
+      # restore prefix reaches another job's. They used to share
+      # `<os>-cargo-<hash>`: Clippy and Test (ubuntu) raced for one key, as did
+      # Test (windows) and Windows check, and the `<os>-cargo-` prefix also
+      # matched the release-profile `-dev-` caches (main run 40765771119: both
+      # Linux jobs restored the Dev binary's target/).
+      #
+      # The repo's Actions cache is capped at 10 GB, so caches are restored
+      # everywhere but saved only from main: a PR that changes Cargo.lock or a
+      # build.rs would otherwise save its own multi-GB copy and evict main's.
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
@@ -127,6 +134,17 @@ jobs:
       - name: Clippy
         working-directory: core
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ── 3. Tests (ubuntu for PRs; ubuntu + macOS on pushes to main) ────────────
   test:
@@ -178,14 +196,20 @@ jobs:
             echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
           }
 
+      # target/ only on macOS. A Linux or Windows test build's target/ is ~6 GB
+      # (one saved from PR #255 was 6193 MB), most of the repo's 10 GB. Linux
+      # gets its compiled crates from sccache instead (~92% hits); Windows has
+      # no sccache and stays uncached, as it effectively was when it shared
+      # Windows check's check-only target/.
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            core/target/
+            ${{ runner.os == 'macOS' && 'core/target/' || '' }}
           key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
           restore-keys: |
             cargo-test-${{ runner.os }}-
@@ -193,6 +217,17 @@ jobs:
       - name: Run tests
         working-directory: core
         run: cargo test --all
+
+      - name: Save cargo cache (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            ${{ runner.os == 'macOS' && 'core/target/' || '' }}
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       # The bootstrap-grade build: the one artifact that must not break is
       # otherwise the only one nothing compiles. This also builds the
@@ -285,7 +320,8 @@ jobs:
           }
 
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
@@ -304,6 +340,17 @@ jobs:
       - name: Check
         working-directory: core
         run: cargo check --workspace --all-targets
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ── 4. WASM build (wasm-pack cached to avoid reinstall every run) ──────────
   wasm:
@@ -340,7 +387,8 @@ jobs:
         run: cargo install wasm-pack
 
       - name: Cache cargo + target (wasm)
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
@@ -354,6 +402,17 @@ jobs:
       - name: Build WASM
         working-directory: core/crates/kwaai-wasm
         run: wasm-pack build --target web
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
   # ── 5. Dev binaries (push to main only — gives devs/QA a downloadable build) ─
   dev-binary:
@@ -394,7 +453,8 @@ jobs:
         run: brew install protobuf
 
       - name: Cache cargo + target
-        uses: actions/cache@v4
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry/index/
@@ -408,6 +468,17 @@ jobs:
       - name: Build
         working-directory: core
         run: cargo build --release -p kwaainet
+
+      - name: Save cargo + target (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            core/target/
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
 
       - name: Upload
         uses: actions/upload-artifact@v4
