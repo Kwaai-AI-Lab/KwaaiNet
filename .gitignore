@@ -111,6 +111,7 @@ tests/rag-bench/.env
 core/patches/multistream-select/
 core/patches/libp2p-kad/
 core/patches/cudarc/
+core/patches/mlx-sys/
 
 # Human-readable renderings of tracked source docs (.docx/.pdf from .md).
 # Generated on request, never the source of truth — mirrors the source path,

@@ -116,7 +116,7 @@ kwaai-inference = { workspace = true, features = ["metal"] }
 
 [package.metadata.dist]
 dist = true
-features = ["storage"]
+features = ["storage", "mlx"]
 
 # Test-only deps. tempfile gives the gRPC server lifecycle tests a private
 # HOME/KWAAINET_HOME so they don't touch the developer's real
@@ -142,7 +142,8 @@ cuda = ["kwaai-inference/flash-attn"]
 cuda-no-flash = ["kwaai-inference/cuda"]
 cuda-windows = ["cuda-no-flash"]
 llama-cpp = ["llama-cpp-2"]
-# mlx: serve blocks with MLX on Apple Silicon. Needs Xcode's Metal Toolchain to build.
+# mlx: serve blocks with MLX on Apple Silicon, kernels embedded. Needs Xcode's
+# Metal Toolchain to build; inert on every other target, so releases enable it.
 mlx = ["kwaai-inference/mlx"]
 storage = ["kwaai-storage", "uuid"]
 # Listen on and dial IPv6. On by default; off makes the `ipv6` config key read
