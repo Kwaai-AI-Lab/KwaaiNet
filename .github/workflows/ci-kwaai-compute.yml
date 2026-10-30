@@ -34,6 +34,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "core -> target"
+          # Save from main only: a PR's cache is invisible to every other ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: fmt
         run: cargo fmt --check -p kwaai-inference
       - name: clippy
