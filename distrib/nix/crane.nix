@@ -41,6 +41,8 @@ let
   # Read version from Cargo.toml so it stays in sync automatically.
   cargoToml = builtins.fromTOML (builtins.readFile (./../.. + "/core/Cargo.toml"));
   version = cargoToml.package.version;
+  # For sed patterns: `.` is the only BRE metacharacter a version can contain.
+  versionBre = builtins.replaceStrings [ "." ] [ "\\." ] version;
 
   # The patched dependencies, materialized the way core/patches/*.sh do it:
   # pristine crates.io tarball (same pinned sha256 as each script) plus the
@@ -247,10 +249,57 @@ let
     '';
   };
 
+  # The deps phase sees the workspace's own version only as noise, but it is
+  # in the manifests (package versions, and the `path =` requirements in
+  # [workspace.dependencies]) and in Cargo.lock's entries for workspace
+  # members, and crane's dummy source keeps all of them, so every release
+  # bump rebuilt all dependencies. Pin it to 0.0.0 here; the real build still
+  # uses `src` and the real version. External requirements are left alone:
+  # only `version = "<ours>"` lines and lines with a `path =` are rewritten.
+  # A table-form external dependency (`[dependencies.foo]` / `version = ...`)
+  # at exactly our version would be rewritten too; the deps build then fails
+  # to resolve it, loudly.
+  #
+  # Same name as `src` on purpose: the name becomes the unpack directory, and
+  # keeping that identical in both phases keeps path-based fingerprints equal.
+  depsSrc = pkgs.runCommand "kwaainet-src-with-patches" { } ''
+    cp -r ${src} $out
+    chmod -R u+w $out
+    find $out -name Cargo.toml -not -path "$out/patches/*" -exec sed -i \
+      -e 's/^version = "${versionBre}"$/version = "0.0.0"/' \
+      -e '/path = /s/version = "${versionBre}"/version = "0.0.0"/' {} +
+    # Lock entries without a `source` line are workspace members (and the
+    # path-patched crates, whose versions differ from ours). Matched with
+    # index(), not a regex, so the version is compared literally.
+    awk -v v='version = "${version}"' '
+      /^\[\[package\]\]$/ { flush(); buf = $0; next }
+      buf != "" { buf = buf "\n" $0; next }
+      { print }
+      END { flush() }
+      function flush(  s, i) {
+        if (buf == "") return
+        s = buf "\n"
+        i = index(s, "\n" v "\n")
+        if (buf !~ /\nsource = / && i > 0)
+          buf = substr(s, 1, i) "version = \"0.0.0\"" substr(s, i + 1 + length(v), length(s) - i - length(v) - 1)
+        print buf; buf = ""
+      }' $out/Cargo.lock > $TMPDIR/Cargo.lock
+    mv $TMPDIR/Cargo.lock $out/Cargo.lock
+  '';
+
   # Phase 1: compile all workspace dependencies.
   cargoArtifacts = craneLib.buildDepsOnly (
-    commonArgs
+    # crane builds from `dummySrc` when it is given (it also stands in for
+    # `src` in vendoring, which reads depsSrc's lock: the same registry
+    # entries, so the same vendor dir), and warns on every evaluation if
+    # `src` is passed as well.
+    builtins.removeAttrs commonArgs [ "src" ]
     // {
+      version = "0.0.0";
+      dummySrc = craneLib.mkDummySrc {
+        src = depsSrc;
+        extraDummyScript = restorePatchedDeps;
+      };
       # `--features kwaainet/cuda`, not `--features cuda`: cargo requires the
       # pkg/feature form to target one workspace member's feature under
       # `--workspace`, since `cuda` isn't a feature of every crate being built.
