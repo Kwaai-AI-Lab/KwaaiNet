@@ -247,10 +247,45 @@ let
     '';
   };
 
+  # The deps phase sees the workspace's own version only as noise, but it is
+  # in the manifests (package versions, and the `path =` requirements in
+  # [workspace.dependencies]) and in Cargo.lock's entries for workspace
+  # members, and crane's dummy source keeps all of them, so every release
+  # bump rebuilt all dependencies. Pin it to 0.0.0 here; the real build still
+  # uses `src` and the real version. External requirements are left alone:
+  # only `version = "<ours>"` lines and lines with a `path =` are rewritten.
+  depsSrc = pkgs.runCommand "kwaainet-src-with-patches" { } ''
+    cp -r ${src} $out
+    chmod -R u+w $out
+    find $out -name Cargo.toml -not -path "$out/patches/*" -exec sed -i \
+      -e 's/^version = "${version}"$/version = "0.0.0"/' \
+      -e '/path = /s/version = "${version}"/version = "0.0.0"/' {} +
+    # Lock entries without a `source` line are workspace members (and the
+    # path-patched crates, whose versions differ from ours).
+    awk -v v='version = "${version}"' '
+      /^\[\[package\]\]$/ { flush(); buf = $0; next }
+      buf != "" { buf = buf "\n" $0; next }
+      { print }
+      END { flush() }
+      function flush() {
+        if (buf == "") return
+        if (buf !~ /\nsource = /) sub("\n" v, "\nversion = \"0.0.0\"", buf)
+        print buf; buf = ""
+      }' $out/Cargo.lock > $TMPDIR/Cargo.lock
+    mv $TMPDIR/Cargo.lock $out/Cargo.lock
+  '';
+
   # Phase 1: compile all workspace dependencies.
   cargoArtifacts = craneLib.buildDepsOnly (
-    commonArgs
+    # crane ignores `src` once `dummySrc` is given, and warns on every
+    # evaluation if both are passed.
+    builtins.removeAttrs commonArgs [ "src" ]
     // {
+      version = "0.0.0";
+      dummySrc = craneLib.mkDummySrc {
+        src = depsSrc;
+        extraDummyScript = restorePatchedDeps;
+      };
       # `--features kwaainet/cuda`, not `--features cuda`: cargo requires the
       # pkg/feature form to target one workspace member's feature under
       # `--workspace`, since `cuda` isn't a feature of every crate being built.
