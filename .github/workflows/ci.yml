@@ -107,6 +107,11 @@ jobs:
       - name: Install protoc
         run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
 
+      # Every job's target/ cache is keyed cargo-<job>-<os>-…, job first. Jobs
+      # used to share `<os>-cargo-<hash>`: Clippy, Test and Windows check
+      # overwrote each other (first to finish kept it), and the `<os>-cargo-`
+      # restore prefix also matched the release-profile `-dev-` and `-wasm-`
+      # caches, which is what Clippy and Test actually restored.
       - name: Cache cargo + target
         uses: actions/cache@v4
         with:
@@ -115,9 +120,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          key: cargo-clippy-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-clippy-${{ runner.os }}-
 
       - name: Clippy
         working-directory: core
@@ -181,9 +186,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          key: cargo-test-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-test-${{ runner.os }}-
 
       - name: Run tests
         working-directory: core
@@ -287,9 +292,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
+          key: cargo-windows-check-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', '**/build.rs') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-
+            cargo-windows-check-${{ runner.os }}-
 
       # --workspace: `default-members` is only kwaai-cli, so a bare check leaves
       # every other crate's Windows build unguarded — the same blind spot that
@@ -342,9 +347,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-wasm-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-wasm-
+            cargo-wasm-${{ runner.os }}-
 
       - name: Build WASM
         working-directory: core/crates/kwaai-wasm
@@ -396,9 +401,9 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             core/target/
-          key: ${{ runner.os }}-cargo-dev-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-dev-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-dev-
+            cargo-dev-${{ runner.os }}-
 
       - name: Build
         working-directory: core
