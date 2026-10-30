@@ -159,8 +159,9 @@ jobs:
         run: |
           {
             echo "SCCACHE_GHA_ENABLED=true"
-            # Read main's entries, write none: a tag's or PR's are invisible to
-            # every other ref (see ci.yml's sccache note).
+            # Write none: a tag's entries are invisible to every other ref (see
+            # ci.yml's sccache note). Reads seldom hit either, since main never
+            # builds these release-profile targets; this keeps sccache harmless.
             echo "SCCACHE_GHA_RW_MODE=READ_ONLY"
             echo "RUSTC_WRAPPER=sccache"
           } >> "$GITHUB_ENV"
@@ -283,8 +284,9 @@ jobs:
         run: |
           {
             echo "SCCACHE_GHA_ENABLED=true"
-            # Read main's entries, write none: a tag's or PR's are invisible to
-            # every other ref (see ci.yml's sccache note).
+            # Write none: a tag's entries are invisible to every other ref (see
+            # ci.yml's sccache note). Reads seldom hit either, since main never
+            # builds these release-profile targets; this keeps sccache harmless.
             echo "SCCACHE_GHA_RW_MODE=READ_ONLY"
             echo "RUSTC_WRAPPER=sccache"
           } >> "$GITHUB_ENV"

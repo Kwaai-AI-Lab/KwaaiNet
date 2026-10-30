@@ -99,10 +99,16 @@ jobs:
           components: clippy
 
       # sccache writes one Actions cache entry per compiled object. Only pushes
-      # to main write: a PR's or tag's entries are scoped to that ref, nothing
-      # else can read them, and they evicted main's from the 10 GB cache (one
-      # PR held 2,429 entries, ~2 GB, against main's 99). The GHA backend's
-      # read-only mode is in 0.19 but not 0.14, hence the pinned version.
+      # to main write (SCCACHE_GHA_RW_MODE, sccache 0.16+); everywhere else
+      # reads main's entries. A PR's or tag's entries are scoped to that ref,
+      # nothing else can read them, and they evicted main's from the 10 GB
+      # cache (on 2026-10-29 one PR held 2,429 entries, ~2 GB, against main's
+      # 99).
+      #
+      # Pinned because sccache namespaces every entry by its own version: an
+      # unpinned upgrade would silently orphan all of main's entries, leaving
+      # PRs with no hits until main repopulates. Bumping the pin costs the
+      # same, so do it deliberately.
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
         with:
@@ -130,7 +136,7 @@ jobs:
       # The repo's Actions cache is capped at 10 GB, so these caches are
       # restored everywhere but saved only from main: a PR that changes
       # Cargo.lock or a build.rs would otherwise save its own multi-GB copy and
-      # evict main's. (sccache still writes from PRs.)
+      # evict main's. sccache follows the same rule (see Install sccache).
       - name: Cache cargo + target
         id: cargo-cache
         uses: actions/cache/restore@v4
