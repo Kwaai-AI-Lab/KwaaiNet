@@ -151,12 +151,20 @@ jobs:
       - name: Install sccache
         if: ${{ !matrix.container }}
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.19.0
       - name: Configure sccache
         if: ${{ !matrix.container }}
         shell: bash
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            # Write none: a tag's entries are invisible to every other ref (see
+            # ci.yml's sccache note). Reads seldom hit either, since main never
+            # builds these release-profile targets; this keeps sccache harmless.
+            echo "SCCACHE_GHA_RW_MODE=READ_ONLY"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
       # OpenSSL headers are needed by openssl-sys (transitive via reqwest/libp2p).
       - name: Install OpenSSL (Linux)
         if: runner.os == 'Linux'
@@ -262,42 +270,26 @@ jobs:
           # cuda-kernel-cache.yml, which must produce an identical environment.
           # Also installs gh, used by the kernel fetch.
           bash scripts/ci/setup-cuda-manylinux.sh
-      - name: Restore sccache (Linux container)
-        if: matrix.container
-        uses: actions/cache@v4
-        with:
-          path: /tmp/sccache
-          key: sccache-cuda-linux-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: sccache-cuda-linux-
-      - name: Restore cargo registry (Linux container)
-        if: matrix.container
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: cargo-registry-cuda-linux-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: cargo-registry-cuda-linux-
       - name: Install Rust
         if: ${{ !matrix.container }}
         uses: dtolnay/rust-toolchain@stable
-      - name: Cache cargo registry and build artifacts (non-container)
-        if: ${{ !matrix.container }}
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: core
-          key: cuda
-          cache-targets: "false"
       - name: Install sccache (non-container)
         if: ${{ !matrix.container }}
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.19.0
       - name: Configure sccache (non-container)
         if: ${{ !matrix.container }}
         shell: bash
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            # Write none: a tag's entries are invisible to every other ref (see
+            # ci.yml's sccache note). Reads seldom hit either, since main never
+            # builds these release-profile targets; this keeps sccache harmless.
+            echo "SCCACHE_GHA_RW_MODE=READ_ONLY"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
       - name: Install CUDA toolkit (Linux, no container)
         if: runner.os == 'Linux' && !matrix.container
         run: |
