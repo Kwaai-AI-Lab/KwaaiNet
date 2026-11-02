@@ -102,9 +102,9 @@ pub struct GraphIngestConfig {
     pub drop_stats: Arc<ChunkDropStats>,
 }
 
-/// Chunks a graph build processed without getting their entities, by cause.
-/// Counted by the chunk-centric build only (not `--entity-centric` or
-/// `--ec-refine-only`, which `graph build` reports no line for).
+/// Chunks a graph extraction processed without getting their entities, by cause.
+/// Counts are measured in covered chunks, so a failed `chunk_batch` task records
+/// every chunk represented by that task rather than just the one request.
 ///
 /// Every one of these used to look like a chunk with no entities: the build
 /// finished with ✅ and the 10% cycle-0 graphs of the forgetting experiment
@@ -117,6 +117,8 @@ pub struct ChunkDropStats {
     pub truncated: AtomicUsize,
     /// Every request attempt failed (transport or non-2xx).
     pub request: AtomicUsize,
+    /// Entity embedding failed after extraction returned entities.
+    pub embed: AtomicUsize,
     /// Entities came back, but none of an allowed type.
     pub all_filtered: AtomicUsize,
 }
@@ -127,9 +129,10 @@ impl ChunkDropStats {
         self.parse.load(Ordering::Relaxed)
             + self.truncated.load(Ordering::Relaxed)
             + self.request.load(Ordering::Relaxed)
+            + self.embed.load(Ordering::Relaxed)
     }
 
-    fn record(&self, e: &anyhow::Error) {
+    fn record(&self, e: &anyhow::Error, covered_chunks: usize) {
         use crate::graph::ExtractionFailure as F;
         let counter = match e.downcast_ref::<F>() {
             Some(F::Parse(_)) => &self.parse,
@@ -138,17 +141,28 @@ impl ChunkDropStats {
             // the request path's, so it is counted there.
             Some(F::Request(_)) | None => &self.request,
         };
-        counter.fetch_add(1, Ordering::Relaxed);
+        counter.fetch_add(covered_chunks.max(1), Ordering::Relaxed);
+    }
+
+    fn record_embed(&self, covered_chunks: usize) {
+        self.embed
+            .fetch_add(covered_chunks.max(1), Ordering::Relaxed);
+    }
+
+    fn record_filtered(&self, covered_chunks: usize) {
+        self.all_filtered
+            .fetch_add(covered_chunks.max(1), Ordering::Relaxed);
     }
 
     /// The line `graph build` prints after a build.
     pub fn summary(&self) -> String {
         format!(
-            "Chunks lost:       {} (parse {} · truncated {} · request {}) · all entities filtered: {}",
+            "Chunks lost:       {} (parse {} · truncated {} · request {} · embed {}) · all entities filtered: {}",
             self.lost(),
             self.parse.load(Ordering::Relaxed),
             self.truncated.load(Ordering::Relaxed),
             self.request.load(Ordering::Relaxed),
+            self.embed.load(Ordering::Relaxed),
             self.all_filtered.load(Ordering::Relaxed),
         )
     }
@@ -163,6 +177,7 @@ fn merge_llm_answer(
     mut axiomatic: Vec<ExtractedEntity>,
     llm_answer: Result<(Vec<ExtractedEntity>, Vec<ExtractedRelation>)>,
     chunk_id: i64,
+    covered_chunks: usize,
     drop_stats: &ChunkDropStats,
 ) -> (Vec<ExtractedEntity>, Vec<ExtractedRelation>) {
     match llm_answer {
@@ -172,7 +187,7 @@ fn merge_llm_answer(
         }
         Err(e) => {
             warn!("entity extraction error for chunk {chunk_id}: {e}");
-            drop_stats.record(&e);
+            drop_stats.record(&e, covered_chunks);
             (axiomatic, vec![])
         }
     }
@@ -742,6 +757,7 @@ pub async fn extract_and_store_entities_pub(
         let axio_accum = axio_accum.clone();
         let doc_name_own = chunk.doc_name.clone();
         let drop_stats = graph_cfg.drop_stats.clone();
+        let covered_chunks = batch_end - i;
         tokio::spawn(async move {
             let _permit = permit;
             let idx = url_counter.fetch_add(1, Ordering::Relaxed) % urls.len();
@@ -952,8 +968,13 @@ pub async fn extract_and_store_entities_pub(
                 .await
             };
             let n_axio = axio_entities.len();
-            let (mut entities, relations) =
-                merge_llm_answer(axio_entities, llm_answer, chunk_id, &drop_stats);
+            let (mut entities, relations) = merge_llm_answer(
+                axio_entities,
+                llm_answer,
+                chunk_id,
+                covered_chunks,
+                &drop_stats,
+            );
             let n_llm = entities.len() - n_axio;
 
             // Record chunk metrics for non-FullAxiomatic paths (after LLM completes).
@@ -979,7 +1000,7 @@ pub async fn extract_and_store_entities_pub(
                 let before = entities.len();
                 entities.retain(|e| et.iter().any(|t| t.eq_ignore_ascii_case(&e.entity_type)));
                 if before > 0 && entities.is_empty() {
-                    drop_stats.all_filtered.fetch_add(1, Ordering::Relaxed);
+                    drop_stats.record_filtered(covered_chunks);
                 }
             }
 
@@ -1013,6 +1034,7 @@ pub async fn extract_and_store_entities_pub(
                     Ok(e) => e,
                     Err(e) => {
                         warn!("entity embedding error for chunk {chunk_id}: {e}");
+                        drop_stats.record_embed(covered_chunks);
                         vec![]
                     }
                 }
@@ -1221,12 +1243,17 @@ async fn extract_and_store_entities(
             Ok(r) => r,
             Err(e) => {
                 warn!("entity extraction error for chunk {chunk_id}: {e}");
+                graph_cfg.drop_stats.record(&e, 1);
                 continue;
             }
         };
 
         if !et.is_empty() {
+            let before = entities.len();
             entities.retain(|e| et.iter().any(|t| t.eq_ignore_ascii_case(&e.entity_type)));
+            if before > 0 && entities.is_empty() {
+                graph_cfg.drop_stats.record_filtered(1);
+            }
         }
 
         if entities.is_empty() {
@@ -1260,6 +1287,7 @@ async fn extract_and_store_entities(
             Ok(e) => e,
             Err(e) => {
                 warn!("entity embedding error for chunk {chunk_id}: {e}");
+                graph_cfg.drop_stats.record_embed(1);
                 continue;
             }
         };
@@ -2648,19 +2676,225 @@ mod drop_stats_tests {
     #[test]
     fn each_failure_is_counted_under_its_cause() {
         let s = ChunkDropStats::default();
-        s.record(&anyhow::Error::new(ExtractionFailure::Parse("x".into())));
-        s.record(&anyhow::Error::new(ExtractionFailure::Truncated(
-            "x".into(),
-        )));
-        s.record(&anyhow::Error::new(ExtractionFailure::Request("x".into())));
-        s.record(&anyhow::anyhow!("untyped: from the request path"));
-        s.all_filtered.fetch_add(1, Ordering::Relaxed);
-        assert_eq!(s.lost(), 4, "filtered chunks are not lost answers");
+        s.record(&anyhow::Error::new(ExtractionFailure::Parse("x".into())), 1);
+        s.record(
+            &anyhow::Error::new(ExtractionFailure::Truncated("x".into())),
+            1,
+        );
+        s.record(
+            &anyhow::Error::new(ExtractionFailure::Request("x".into())),
+            1,
+        );
+        s.record(&anyhow::anyhow!("untyped: from the request path"), 1);
+        s.record_embed(1);
+        s.record_filtered(1);
+        assert_eq!(s.lost(), 5, "filtered chunks are not lost answers");
         assert_eq!(
             s.summary(),
-            "Chunks lost:       4 (parse 1 · truncated 1 · request 2) · all entities filtered: 1"
+            "Chunks lost:       5 (parse 1 · truncated 1 · request 2 · embed 1) · all entities filtered: 1"
         );
     }
+
+    #[test]
+    fn failures_and_filters_count_every_chunk_in_a_batch() {
+        let s = ChunkDropStats::default();
+        let (entities, relations) = merge_llm_answer(
+            vec![],
+            Err(anyhow::Error::new(ExtractionFailure::Request("x".into()))),
+            7,
+            3,
+            &s,
+        );
+        assert!(entities.is_empty());
+        assert!(relations.is_empty());
+        s.record_embed(3);
+        s.record_filtered(3);
+
+        assert_eq!(s.request.load(Ordering::Relaxed), 3);
+        assert_eq!(s.embed.load(Ordering::Relaxed), 3);
+        assert_eq!(s.all_filtered.load(Ordering::Relaxed), 3);
+        assert_eq!(s.lost(), 6);
+    }
+
+    fn serve_chat(content: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let port = std_listener.local_addr().unwrap().port();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 65536];
+            let _ = socket.read(&mut request).await;
+            let body = format!(
+                "{}\n",
+                serde_json::json!({"message": {"content": content}, "done": true})
+            );
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/x-ndjson\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    fn test_chunk(id: i64, text: &str) -> Chunk {
+        Chunk {
+            id,
+            text: text.into(),
+            surrounding: String::new(),
+            doc_name: "test.txt".into(),
+            chunk_index: id as u32,
+            page_num: None,
+            section_name: None,
+            skip_extraction: false,
+            section_note: None,
+            section_type: crate::doc_schema::SectionType::Main,
+        }
+    }
+
+    fn test_graph_config(
+        inference_url: String,
+        store: Arc<Mutex<GraphStore>>,
+        drop_stats: Arc<ChunkDropStats>,
+        chunk_batch: usize,
+    ) -> GraphIngestConfig {
+        GraphIngestConfig {
+            store,
+            inference_url,
+            inference_urls: vec![],
+            model: "test-model".into(),
+            workers: 1,
+            entity_types: vec![],
+            relation_types: vec![],
+            no_relations: true,
+            context_window: 0,
+            only_chunk_ids: None,
+            gliner_client: None,
+            entity_centric: false,
+            ec_refine_threshold: 0.0,
+            ec_refine_budget: 50,
+            ec_refine_only: false,
+            chunk_batch,
+            validation_model: None,
+            validation_confidence_floor: 0.7,
+            validation_budget: 200,
+            extract_timeline: false,
+            axiomatic_threshold: 0.0,
+            relation_threshold_high: 0.0,
+            relation_threshold_low: 0.0,
+            drop_stats,
+        }
+    }
+
+    fn test_chunks() -> Vec<Chunk> {
+        vec![
+            test_chunk(1, "My father Abdullah Gool worked there."),
+            test_chunk(2, "Abdullah Gool returned home."),
+            test_chunk(3, "My father Abdullah Gool worked there."),
+        ]
+    }
+
+    fn closed_local_url() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        format!("http://{addr}")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_batched_extraction_counts_every_covered_chunk() {
+        let inference_url = closed_local_url();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(
+            GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap(),
+        ));
+        let stats = Arc::new(ChunkDropStats::default());
+        let graph_cfg = test_graph_config(inference_url, store.clone(), stats.clone(), 3);
+        let chunks = test_chunks();
+        let chunk_ids = [1, 2, 3];
+        let embed = EmbedClient::new(None, Some("test-model".into()));
+
+        extract_and_store_entities_pub(&chunks, &chunk_ids, &embed, &graph_cfg, None).await;
+
+        assert_eq!(stats.request.load(Ordering::Relaxed), 3);
+        assert_eq!(stats.lost(), 3);
+        assert_eq!(store.lock().unwrap().node_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn entity_embedding_failure_counts_every_chunk_in_the_batch() {
+        let inference_url = serve_chat(
+            r#"{"entities":[{"name":"Abdullah Gool","type":"Person","description":"A person mentioned in the passage."}],"relations":[]}"#,
+        );
+        let embed_url = closed_local_url();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(
+            GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap(),
+        ));
+        let stats = Arc::new(ChunkDropStats::default());
+        let graph_cfg = test_graph_config(inference_url, store.clone(), stats.clone(), 3);
+        let chunks = test_chunks();
+        let chunk_ids = [1, 2, 3];
+        let embed = EmbedClient::new(Some(embed_url), Some("test-model".into()));
+
+        extract_and_store_entities_pub(&chunks, &chunk_ids, &embed, &graph_cfg, None).await;
+
+        assert_eq!(stats.embed.load(Ordering::Relaxed), 3);
+        assert_eq!(stats.lost(), 3);
+        assert_eq!(store.lock().unwrap().node_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn all_filtered_batched_entities_count_every_covered_chunk() {
+        let inference_url = serve_chat(
+            r#"{"entities":[{"name":"Abdullah Gool","type":"Organization","description":"An organization mentioned in the passage."}],"relations":[]}"#,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(
+            GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap(),
+        ));
+        let stats = Arc::new(ChunkDropStats::default());
+        let mut graph_cfg = test_graph_config(inference_url, store.clone(), stats.clone(), 3);
+        graph_cfg.entity_types = vec!["Person".into()];
+        let chunks = test_chunks();
+        let chunk_ids = [1, 2, 3];
+        let embed = EmbedClient::new(None, Some("test-model".into()));
+
+        extract_and_store_entities_pub(&chunks, &chunk_ids, &embed, &graph_cfg, None).await;
+
+        assert_eq!(stats.all_filtered.load(Ordering::Relaxed), 3);
+        assert_eq!(stats.lost(), 0, "filtered chunks are not lost answers");
+        assert_eq!(store.lock().unwrap().node_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn sequential_entity_embedding_failure_counts_the_chunk() {
+        let inference_url = serve_chat(
+            r#"{"entities":[{"name":"Abdullah Gool","type":"Person","description":"A person mentioned in the passage."}],"relations":[]}"#,
+        );
+        let embed_url = closed_local_url();
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(Mutex::new(
+            GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap(),
+        ));
+        let stats = Arc::new(ChunkDropStats::default());
+        let graph_cfg = test_graph_config(inference_url, store.clone(), stats.clone(), 1);
+        let chunks = test_chunks();
+        let chunk_ids = [1];
+        let embed = EmbedClient::new(Some(embed_url), Some("test-model".into()));
+
+        extract_and_store_entities(&chunks[..1], &chunk_ids, &embed, &graph_cfg).await;
+
+        assert_eq!(stats.embed.load(Ordering::Relaxed), 1);
+        assert_eq!(stats.lost(), 1);
+        assert_eq!(store.lock().unwrap().node_count(), 0);
+    }
+
     fn entity(name: &str) -> ExtractedEntity {
         ExtractedEntity {
             name: name.into(),
@@ -2680,6 +2914,7 @@ mod drop_stats_tests {
             vec![entity("Leo Szilard"), entity("Enrico Fermi")],
             Err(anyhow::Error::new(ExtractionFailure::Parse("x".into()))),
             7,
+            1,
             &s,
         );
         let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();
@@ -2695,6 +2930,7 @@ mod drop_stats_tests {
             vec![entity("Leo Szilard")],
             Ok((vec![entity("Albert Einstein")], vec![])),
             7,
+            1,
             &s,
         );
         let names: Vec<&str> = entities.iter().map(|e| e.name.as_str()).collect();

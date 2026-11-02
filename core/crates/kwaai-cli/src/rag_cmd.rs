@@ -13,7 +13,7 @@ use kwaai_rag::{
     embedder::EmbedClient,
     family,
     graph::GraphStore,
-    ingestion::{ingest_text, GraphIngestConfig, IngestConfig},
+    ingestion::{ingest_text, ChunkDropStats, GraphIngestConfig, IngestConfig},
     iterative::retrieve_iterative,
     meta_store::{MetaStore, SyncMeta},
     prompt::{build_chat_messages, ChatMessage},
@@ -26,6 +26,24 @@ use crate::cli::{
 };
 use crate::config::{KwaaiNetConfig, RagConfig};
 use crate::display::*;
+
+fn chunk_drop_stats_report(stats: &ChunkDropStats) -> (String, Option<String>) {
+    let warning = (stats.lost() > 0).then(|| {
+        format!(
+            "{} chunks lost their extraction and have no entities; see the warnings above",
+            stats.lost()
+        )
+    });
+    (format!("  {}", stats.summary()), warning)
+}
+
+fn print_chunk_drop_stats(stats: &ChunkDropStats) {
+    let (summary, warning) = chunk_drop_stats_report(stats);
+    println!("{summary}");
+    if let Some(warning) = warning {
+        print_warning(&warning);
+    }
+}
 
 fn parse_graph_mode(s: &str) -> kwaai_rag::query_understand::GraphMode {
     match s.to_lowercase().as_str() {
@@ -944,6 +962,10 @@ async fn cmd_ingest(
                 result.chunks_ingested, result.vectors_uploaded
             ))
             .await;
+
+        if let Some(graph_cfg) = cfg.graph.as_ref() {
+            print_chunk_drop_stats(&graph_cfg.drop_stats);
+        }
 
         // After ingest: inject entity seeds from index sections.
         if let Some(ref schema) = loaded_schema {
@@ -3563,6 +3585,10 @@ async fn run_sync_pass(
             }
         };
 
+        if let Some(graph_cfg) = ingest_cfg.graph.as_ref() {
+            print_chunk_drop_stats(&graph_cfg.drop_stats);
+        }
+
         // Record sync state.
         meta.put_sync_meta(
             doc_name,
@@ -4060,13 +4086,7 @@ async fn cmd_graph(action: GraphAction, kb: String) -> Result<()> {
                 }
                 // Only the chunk-centric build counts losses; elsewhere the line would read 0.
                 if !entity_centric && !ec_refine_only {
-                    println!("  {}", graph_cfg.drop_stats.summary());
-                }
-                if graph_cfg.drop_stats.lost() > 0 {
-                    print_warning(&format!(
-                        "{} chunks lost their extraction and have no entities; see the warnings above",
-                        graph_cfg.drop_stats.lost()
-                    ));
+                    print_chunk_drop_stats(&graph_cfg.drop_stats);
                 }
 
                 let meta = Arc::new(meta);
@@ -11346,6 +11366,34 @@ fn vocabulary_report(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod chunk_drop_stats_report_tests {
+    use super::{chunk_drop_stats_report, ChunkDropStats};
+
+    #[test]
+    fn report_includes_embedding_losses_and_warning() {
+        let stats = ChunkDropStats::default();
+        stats.embed.store(2, std::sync::atomic::Ordering::Relaxed);
+
+        let (summary, warning) = chunk_drop_stats_report(&stats);
+
+        assert!(summary.contains("Chunks lost:       2"), "{summary}");
+        assert!(summary.contains("embed 2"), "{summary}");
+        assert_eq!(
+            warning.as_deref(),
+            Some("2 chunks lost their extraction and have no entities; see the warnings above")
+        );
+    }
+
+    #[test]
+    fn report_omits_warning_when_no_chunks_were_lost() {
+        let (summary, warning) = chunk_drop_stats_report(&ChunkDropStats::default());
+
+        assert!(summary.contains("Chunks lost:       0"), "{summary}");
+        assert!(warning.is_none());
+    }
 }
 
 #[cfg(test)]
