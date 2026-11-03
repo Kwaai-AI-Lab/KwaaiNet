@@ -37,11 +37,48 @@ pub async fn forward_through_chain(
     reputation: Option<Arc<std::sync::Mutex<ReputationStore>>>,
     token_ctx: TokenContext,
 ) -> Result<crate::block_rpc::InferenceResponse> {
+    forward_from(
+        client,
+        chain,
+        total_blocks,
+        session_id,
+        seq_pos,
+        first_request,
+        0,
+        our_peer_id,
+        failed_peers,
+        unreached,
+        sink,
+        reputation,
+        token_ctx,
+    )
+    .await
+}
+
+/// [`forward_through_chain`] from `start_block`, where `first_request`
+/// carries the activations that reached it — how a forward chain that stopped
+/// part-way resumes in star.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn forward_from(
+    client: &mut P2PClient,
+    chain: &[BlockServerEntry],
+    total_blocks: usize,
+    session_id: u64,
+    seq_pos: u32,
+    first_request: InferenceRequest,
+    start_block: usize,
+    our_peer_id: Option<&PeerId>,
+    failed_peers: &mut std::collections::HashSet<PeerId>,
+    unreached: &std::collections::HashSet<PeerId>,
+    sink: Option<&dyn ProgressSink>,
+    reputation: Option<Arc<std::sync::Mutex<ReputationStore>>>,
+    token_ctx: TokenContext,
+) -> Result<crate::block_rpc::InferenceResponse> {
     use crate::block_rpc::InferenceResponse;
 
     let mut request = first_request;
     let mut response: Option<InferenceResponse> = None;
-    let mut pos = 0;
+    let mut pos = start_block;
 
     while pos < total_blocks {
         let candidates = hop_candidates(chain, pos, failed_peers, unreached, our_peer_id);

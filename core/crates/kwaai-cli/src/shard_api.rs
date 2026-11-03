@@ -32,8 +32,8 @@ use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
 use crate::shard_cmd::{
-    daemon_socket, discover_chain, forward_through_chain, load_circuit_by_id,
-    refresh_circuit_addrs, sample_token, BlockServerEntry,
+    daemon_socket, discover_chain, load_circuit_by_id, refresh_circuit_addrs, sample_token,
+    BlockServerEntry,
 };
 
 // ── llama.cpp fast path (macOS Metal acceleration) ──────────────────────────
@@ -233,6 +233,10 @@ async fn run_inference(
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(42)
     };
+    let route = KwaaiNetConfig::load_or_create()
+        .map(|c| crate::routing::RouteMode::resolve(None, &c))
+        .unwrap_or(crate::routing::RouteMode::Star);
+    let mut router = crate::routing::Router::open(route, session_id, &state.our_peer_id).await;
 
     let mut generated = 0usize;
     let mut seq_pos = 0usize;
@@ -282,21 +286,22 @@ async fn run_inference(
             data,
         };
 
-        let logits_bytes = match forward_through_chain(
-            &mut client_guard,
-            &pinned_path,
-            state.total_blocks,
-            session_id,
-            seq_pos as u32,
-            request,
-            Some(&state.our_peer_id),
-            &mut failed_peers,
-            &unreached,
-            None,
-            None,
-            token_ctx,
-        )
-        .await
+        let logits_bytes = match router
+            .forward(
+                &mut client_guard,
+                &pinned_path,
+                state.total_blocks,
+                session_id,
+                seq_pos as u32,
+                request,
+                Some(&state.our_peer_id),
+                &mut failed_peers,
+                &unreached,
+                None,
+                None,
+                token_ctx,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -324,21 +329,22 @@ async fn run_inference(
                             shape: s2,
                             data: d2,
                         };
-                        match forward_through_chain(
-                            &mut client_guard,
-                            &pinned_path,
-                            state.total_blocks,
-                            session_id,
-                            seq_pos as u32,
-                            retry,
-                            Some(&state.our_peer_id),
-                            &mut failed_peers,
-                            &unreached,
-                            None,
-                            None,
-                            token_ctx,
-                        )
-                        .await
+                        match router
+                            .forward(
+                                &mut client_guard,
+                                &pinned_path,
+                                state.total_blocks,
+                                session_id,
+                                seq_pos as u32,
+                                retry,
+                                Some(&state.our_peer_id),
+                                &mut failed_peers,
+                                &unreached,
+                                None,
+                                None,
+                                token_ctx,
+                            )
+                            .await
                         {
                             Ok(r) => r,
                             Err(e2) => {

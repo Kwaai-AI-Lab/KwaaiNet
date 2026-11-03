@@ -1001,6 +1001,12 @@ pub struct ShardRunArgs {
     #[arg(long)]
     pub stats: bool,
 
+    /// How each decode step travels the path: `star` returns to this node
+    /// after every hop; `chain` goes hop to hop and returns once. Defaults
+    /// to `shard.forward_chain.originate`.
+    #[arg(long, value_enum)]
+    pub route: Option<crate::routing::RouteMode>,
+
     /// Use an existing circuit instead of discovering the chain fresh.
     /// Create one with: kwaainet shard circuit create
     #[arg(long, value_name = "ID")]
