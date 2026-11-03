@@ -51,6 +51,8 @@ mod storage;
 #[cfg(feature = "storage")]
 mod storage_rpc;
 mod supervisor;
+#[cfg(feature = "synthetic")]
+mod synthetic;
 mod throughput;
 mod uninstall;
 mod updater;
