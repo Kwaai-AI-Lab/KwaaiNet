@@ -43,7 +43,8 @@ use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
 use crate::reputation::ReputationStore;
-pub use crate::routing::{forward_through_chain, ChainPositionError, HopTiming};
+pub use crate::routing::{ChainPositionError, HopTiming};
+use crate::routing::{RouteMode, Router};
 
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
@@ -531,6 +532,19 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         .add_unary_handler(crate::block_rpc::INFERENCE_PROTO, handler, false)
         .await
         .context("Failed to register inference handler with p2pd")?;
+    // Not fatal: without it, chain originators fall back to star.
+    if cfg.shard.forward_chain.serve {
+        if let Err(e) = crate::routing::forward_chain::serve::register_chain_handler(
+            &client,
+            &daemon_addr,
+            shard_cell.clone(),
+            device.clone(),
+        )
+        .await
+        {
+            print_warning(&format!("Forward chain not served: {e:#}"));
+        }
+    }
 
     // Capacity Lease admission gate for this shard-server process — see the
     // matching construction in node.rs's run_node() for the full rationale
@@ -1472,6 +1486,12 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
+    let mut router = Router::open(
+        RouteMode::resolve(args.route, &cfg),
+        session_id,
+        &our_peer_id,
+    )
+    .await;
     let max_tokens = args.max_tokens;
     let sampling = crate::block_rpc::SamplingParams {
         temperature: args.temperature,
@@ -1562,21 +1582,22 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             cur.session_id,
             cur.seq_pos as u32,
         );
-        let logits_bytes = match forward_through_chain(
-            &mut client,
-            &pinned_path,
-            total_blocks,
-            cur.session_id,
-            cur.seq_pos as u32,
-            request,
-            Some(&our_peer_id),
-            &mut failed_peers,
-            &unreached,
-            sink_ref,
-            reputation.clone(),
-            token_ctx,
-        )
-        .await
+        let logits_bytes = match router
+            .forward(
+                &mut client,
+                &pinned_path,
+                total_blocks,
+                cur.session_id,
+                cur.seq_pos as u32,
+                request,
+                Some(&our_peer_id),
+                &mut failed_peers,
+                &unreached,
+                sink_ref,
+                reputation.clone(),
+                token_ctx,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -1614,21 +1635,22 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     data: data2,
                     sample: Some(sampling),
                 };
-                let result = forward_through_chain(
-                    &mut client,
-                    &pinned_path,
-                    total_blocks,
-                    cur.session_id,
-                    cur.seq_pos as u32,
-                    retry_req,
-                    Some(&our_peer_id),
-                    &mut failed_peers,
-                    &unreached,
-                    sink_ref,
-                    reputation.clone(),
-                    token_ctx,
-                )
-                .await?;
+                let result = router
+                    .forward(
+                        &mut client,
+                        &pinned_path,
+                        total_blocks,
+                        cur.session_id,
+                        cur.seq_pos as u32,
+                        retry_req,
+                        Some(&our_peer_id),
+                        &mut failed_peers,
+                        &unreached,
+                        sink_ref,
+                        reputation.clone(),
+                        token_ctx,
+                    )
+                    .await?;
                 // Re-indent so the resumed token stream starts cleanly.
                 if !generated_ids.is_empty() {
                     use std::io::Write as _;
@@ -1744,6 +1766,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         println!("  Total:         {:>8.1}s", total_secs);
         println!("  Throughput:    {:>8.1} tok/s", tps);
         println!("  Hops:          {:>8}", pinned_path.len());
+        println!("  Route:         {}", router.summary());
 
         // Per-hop breakdown: average elapsed across all decode tokens (skip prefill at index 0).
         if !all_hop_timings.is_empty() {
@@ -2451,6 +2474,7 @@ async fn run_streaming_inner(
     }
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = rand_session_id();
+    let mut router = Router::open(RouteMode::resolve(None, &cfg), session_id, &our_peer_id).await;
 
     // Best-effort dial of every server in the chain (matches CLI).
     for entry in &chain {
@@ -2526,21 +2550,22 @@ async fn run_streaming_inner(
             sample: Some(sampling),
         };
 
-        let logits_bytes = match forward_through_chain(
-            &mut client,
-            &pinned_path,
-            total_blocks,
-            cur.session_id,
-            cur.seq_pos as u32,
-            request,
-            Some(&our_peer_id),
-            &mut failed_peers,
-            &unreached,
-            sink,
-            reputation.clone(),
-            token_ctx,
-        )
-        .await
+        let logits_bytes = match router
+            .forward(
+                &mut client,
+                &pinned_path,
+                total_blocks,
+                cur.session_id,
+                cur.seq_pos as u32,
+                request,
+                Some(&our_peer_id),
+                &mut failed_peers,
+                &unreached,
+                sink,
+                reputation.clone(),
+                token_ctx,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -2584,21 +2609,22 @@ async fn run_streaming_inner(
                     data: data2,
                     sample: Some(sampling),
                 };
-                forward_through_chain(
-                    &mut client,
-                    &pinned_path,
-                    total_blocks,
-                    cur.session_id,
-                    cur.seq_pos as u32,
-                    retry_req,
-                    Some(&our_peer_id),
-                    &mut failed_peers,
-                    &unreached,
-                    sink,
-                    reputation.clone(),
-                    token_ctx,
-                )
-                .await?
+                router
+                    .forward(
+                        &mut client,
+                        &pinned_path,
+                        total_blocks,
+                        cur.session_id,
+                        cur.seq_pos as u32,
+                        retry_req,
+                        Some(&our_peer_id),
+                        &mut failed_peers,
+                        &unreached,
+                        sink,
+                        reputation.clone(),
+                        token_ctx,
+                    )
+                    .await?
             }
         };
         if !cur.advance(step.len()) {

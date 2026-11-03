@@ -32,8 +32,7 @@ use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
 use crate::shard_cmd::{
-    daemon_socket, discover_chain, forward_through_chain, load_circuit_by_id,
-    refresh_circuit_addrs, BlockServerEntry,
+    daemon_socket, discover_chain, load_circuit_by_id, refresh_circuit_addrs, BlockServerEntry,
 };
 
 // ── llama.cpp fast path (macOS Metal acceleration) ──────────────────────────
@@ -232,12 +231,16 @@ async fn run_inference(
         top_k: top_k as u32,
         top_p,
     };
+    let route = KwaaiNetConfig::load_or_create()
+        .map(|c| crate::routing::RouteMode::resolve(None, &c))
+        .unwrap_or(crate::routing::RouteMode::Star);
     let mut generated = 0usize;
     let mut cur = crate::shard_cmd::PrefillCursor::new(
         token_ids,
         crate::shard_cmd::rand_session_id(),
         state.prefill_chunk,
     );
+    let mut router = crate::routing::Router::open(route, cur.session_id, &state.our_peer_id).await;
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
@@ -287,21 +290,22 @@ async fn run_inference(
             sample: Some(sampling),
         };
 
-        let logits_bytes = match forward_through_chain(
-            &mut client_guard,
-            &pinned_path,
-            state.total_blocks,
-            cur.session_id,
-            cur.seq_pos as u32,
-            request,
-            Some(&state.our_peer_id),
-            &mut failed_peers,
-            &unreached,
-            None,
-            None,
-            token_ctx,
-        )
-        .await
+        let logits_bytes = match router
+            .forward(
+                &mut client_guard,
+                &pinned_path,
+                state.total_blocks,
+                cur.session_id,
+                cur.seq_pos as u32,
+                request,
+                Some(&state.our_peer_id),
+                &mut failed_peers,
+                &unreached,
+                None,
+                None,
+                token_ctx,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -346,21 +350,22 @@ async fn run_inference(
                             data: d2,
                             sample: Some(sampling),
                         };
-                        match forward_through_chain(
-                            &mut client_guard,
-                            &pinned_path,
-                            state.total_blocks,
-                            cur.session_id,
-                            cur.seq_pos as u32,
-                            retry,
-                            Some(&state.our_peer_id),
-                            &mut failed_peers,
-                            &unreached,
-                            None,
-                            None,
-                            token_ctx,
-                        )
-                        .await
+                        match router
+                            .forward(
+                                &mut client_guard,
+                                &pinned_path,
+                                state.total_blocks,
+                                cur.session_id,
+                                cur.seq_pos as u32,
+                                retry,
+                                Some(&state.our_peer_id),
+                                &mut failed_peers,
+                                &unreached,
+                                None,
+                                None,
+                                token_ctx,
+                            )
+                            .await
                         {
                             Ok(r) => r,
                             Err(e2) => {

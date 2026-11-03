@@ -458,10 +458,38 @@ impl std::str::FromStr for ShardBackend {
 pub struct ShardConfig {
     #[serde(default)]
     pub backend: ShardBackend,
+    #[serde(default, skip_serializing_if = "forward_chain_is_default")]
+    pub forward_chain: ForwardChainConfig,
 }
 
 fn shard_config_is_default(s: &ShardConfig) -> bool {
     *s == ShardConfig::default()
+}
+
+/// Forward-chain routing: a token step travels server to server and only the
+/// last returns to the originator, instead of every hop returning to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ForwardChainConfig {
+    /// Forward onward when another node's run asks. Off refuses, and that
+    /// run falls back to star.
+    pub serve: bool,
+    /// Start forward chains for this node's own runs (`shard run --route`
+    /// overrides). Off until the fleet has proved them.
+    pub originate: bool,
+}
+
+impl Default for ForwardChainConfig {
+    fn default() -> Self {
+        Self {
+            serve: true,
+            originate: false,
+        }
+    }
+}
+
+fn forward_chain_is_default(f: &ForwardChainConfig) -> bool {
+    *f == ForwardChainConfig::default()
 }
 
 // ---------------------------------------------------------------------------
