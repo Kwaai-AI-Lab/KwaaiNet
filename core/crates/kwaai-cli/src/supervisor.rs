@@ -69,7 +69,8 @@ pub fn plan(cfg: &KwaaiNetConfig, overrides: &StartOverrides) -> ChildPlan {
 }
 
 /// The decision given the probes' answers. `--shard` waives the model-present
-/// and RAM gates: the operator asked, so the node tries.
+/// and RAM gates: the operator asked, so the node tries. A synthetic shard
+/// has no weights, so it waives them too.
 fn plan_with(
     cfg: &KwaaiNetConfig,
     overrides: &StartOverrides,
@@ -77,6 +78,9 @@ fn plan_with(
     total_ram: u64,
 ) -> ChildPlan {
     let policy = cfg.contribute_policy();
+    #[cfg(feature = "synthetic")]
+    let explicit = overrides.shard || cfg.shard.synthetic.is_some();
+    #[cfg(not(feature = "synthetic"))]
     let explicit = overrides.shard;
     let available = explicit || model_available;
     let enough_ram = explicit || total_ram >= SHARD_MIN_RAM_BYTES;
@@ -512,6 +516,20 @@ mod tests {
         ));
         assert!(matches!(
             plan_with(&cfg, &o, true, 0).shard,
+            Decision::Skip(_)
+        ));
+    }
+
+    #[cfg(feature = "synthetic")]
+    #[test]
+    fn a_synthetic_shard_needs_no_model_or_ram_but_still_honours_opt_in() {
+        let mut cfg = cfg_with(Some(true), true, false);
+        cfg.shard.synthetic = Some(Default::default());
+        let o = StartOverrides::default();
+        assert_eq!(plan_with(&cfg, &o, false, 0).shard, Decision::Start);
+        cfg.contribute.shards = Some(false);
+        assert!(matches!(
+            plan_with(&cfg, &o, false, 0).shard,
             Decision::Skip(_)
         ));
     }

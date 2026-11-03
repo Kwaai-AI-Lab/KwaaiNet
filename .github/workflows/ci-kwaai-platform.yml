@@ -38,3 +38,8 @@ jobs:
         run: cargo clippy -p kwaainet -- -D warnings
       - name: test
         run: cargo test -p kwaainet
+      # Bed-only code that a default build never compiles.
+      - name: clippy (synthetic)
+        run: cargo clippy -p kwaainet --features synthetic --all-targets -- -D warnings
+      - name: test (synthetic)
+        run: cargo test -p kwaainet --features synthetic --bin kwaainet synthetic
