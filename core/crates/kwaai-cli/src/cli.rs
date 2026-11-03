@@ -928,6 +928,13 @@ pub struct ShardServeArgs {
     /// Can also be set via the HF_TOKEN environment variable.
     #[arg(long, value_name = "TOKEN")]
     pub hf_token: Option<String>,
+
+    /// Serve synthetic blocks: no weights, validatable payloads. Shape comes
+    /// from `shard.synthetic` in config, else its defaults; `model` must start
+    /// with `kwaai-synthetic/`.
+    #[cfg(feature = "synthetic")]
+    #[arg(long)]
+    pub synthetic: bool,
 }
 
 impl ShardServeArgs {
@@ -1006,6 +1013,12 @@ pub struct ShardRunArgs {
     /// to `shard.forward_chain.originate`.
     #[arg(long, value_enum)]
     pub route: Option<crate::routing::RouteMode>,
+
+    /// Run against synthetic shard servers: prompt bytes become token ids, and
+    /// every step's payload is verified end to end instead of sampled.
+    #[cfg(feature = "synthetic")]
+    #[arg(long)]
+    pub synthetic: bool,
 
     /// Use an existing circuit instead of discovering the chain fresh.
     /// Create one with: kwaainet shard circuit create
@@ -2924,6 +2937,8 @@ mod start_flags_are_ephemeral {
             force_blocks: false,
             mlx: false,
             hf_token: None,
+            #[cfg(feature = "synthetic")]
+            synthetic: false,
         };
         assert_eq!(a.backend(&cfg), ShardBackend::Auto);
         cfg.shard.backend = ShardBackend::Mlx;

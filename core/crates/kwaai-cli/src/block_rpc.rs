@@ -47,6 +47,8 @@ pub type ShardCell = Arc<RwLock<Option<Arc<LoadedShard>>>>;
 /// The engine behind one `shard serve`: candle everywhere, MLX when built for it.
 /// MLX forwards take `&mut self`, hence the mutex — one request at a time per shard.
 /// The block range is copied out at load so no async context ever waits on it.
+// One per process, behind an Arc: variant size is irrelevant.
+#[allow(clippy::large_enum_variant)]
 pub enum LoadedShard {
     Candle(TransformerShard),
     #[cfg(feature = "mlx")]
@@ -57,6 +59,8 @@ pub enum LoadedShard {
         sessions: kwaai_inference::mlx_shard::MlxSessions,
         shard: std::sync::Mutex<kwaai_inference::mlx_shard::MlxTransformerShard>,
     },
+    #[cfg(feature = "synthetic")]
+    Synthetic(crate::synthetic::SyntheticShard),
 }
 
 /// Lock, recovering from poison: a forward that panicked leaves the weights
@@ -82,6 +86,8 @@ impl LoadedShard {
             Self::Candle(s) => (s.start_block, s.end_block),
             #[cfg(feature = "mlx")]
             Self::Mlx { blocks, .. } => *blocks,
+            #[cfg(feature = "synthetic")]
+            Self::Synthetic(s) => s.blocks(),
         }
     }
     pub fn is_first(&self) -> bool {
@@ -89,6 +95,8 @@ impl LoadedShard {
             Self::Candle(s) => s.is_first(),
             #[cfg(feature = "mlx")]
             Self::Mlx { is_first, .. } => *is_first,
+            #[cfg(feature = "synthetic")]
+            Self::Synthetic(s) => s.is_first(),
         }
     }
     pub fn is_last(&self) -> bool {
@@ -96,6 +104,8 @@ impl LoadedShard {
             Self::Candle(s) => s.is_last(),
             #[cfg(feature = "mlx")]
             Self::Mlx { is_last, .. } => *is_last,
+            #[cfg(feature = "synthetic")]
+            Self::Synthetic(s) => s.is_last(),
         }
     }
     pub fn gc_sessions(&self) {
@@ -103,6 +113,8 @@ impl LoadedShard {
             Self::Candle(s) => s.gc_sessions(),
             #[cfg(feature = "mlx")]
             Self::Mlx { sessions, .. } => sessions.gc(),
+            #[cfg(feature = "synthetic")]
+            Self::Synthetic(s) => s.gc_sessions(),
         }
     }
 }
@@ -576,8 +588,13 @@ pub async fn run_inference_request(
                         array_to_f16_bytes(&out).context("serialise output array")?;
                     (shape, data, is_logits)
                 }
+                #[cfg(feature = "synthetic")]
+                LoadedShard::Synthetic(s) => s.forward(&req)?,
             };
             let (shape, data, is_logits) = result;
+            // A synthetic final payload is a packet for the originator to verify, not logits.
+            #[cfg(feature = "synthetic")]
+            let sample = sample.filter(|_| !matches!(&*shard, LoadedShard::Synthetic(_)));
             let (shape, data, response_type) = finish_reply(shape, data, is_logits, sample)?;
             let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
             info!(
