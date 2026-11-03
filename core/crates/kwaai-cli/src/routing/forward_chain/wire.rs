@@ -102,7 +102,11 @@ pub struct ChainResult {
 /// Which [`ForwardErrorKind`] an onward call's error is. Only what proves the
 /// next server ran nothing may say so.
 pub fn classify_forward_error(err: &str) -> ForwardErrorKind {
-    if err.contains("protocols not supported") || err.contains("refused:") {
+    // Native daemon wording first; the second is p2pd's.
+    if err.contains("does not support protocol")
+        || err.contains("protocols not supported")
+        || err.contains("refused:")
+    {
         ForwardErrorKind::Refused
     } else if err.contains("Dial failed")
         || err.contains("Connection failed")
@@ -188,6 +192,12 @@ mod tests {
     #[test]
     fn only_provable_non_runs_avoid_failed() {
         use ForwardErrorKind::*;
+        assert_eq!(
+            classify_forward_error(
+                "Protocol error: remote does not support protocol /kwaai/inference-chain/1.0.0"
+            ),
+            Refused
+        );
         assert_eq!(classify_forward_error("protocols not supported"), Refused);
         assert_eq!(classify_forward_error("refused: node warming up"), Refused);
         assert_eq!(
