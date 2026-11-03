@@ -32,8 +32,8 @@ use tokio::sync::RwLock;
 
 use crate::announce::decode_server_info_ext;
 use crate::block_rpc::{
-    call_block_forward, f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes,
-    InferenceRequest, LoadedShard, PayloadType, ShardCell,
+    f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes, InferenceRequest, LoadedShard,
+    PayloadType, ShardCell,
 };
 use crate::cli::{
     CircuitAction, CircuitCloseArgs, CircuitCreateArgs, ShardAction, ShardArgs, ShardChainArgs,
@@ -42,7 +42,8 @@ use crate::cli::{
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
-use crate::reputation::{now_secs, PeerObservation, ReputationStore};
+use crate::reputation::ReputationStore;
+pub use crate::routing::{forward_through_chain, ChainPositionError, HopTiming};
 
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
@@ -3874,291 +3875,6 @@ async fn cmd_circuit_close(args: CircuitCloseArgs) -> Result<()> {
     Ok(())
 }
 
-// ── Forward through chain ─────────────────────────────────────────────────────
-
-/// Per-hop timing record: (peer display name, start_block, end_block, elapsed_ms).
-pub type HopTiming = (String, usize, usize, f64);
-
-/// Marker in the error a hop timeout produces, so the failure classifier can
-/// tell it apart from an error the peer itself reported.
-const HOP_TIMEOUT_MARKER: &str = "hop timeout after";
-
-/// Classify a hop failure from its error text.
-///
-/// Split out of the dispatch loop so the policy — which failures blacklist a
-/// peer for the rest of the run and which leave it eligible — is testable
-/// without a live peer.
-pub fn classify_hop_failure(err: &str) -> HopFailureKind {
-    if err.contains("protocols not supported") {
-        HopFailureKind::NoHandler
-    } else if err.contains(HOP_TIMEOUT_MARKER) {
-        HopFailureKind::Timeout
-    } else if err.contains("stream reset")
-        || err.contains("early eof")
-        || err.contains("connection closed")
-    {
-        HopFailureKind::Transient
-    } else {
-        HopFailureKind::Other
-    }
-}
-
-/// The entries of `chain` that may serve the hop at `pos`, most preferred
-/// first. Only entries starting exactly at `pos` qualify — one starting
-/// earlier would re-apply layers, since a request carries no block range.
-/// Handed a pinned path that is the planned entry alone; a wider chain ranks
-/// its alternatives reached-first, then by span, trust, and self-dispatch.
-pub fn hop_candidates<'a>(
-    chain: &'a [BlockServerEntry],
-    pos: usize,
-    failed_peers: &std::collections::HashSet<PeerId>,
-    unreached: &std::collections::HashSet<PeerId>,
-    our_peer_id: Option<&PeerId>,
-) -> Vec<&'a BlockServerEntry> {
-    let mut candidates: Vec<&BlockServerEntry> = chain
-        .iter()
-        .filter(|e| e.start_block == pos && e.end_block > pos)
-        .filter(|e| !failed_peers.contains(&e.peer_id))
-        .collect();
-    candidates.sort_by(|a, b| {
-        unreached
-            .contains(&a.peer_id)
-            .cmp(&unreached.contains(&b.peer_id))
-            .then_with(|| b.end_block.cmp(&a.end_block))
-            .then_with(|| {
-                b.trust_score
-                    .partial_cmp(&a.trust_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| {
-                let a_self = our_peer_id == Some(&a.peer_id);
-                let b_self = our_peer_id == Some(&b.peer_id);
-                b_self.cmp(&a_self)
-            })
-    });
-    candidates
-}
-
-/// A [`forward_through_chain`] failure at a block position no candidate could
-/// serve. Displays as its message, so callers formatting the error see no change.
-#[derive(Debug)]
-pub struct ChainPositionError {
-    pub block: usize,
-    message: String,
-}
-
-impl std::fmt::Display for ChainPositionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ChainPositionError {}
-
-/// Send an `InferenceRequest` to the first peer in `chain`, routing the
-/// activation tensor through each subsequent hop until the last returns
-/// logits. `chain` is normally a pinned path, which is followed as planned;
-/// see [`hop_candidates`] for how a hop is chosen and why a failed hop makes
-/// the caller rebuild the path rather than this loop skipping ahead.
-#[allow(clippy::too_many_arguments)]
-pub async fn forward_through_chain(
-    client: &mut P2PClient,
-    chain: &[BlockServerEntry],
-    total_blocks: usize,
-    session_id: u64,
-    seq_pos: u32,
-    first_request: InferenceRequest,
-    our_peer_id: Option<&PeerId>,
-    failed_peers: &mut std::collections::HashSet<PeerId>,
-    unreached: &std::collections::HashSet<PeerId>,
-    sink: Option<&dyn ProgressSink>,
-    reputation: Option<Arc<std::sync::Mutex<ReputationStore>>>,
-    token_ctx: TokenContext,
-) -> Result<crate::block_rpc::InferenceResponse> {
-    use crate::block_rpc::InferenceResponse;
-
-    let mut request = first_request;
-    let mut response: Option<InferenceResponse> = None;
-    let mut pos = 0;
-
-    while pos < total_blocks {
-        let candidates = hop_candidates(chain, pos, failed_peers, unreached, our_peer_id);
-
-        if candidates.is_empty() {
-            return Err(ChainPositionError {
-                block: pos,
-                message: format!("No server covers block {pos} — chain has a gap (all candidates failed or blacklisted)"),
-            }
-            .into());
-        }
-
-        // Per-hop deadline: 5 minutes is generous enough for slow CPU prefill of
-        // large models while still eventually unblocking a hung/crashed peer.
-        const HOP_TIMEOUT: Duration = Duration::from_secs(300);
-
-        let mut succeeded = false;
-        for (cand_idx, candidate) in candidates.iter().enumerate() {
-            // Our own shard is called like any other: the daemon loops a
-            // call to its own peer id back to the local handler.
-            let is_self = our_peer_id == Some(&candidate.peer_id);
-            emit_progress(sink, || {
-                InferenceProgress::new(token_ctx.started, ProgressPhase::HopStart)
-                    .peer(candidate, is_self)
-                    .blocks(candidate.start_block, candidate.end_block)
-                    .token(token_ctx)
-                    .candidate(cand_idx)
-            });
-            let hop_start = std::time::Instant::now();
-            let result = tokio::time::timeout(HOP_TIMEOUT, async {
-                call_block_forward(client, &candidate.peer_id, &request).await
-            })
-            .await
-            .unwrap_or_else(|_| {
-                Err(anyhow::anyhow!(
-                    "{HOP_TIMEOUT_MARKER} {}s — peer unresponsive or compute too slow",
-                    HOP_TIMEOUT.as_secs()
-                ))
-            });
-            let hop_ms = hop_start.elapsed().as_secs_f64() * 1000.0;
-
-            match result {
-                Ok(resp) => {
-                    // Record successful hop in local reputation store.
-                    if let Some(ref rep) = reputation {
-                        if let Ok(mut store) = rep.lock() {
-                            store.record(
-                                &candidate.peer_id.to_base58(),
-                                &candidate.public_name,
-                                PeerObservation {
-                                    timestamp_secs: now_secs(),
-                                    latency_ms: hop_ms,
-                                    success: true,
-                                    observed_tps: None,
-                                    claimed_tps: None,
-                                    lease_outcome: None,
-                                },
-                            );
-                        }
-                    }
-                    emit_progress(sink, || {
-                        InferenceProgress::new(token_ctx.started, ProgressPhase::HopOk)
-                            .peer(candidate, is_self)
-                            .blocks(candidate.start_block, candidate.end_block)
-                            .token(token_ctx)
-                            .candidate(cand_idx)
-                            .ms(hop_ms)
-                            .ok(true)
-                    });
-                    pos = candidate.end_block;
-                    if pos < total_blocks {
-                        request = InferenceRequest {
-                            session_id,
-                            seq_pos,
-                            payload_type: PayloadType::HiddenStates,
-                            shape: resp.shape.clone(),
-                            data: resp.data.clone(),
-                        };
-                    }
-                    response = Some(resp);
-                    succeeded = true;
-                    break;
-                }
-                Err(e) => {
-                    // Record failed hop in local reputation store.
-                    if let Some(ref rep) = reputation {
-                        if let Ok(mut store) = rep.lock() {
-                            store.record(
-                                &candidate.peer_id.to_base58(),
-                                &candidate.public_name,
-                                PeerObservation {
-                                    timestamp_secs: now_secs(),
-                                    latency_ms: hop_ms,
-                                    success: false,
-                                    observed_tps: None,
-                                    claimed_tps: None,
-                                    lease_outcome: None,
-                                },
-                            );
-                        }
-                    }
-                    let err_str = format!("{e:#}");
-                    let kind = classify_hop_failure(&err_str);
-                    emit_progress(sink, || {
-                        InferenceProgress::new(token_ctx.started, ProgressPhase::HopFailed)
-                            .peer(candidate, is_self)
-                            .blocks(candidate.start_block, candidate.end_block)
-                            .token(token_ctx)
-                            .candidate(cand_idx)
-                            .ms(hop_ms)
-                            .failure(kind)
-                            .msg(err_str.clone())
-                    });
-                    // Protocol negotiation failures mean the peer has no inference
-                    // handler registered — blacklist for the session.
-                    // Transient stream errors are NOT blacklisted: the peer may recover.
-                    match kind {
-                        HopFailureKind::NoHandler => {
-                            failed_peers.insert(candidate.peer_id);
-                            print_warning(&format!(
-                                "Peer {} ({}) has no inference handler — skipping for this session",
-                                candidate
-                                    .peer_id
-                                    .to_base58()
-                                    .chars()
-                                    .take(12)
-                                    .collect::<String>(),
-                                candidate.public_name,
-                            ));
-                        }
-                        HopFailureKind::Transient => {
-                            // Transient: warn but keep peer eligible for future tokens.
-                            print_warning(&format!(
-                                "Peer {} ({}) transient error (not blacklisted): {e:#}",
-                                candidate
-                                    .peer_id
-                                    .to_base58()
-                                    .chars()
-                                    .take(12)
-                                    .collect::<String>(),
-                                candidate.public_name,
-                            ));
-                        }
-                        // A timeout is a peer that never answered, so it is
-                        // blacklisted like any other hard failure — it is split
-                        // out only so telemetry can name it.
-                        HopFailureKind::Timeout | HopFailureKind::Other => {
-                            failed_peers.insert(candidate.peer_id);
-                            print_warning(&format!(
-                                "Peer {} ({}) failed: {e:#}",
-                                candidate
-                                    .peer_id
-                                    .to_base58()
-                                    .chars()
-                                    .take(12)
-                                    .collect::<String>(),
-                                candidate.public_name,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        if !succeeded {
-            return Err(ChainPositionError {
-                block: pos,
-                message: format!(
-                    "All {} candidate(s) for block {pos} failed",
-                    candidates.len()
-                ),
-            }
-            .into());
-        }
-    }
-
-    response.ok_or_else(|| anyhow::anyhow!("Empty chain — no peers to forward through"))
-}
-
 // ── Bypass generation loop (reuse shard serve's loaded model) ────────────────
 
 /// Run the `--local` generation loop through the running `shard serve` TCP bypass
@@ -4656,6 +4372,7 @@ mod assigned_range_is_persisted_whole {
 mod tests {
     use super::*;
     use crate::announce::DHTServerInfo;
+    use crate::routing::{classify_hop_failure, hop_candidates};
     use libp2p::Multiaddr;
 
     fn server(peer_id: PeerId, start: usize, end: usize) -> BlockServerEntry {
