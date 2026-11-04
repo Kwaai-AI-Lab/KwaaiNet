@@ -902,6 +902,23 @@ impl P2PClient {
         conn.add_unary_handler(proto, handler, balanced).await
     }
 
+    /// [`Self::add_unary_handler`] for a handler that is also given the
+    /// caller's peer id (empty if the daemon did not say).
+    pub async fn add_unary_handler_with_caller<F, Fut>(
+        &self,
+        proto: &str,
+        handler: F,
+        balanced: bool,
+    ) -> Result<()>
+    where
+        F: Fn(Vec<u8>, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Vec<u8>>> + Send + 'static,
+    {
+        let conn = self.get_persistent_connection().await?;
+        conn.add_unary_handler_with_caller(proto, handler, balanced)
+            .await
+    }
+
     /// Remove a previously registered unary handler
     pub async fn remove_unary_handler(&self, proto: &str) -> Result<()> {
         let conn = self.get_persistent_connection().await?;

@@ -64,7 +64,8 @@ pub use config::{
 pub use dht_service::{remove_dht_service, spawn_dht_service};
 pub use error::{P2PError, P2PResult};
 pub use handle::{
-    Direction, InboundUnaryCall, KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, UnaryHandler,
+    CallerUnaryHandler, Direction, InboundUnaryCall, KnownPeer, NetworkHandle, NetworkSnapshot,
+    PeerInfo, UnaryHandler,
 };
 pub use learned_addrs::LearnedAddrs;
 pub use peer_record::verified_addrs;
