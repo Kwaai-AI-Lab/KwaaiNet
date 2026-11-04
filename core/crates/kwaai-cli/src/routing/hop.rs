@@ -19,7 +19,8 @@ pub(crate) const HOP_TIMEOUT_MARKER: &str = "hop timeout after";
 /// peer for the rest of the run and which leave it eligible — is testable
 /// without a live peer.
 pub fn classify_hop_failure(err: &str) -> HopFailureKind {
-    if err.contains("protocols not supported") {
+    // Native daemon wording first; the second is p2pd's.
+    if err.contains("does not support protocol") || err.contains("protocols not supported") {
         HopFailureKind::NoHandler
     } else if err.contains(HOP_TIMEOUT_MARKER) {
         HopFailureKind::Timeout

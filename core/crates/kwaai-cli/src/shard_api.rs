@@ -65,6 +65,7 @@ struct AppState {
     /// Prompt tokens per prefill step (#301).
     prefill_chunk: usize,
     our_peer_id: PeerId,
+    route: crate::routing::RouteMode,
     /// When set, use llama.cpp GPU inference instead of P2P chain.
     /// Only populated when: llama-cpp feature + all blocks local + GGUF available.
     #[cfg(feature = "llama-cpp")]
@@ -231,16 +232,14 @@ async fn run_inference(
         top_k: top_k as u32,
         top_p,
     };
-    let route = KwaaiNetConfig::load_or_create()
-        .map(|c| crate::routing::RouteMode::resolve(None, &c))
-        .unwrap_or(crate::routing::RouteMode::Star);
     let mut generated_ids: Vec<u32> = Vec::new();
     let mut cur = crate::shard_cmd::PrefillCursor::new(
         token_ids,
         crate::shard_cmd::rand_session_id(),
         state.prefill_chunk,
     );
-    let mut router = crate::routing::Router::open(route, cur.session_id, &state.our_peer_id).await;
+    let mut router =
+        crate::routing::Router::open(state.route, cur.session_id, &state.our_peer_id).await;
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
@@ -965,6 +964,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         bos_id,
         prefill_chunk: crate::shard_cmd::prefill_chunk_tokens_for_model(&model_dir),
         our_peer_id,
+        route: crate::routing::RouteMode::resolve(None, &cfg),
         #[cfg(feature = "llama-cpp")]
         llama_model,
     });
