@@ -1561,7 +1561,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     loop {
         // While prefilling, a step is one chunk of the prompt (#301); a token
         // is sampled only once the whole prompt is in every hop's KV.
-        let mut step = cur.step();
+        let step = cur.step();
         let (shape, data) = token_ids_to_bytes(&step);
         let request = InferenceRequest {
             session_id: cur.session_id,
@@ -1575,9 +1575,9 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         };
 
         // Forward through the pinned path.
-        let mut token_ctx = TokenContext::new(
+        let token_ctx = TokenContext::new(
             generated_ids.len(),
-            generated_ids.is_empty(),
+            cur.prefilling(),
             generation_start,
             cur.session_id,
             cur.seq_pos as u32,
@@ -1603,15 +1603,13 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             Err(e) => {
                 // Move to a clean line before printing the warning so it doesn't
                 // appear inline with the last-printed token.
-                let prefilling = generated_ids.is_empty();
-                if !prefilling {
+                if !generated_ids.is_empty() {
                     println!();
                 }
-                print_warning(&if prefilling {
-                    format!("{e:#} — rebuilding path and restarting the prompt")
-                } else {
-                    format!("{e:#} — rebuilding path (KV-cache lost, output may degrade)")
-                });
+                print_warning(&format!(
+                    "{e:#} — rebuilding path and re-prefilling {} token(s) in a new session",
+                    token_ids.len() + generated_ids.len()
+                ));
                 unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
                 pinned_path =
                     build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
@@ -1619,45 +1617,16 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 // stats table reports only the path that actually produced the
                 // token — matching the pre-sink `token_hops.clear()`.
                 let _ = hop_sink.take();
-                if prefilling {
-                    cur.restart().map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
-                    print_info(&format!("Session ID:   {}", cur.session_id));
-                    step = cur.step();
-                    token_ctx = TokenContext::new(0, true, generation_start, cur.session_id, 0);
-                }
-                // Retry this step with the new path
-                let (shape2, data2) = token_ids_to_bytes(&step);
-                let retry_req = InferenceRequest {
-                    session_id: cur.session_id,
-                    seq_pos: cur.seq_pos as u32,
-                    payload_type: PayloadType::TokenIds,
-                    shape: shape2,
-                    data: data2,
-                    sample: Some(sampling),
-                };
-                let result = router
-                    .forward(
-                        &mut client,
-                        &pinned_path,
-                        total_blocks,
-                        cur.session_id,
-                        cur.seq_pos as u32,
-                        retry_req,
-                        Some(&our_peer_id),
-                        &mut failed_peers,
-                        &unreached,
-                        sink_ref,
-                        reputation.clone(),
-                        token_ctx,
-                    )
-                    .await?;
+                cur.restart(&generated_ids)
+                    .map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
+                print_info(&format!("Session ID:   {}", cur.session_id));
                 // Re-indent so the resumed token stream starts cleanly.
                 if !generated_ids.is_empty() {
                     use std::io::Write as _;
                     print!("  ");
                     std::io::stdout().flush().ok();
                 }
-                result
+                continue;
             }
         };
         if !cur.advance(step.len()) {
@@ -2530,10 +2499,10 @@ async fn run_streaming_inner(
     loop {
         // While prefilling, a step is one chunk of the prompt (#301); a token
         // is sampled only once the whole prompt is in every hop's KV.
-        let mut step = cur.step();
-        let mut token_ctx = TokenContext::new(
+        let step = cur.step();
+        let token_ctx = TokenContext::new(
             generated_ids.len(),
-            generated_ids.is_empty(),
+            cur.prefilling(),
             run_started,
             cur.session_id,
             cur.seq_pos as u32,
@@ -2569,18 +2538,16 @@ async fn run_streaming_inner(
         {
             Ok(r) => r,
             Err(e) => {
-                // Rebuild path on transient failure and retry once,
-                // matching cmd_shard_run's recovery behaviour.
-                let prefilling = generated_ids.is_empty();
+                // Rebuild the path and re-prefill in a fresh session, matching
+                // cmd_shard_run's recovery behaviour.
                 emit_progress(sink, || {
                     let mut ev = InferenceProgress::new(run_started, ProgressPhase::PathRebuild)
                         .token(token_ctx)
                         .attempt(path_attempt + 1)
-                        .msg(if prefilling {
-                            format!("{e:#} — rebuilding path and restarting the prompt")
-                        } else {
-                            format!("{e:#} — rebuilding path (KV-cache lost, output may degrade)")
-                        });
+                        .msg(format!(
+                            "{e:#} — rebuilding path and re-prefilling {} token(s) in a new session",
+                            token_ids.len() + generated_ids.len()
+                        ));
                     ev.block_start = e.downcast_ref::<ChainPositionError>().map(|c| c.block);
                     ev
                 });
@@ -2595,36 +2562,9 @@ async fn run_streaming_inner(
                         .attempt(path_attempt)
                         .msg(format!("{} hop(s)", pinned_path.len()))
                 });
-                if prefilling {
-                    cur.restart().map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
-                    step = cur.step();
-                    token_ctx = TokenContext::new(0, true, run_started, cur.session_id, 0);
-                }
-                let (shape2, data2) = token_ids_to_bytes(&step);
-                let retry_req = InferenceRequest {
-                    session_id: cur.session_id,
-                    seq_pos: cur.seq_pos as u32,
-                    payload_type: PayloadType::TokenIds,
-                    shape: shape2,
-                    data: data2,
-                    sample: Some(sampling),
-                };
-                router
-                    .forward(
-                        &mut client,
-                        &pinned_path,
-                        total_blocks,
-                        cur.session_id,
-                        cur.seq_pos as u32,
-                        retry_req,
-                        Some(&our_peer_id),
-                        &mut failed_peers,
-                        &unreached,
-                        sink,
-                        reputation.clone(),
-                        token_ctx,
-                    )
-                    .await?
+                cur.restart(&generated_ids)
+                    .map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
+                continue;
             }
         };
         if !cur.advance(step.len()) {
@@ -4398,7 +4338,7 @@ pub(crate) fn prefill_chunk_tokens_for_model(model_dir: &Path) -> usize {
     prefill_chunk_tokens(hidden)
 }
 
-/// Times a generation loop may start its prompt over before giving up.
+/// Times a generation loop may start over without sampling a token in between.
 const MAX_PREFILL_RESTARTS: usize = 2;
 
 /// A generation loop's place in its token stream, shared by the three chain
@@ -4413,7 +4353,9 @@ pub(crate) struct PrefillCursor {
     pub(crate) session_id: u64,
     /// Position of the first pending token.
     pub(crate) seq_pos: usize,
+    /// Restarts since a token was last sampled.
     restarts: usize,
+    decoding: bool,
 }
 
 impl PrefillCursor {
@@ -4425,6 +4367,7 @@ impl PrefillCursor {
             session_id,
             seq_pos: 0,
             restarts: 0,
+            decoding: false,
         }
     }
 
@@ -4434,32 +4377,43 @@ impl PrefillCursor {
         self.pending[..self.pending.len().min(self.chunk)].to_vec()
     }
 
+    /// Whether the next step is part of a (re-)prefill rather than a decode step.
+    pub(crate) fn prefilling(&self) -> bool {
+        !self.decoding
+    }
+
     /// Record that the first `sent` pending tokens reached every hop. Returns
     /// whether a token can be sampled now, i.e. nothing is left to send.
     pub(crate) fn advance(&mut self, sent: usize) -> bool {
         self.pending.drain(..sent);
         self.seq_pos += sent;
+        if self.pending.is_empty() {
+            self.restarts = 0;
+        }
         self.pending.is_empty()
     }
 
     /// Queue a sampled token for the next decode step.
     pub(crate) fn push(&mut self, token: u32) {
         self.pending = vec![token];
+        self.decoding = true;
     }
 
-    /// Start the prompt over in a new session after a hop failed mid-prefill.
-    /// Hops that survived the path rebuild already hold the chunks sent so
-    /// far, and resending them in the same session would append them twice.
-    /// A transient failure does not blacklist its peer, so the same hop can
-    /// fail again: after [`MAX_PREFILL_RESTARTS`] this gives up.
-    pub(crate) fn restart(&mut self) -> Result<()> {
+    /// Start over in a new session after a hop failed: re-prefill the prompt
+    /// plus every token `generated` so far. Hops that survived the path
+    /// rebuild already hold what was sent, and a replacement holds none of it,
+    /// so the old session's KV is unusable. A transient failure does not
+    /// blacklist its peer, so the same hop can fail again: after
+    /// [`MAX_PREFILL_RESTARTS`] without a sampled token this gives up.
+    pub(crate) fn restart(&mut self, generated: &[u32]) -> Result<()> {
         if self.restarts == MAX_PREFILL_RESTARTS {
-            bail!("prompt failed to prefill after {MAX_PREFILL_RESTARTS} restarts");
+            bail!("gave up after {MAX_PREFILL_RESTARTS} restarts without a token");
         }
         self.restarts += 1;
         self.session_id = rand_session_id();
         self.seq_pos = 0;
-        self.pending = self.prompt.clone();
+        self.pending = self.prompt.iter().chain(generated).copied().collect();
+        self.decoding = false;
         Ok(())
     }
 }
@@ -4647,11 +4601,23 @@ mod tests {
         for _ in 0..MAX_PREFILL_RESTARTS {
             assert!(!cur.advance(cur.step().len())); // one chunk lands, then a hop fails
             let old = cur.session_id;
-            cur.restart().unwrap();
+            cur.restart(&[]).unwrap();
             assert_ne!(cur.session_id, old);
             assert_eq!((cur.seq_pos, cur.step()), (0, prompt[..256].to_vec()));
         }
-        assert!(cur.restart().is_err());
+        assert!(cur.restart(&[]).is_err());
+    }
+
+    /// The cap counts restarts without a sampled token, so independent
+    /// failures spread over a long run don't add up to end it.
+    #[test]
+    fn a_sampled_token_resets_the_restart_cap() {
+        let mut cur = PrefillCursor::new(vec![1, 2, 3], 42, 256);
+        for t in 0..2 * MAX_PREFILL_RESTARTS as u32 {
+            cur.restart(&[]).unwrap();
+            assert!(cur.advance(cur.step().len()));
+            cur.push(t);
+        }
     }
 
     #[test]
@@ -5070,6 +5036,26 @@ mod tests {
     /// The `--stats` table is fed by this sink, so a HopOk must still produce
     /// exactly the tuple the pre-sink code pushed. This is the regression
     /// guard for the CLI output.
+    #[test]
+    fn a_retry_re_prefills_everything_in_a_new_session() {
+        let mut cur = PrefillCursor::new(vec![1, 2, 3], 42, 2);
+        assert!(!cur.advance(2));
+        assert!(cur.advance(1));
+        cur.push(7);
+        assert!(!cur.prefilling());
+        assert!(cur.advance(1));
+        cur.push(8);
+        cur.restart(&[7, 8]).unwrap();
+        assert!(cur.prefilling());
+        assert_ne!(cur.session_id, 42);
+        assert_eq!((cur.seq_pos, cur.step()), (0, vec![1, 2]));
+        assert!(!cur.advance(2));
+        assert_eq!((cur.seq_pos, cur.step()), (2, vec![3, 7]));
+        assert!(!cur.advance(2));
+        assert_eq!((cur.seq_pos, cur.step()), (4, vec![8]));
+        assert!(cur.advance(1), "the in-flight token is re-sent once");
+    }
+
     #[test]
     fn hop_timing_sink_rebuilds_the_cli_tuple() {
         let sink = HopTimingSink::new();
