@@ -64,6 +64,7 @@ struct AppState {
     eos_id: u32,
     bos_id: Option<u32>,
     our_peer_id: PeerId,
+    route: crate::routing::RouteMode,
     /// When set, use llama.cpp GPU inference instead of P2P chain.
     /// Only populated when: llama-cpp feature + all blocks local + GGUF available.
     #[cfg(feature = "llama-cpp")]
@@ -226,17 +227,9 @@ async fn run_inference(
         token_ids.insert(0, bos);
     }
 
-    let mut session_id: u64 = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(42)
-    };
-    let route = KwaaiNetConfig::load_or_create()
-        .map(|c| crate::routing::RouteMode::resolve(None, &c))
-        .unwrap_or(crate::routing::RouteMode::Star);
-    let mut router = crate::routing::Router::open(route, session_id, &state.our_peer_id).await;
+    let mut session_id = crate::shard_cmd::rand_session_id();
+    let mut router =
+        crate::routing::Router::open(state.route, session_id, &state.our_peer_id).await;
 
     let mut generated_ids: Vec<u32> = Vec::new();
     let mut seq_pos = 0usize;
@@ -967,6 +960,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         eos_id,
         bos_id,
         our_peer_id,
+        route: crate::routing::RouteMode::resolve(None, &cfg),
         #[cfg(feature = "llama-cpp")]
         llama_model,
     });

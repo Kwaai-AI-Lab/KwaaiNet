@@ -409,6 +409,8 @@ impl ShardBlock {
 struct Session {
     /// One `Option<(k_cache, v_cache)>` per block in the shard.
     kv: Vec<Option<(Tensor, Tensor)>>,
+    /// The position after the last step taken.
+    next_pos: usize,
     last_access: Instant,
 }
 
@@ -416,8 +418,22 @@ impl Session {
     fn new(num_blocks: usize) -> Self {
         Self {
             kv: vec![None; num_blocks],
+            next_pos: 0,
             last_access: Instant::now(),
         }
+    }
+
+    /// Take a step of `seq_len` tokens at `seq_pos`, refusing one the cache
+    /// already holds: running it would append its KV twice.
+    fn advance(&mut self, seq_pos: usize, seq_len: usize) -> InferenceResult<()> {
+        if seq_pos < self.next_pos {
+            return Err(InferenceError::InferenceFailed(format!(
+                "step at position {seq_pos} is already in this session's KV (next is {})",
+                self.next_pos
+            )));
+        }
+        self.next_pos = seq_pos + seq_len;
+        Ok(())
     }
 }
 
@@ -628,6 +644,7 @@ impl TransformerShard {
             .entry(session_id)
             .or_insert_with(|| Session::new(self.blocks.len()));
         session.last_access = Instant::now();
+        session.advance(seq_pos, x.dim(1)?)?;
 
         for (local_idx, block) in self.blocks.iter().enumerate() {
             x = block.forward(&x, seq_pos, &mut session.kv[local_idx], &self.rope)?;
@@ -807,6 +824,19 @@ impl TransformerShard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_the_kv_already_holds_is_refused() {
+        let mut s = Session::new(1);
+        s.advance(0, 5).unwrap();
+        s.advance(5, 1).unwrap();
+        assert!(s.advance(5, 1).is_err(), "a replayed decode step");
+        assert!(s.advance(0, 7).is_err(), "a replayed prefill");
+        s.advance(6, 1).unwrap();
+        // A gap is not a double-apply: a server that lost the session keeps
+        // serving it, as it always has.
+        Session::new(1).advance(9, 1).unwrap();
+    }
 
     #[test]
     fn rope_cache_shape() {

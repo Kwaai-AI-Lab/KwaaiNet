@@ -1505,6 +1505,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let show_stats = args.stats;
     let mut token_times_ms: Vec<f64> = Vec::new();
+    // Decode steps that re-prefilled after a failed hop: kept out of decode stats.
+    let mut reprefill_ms: Vec<f64> = Vec::new();
     // Per-token hop breakdowns: outer index = token, inner = hops for that token.
     let mut all_hop_timings: Vec<Vec<HopTiming>> = Vec::new();
     let generation_start = std::time::Instant::now();
@@ -1517,6 +1519,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     loop {
         let token_start = std::time::Instant::now();
+        let mut reprefilled = false;
 
         // Build first request
         let (shape, data) = token_ids_to_bytes(&current_ids);
@@ -1578,6 +1581,10 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 let _ = hop_sink.take();
                 (session_id, current_ids) = restart_session(&token_ids, &generated_ids);
                 seq_pos = 0;
+                reprefilled = !generated_ids.is_empty();
+                if args.session_id.is_some() {
+                    print_warning(&format!("--session-id replaced by {session_id}"));
+                }
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
                     session_id,
@@ -1613,7 +1620,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 result
             }
         };
-        if show_stats {
+        if show_stats && !reprefilled {
             let token_hops = hop_sink.take();
             if !token_hops.is_empty() {
                 all_hop_timings.push(token_hops);
@@ -1663,7 +1670,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         }
 
         let token_ms = token_start.elapsed().as_secs_f64() * 1000.0;
-        token_times_ms.push(token_ms);
+        if reprefilled {
+            reprefill_ms.push(token_ms);
+        } else {
+            token_times_ms.push(token_ms);
+        }
 
         generated_ids.push(next_id);
         seq_pos += current_ids.len(); // advance by tokens sent this step
@@ -1726,6 +1737,13 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             println!(
                 "  Decode avg:    {:>8.0}ms/tok  (min {:.0}, max {:.0})",
                 decode_avg_ms, decode_min, decode_max
+            );
+        }
+        if !reprefill_ms.is_empty() {
+            println!(
+                "  Re-prefills:   {:>8}  ({:.0}ms, not in decode avg)",
+                reprefill_ms.len(),
+                reprefill_ms.iter().sum::<f64>()
             );
         }
         println!("  Total:         {:>8.1}s", total_secs);
@@ -2486,7 +2504,7 @@ async fn run_streaming_inner(
 
     loop {
         let token_started = std::time::Instant::now();
-        let token_ctx = TokenContext::new(
+        let mut token_ctx = TokenContext::new(
             generated_ids.len(),
             generated_ids.is_empty(),
             run_started,
@@ -2555,7 +2573,7 @@ async fn run_streaming_inner(
                     shape: shape2,
                     data: data2,
                 };
-                let retry_ctx =
+                token_ctx =
                     TokenContext::new(generated_ids.len(), true, run_started, session_id, 0);
                 router
                     .forward(
@@ -2570,7 +2588,7 @@ async fn run_streaming_inner(
                         &unreached,
                         sink,
                         reputation.clone(),
-                        retry_ctx,
+                        token_ctx,
                     )
                     .await?
             }
@@ -4340,12 +4358,13 @@ pub fn restart_session(prompt: &[u32], generated: &[u32]) -> (u64, Vec<u32>) {
     )
 }
 
-/// Generate a random u64 session ID using splitmix64 over (nanos ⊕ pid).
-///
-/// Using raw `as_nanos() as u64` truncates a u128 and collides if called
-/// twice within the same nanosecond. Mixing in the process ID + splitmix64
-/// gives adequate entropy without adding a dependency.
-fn rand_session_id() -> u64 {
+/// A random session ID. Servers key KV by it, so it comes from the OS CSPRNG;
+/// splitmix64 over (nanos ⊕ pid) only if that fails.
+pub(crate) fn rand_session_id() -> u64 {
+    let mut b = [0u8; 8];
+    if getrandom::getrandom(&mut b).is_ok() {
+        return u64::from_le_bytes(b);
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -4976,6 +4995,12 @@ mod tests {
     fn classify_hop_failure_maps_the_real_error_strings() {
         assert_eq!(
             classify_hop_failure("protocols not supported: /kwaai/inference/1.0.0"),
+            HopFailureKind::NoHandler
+        );
+        assert_eq!(
+            classify_hop_failure(
+                "Protocol error: remote does not support protocol /kwaai/inference/1.0.0"
+            ),
             HopFailureKind::NoHandler
         );
         assert_eq!(
