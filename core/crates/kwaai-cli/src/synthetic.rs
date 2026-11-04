@@ -26,6 +26,8 @@ const NO_TOKEN: u32 = u32::MAX;
 /// Hop flag: this server had no session for a step past prefill — the
 /// synthetic twin of a lost KV cache.
 pub const FLAG_KV_RESET: u8 = 1;
+/// `prompt_len` of a session that began past prefill: nothing to check.
+const PROMPT_LEN_UNKNOWN: u32 = u32::MAX;
 /// Same idle eviction as the real shards.
 const SESSION_IDLE: Duration = Duration::from_secs(600);
 
@@ -348,6 +350,12 @@ impl SyntheticShard {
                     "shape {:?}, expected {want:?}",
                     req.shape
                 );
+                let want_len = p.seq_len as usize * self.cfg.hidden_dim as usize * 2;
+                ensure!(
+                    req.data.len() == want_len,
+                    "payload {} bytes, expected {want_len}",
+                    req.data.len()
+                );
                 let prev_end = p.hops.last().map(|h| h.end_block);
                 ensure!(
                     prev_end == Some(self.start_block),
@@ -402,6 +410,7 @@ impl SyntheticShard {
             s.prompt_len = packet.seq_len;
         } else if fresh {
             flags |= FLAG_KV_RESET;
+            s.prompt_len = PROMPT_LEN_UNKNOWN;
         } else {
             ensure!(
                 packet.seq_pos == s.next_pos,
@@ -497,8 +506,7 @@ pub fn verify_final(shape: &[u32], data: &[u8], exp: &Expected<'_>) -> Result<Ve
         exp.total_blocks
     );
 
-    let first_reset = p.hops.first().is_some_and(|h| h.flags & FLAG_KV_RESET != 0);
-    if !first_reset {
+    if p.prompt_len != PROMPT_LEN_UNKNOWN {
         ensure!(
             p.prompt_len == exp.prompt_len,
             "prompt_len {} != {}",
@@ -673,9 +681,39 @@ mod tests {
         let prompt = [1, 2, 3, 4, 5];
         step(&path(), 7, 0, &prompt).unwrap();
         // A rebuilt path: same ranges, servers that never saw the prefill.
-        let (shape, data) = step(&path(), 7, 5, &[9]).unwrap();
+        let rebuilt = path();
+        let (shape, data) = step(&rebuilt, 7, 5, &[9]).unwrap();
         let v = verify_final(&shape, &data, &expect(5, &[9], &servers)).unwrap();
         assert_eq!(v.kv_resets, 3);
+        // The next step on that path is in order and carries no stale prompt_len.
+        let (shape, data) = step(&rebuilt, 7, 6, &[4]).unwrap();
+        let v = verify_final(&shape, &data, &expect(6, &[4], &servers)).unwrap();
+        assert_eq!(v.kv_resets, 0);
+    }
+
+    #[test]
+    fn a_seq_len_the_payload_cannot_hold_is_refused() {
+        let path = path();
+        let (shape, data) = token_ids_to_bytes(&[1]);
+        let req = InferenceRequest {
+            session_id: 7,
+            seq_pos: 0,
+            payload_type: PayloadType::TokenIds,
+            shape,
+            data,
+        };
+        let (_, data, _) = path[0].forward(&req).unwrap();
+        let mut p = Packet::decode(&data).unwrap();
+        p.seq_len = 1 << 30;
+        let lie = InferenceRequest {
+            session_id: 7,
+            seq_pos: 0,
+            payload_type: PayloadType::HiddenStates,
+            shape: vec![1, p.seq_len, cfg().hidden_dim],
+            data: p.encode(data.len()).unwrap(),
+        };
+        let err = path[1].forward(&lie).unwrap_err();
+        assert!(format!("{err:#}").contains("payload"), "{err:#}");
     }
 
     #[test]
