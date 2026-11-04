@@ -238,8 +238,7 @@ async fn run_inference(
         crate::shard_cmd::rand_session_id(),
         state.prefill_chunk,
     );
-    let mut router =
-        crate::routing::Router::open(state.route, cur.session_id, &state.our_peer_id).await;
+    let mut router = crate::routing::Router::open(state.route, &state.our_peer_id).await;
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
