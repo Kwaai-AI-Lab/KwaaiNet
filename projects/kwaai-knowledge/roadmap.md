@@ -36,6 +36,7 @@
 
 ## Research / future
 
+- **Predicate as vector** — store each edge's predicate as an embedding beside its verbatim text, and match predicates by similarity, not by name; the ontology's predicates become prototypes, not gates. Gated on an embedder that separates polarity. See [`plans/PredicateAsVector-research.md`](plans/PredicateAsVector-research.md)
 - Graph neural network reranking over entity graph
 - Cross-knowledge-base federated retrieval (query multiple VPK nodes)
 - Streaming dream cycles with real-time token output
