@@ -376,6 +376,29 @@ async fn a_socket_client_serves_a_remote_callers_unary_call() {
     b.shutdown().await;
 }
 
+/// A handler that asks is told who called, from the connection — what the
+/// forward chain binds its steps and results to.
+#[tokio::test]
+async fn a_socket_client_handler_is_told_the_caller() {
+    let a = TestNode::spawn().await;
+    let b = TestNode::spawn().await;
+
+    let client = a.client().await;
+    client
+        .add_unary_handler_with_caller(PROTO, |caller: Vec<u8>, _| async move { Ok(caller) }, false)
+        .await
+        .expect("register a handler over the control socket");
+
+    let caller = tokio::time::timeout(TIMEOUT, call_from(&b, a.peer_id, &a.addr, PROTO, b"who"))
+        .await
+        .expect("the call must resolve")
+        .expect("the handler must answer");
+    assert_eq!(PeerId::from_bytes(&caller).ok(), Some(b.peer_id));
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
 /// `call_unary_handler` in the other direction: a socket client calls out
 /// through its node to a handler on the remote node.
 #[tokio::test]

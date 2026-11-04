@@ -430,7 +430,15 @@ pub async fn handle_inference_request(
 ) -> Result<InferenceResponse> {
     let req: InferenceRequest =
         rmp_serde::from_slice(&raw).context("deserialise InferenceRequest")?;
+    run_inference_request(shard, device, req).await
+}
 
+/// [`handle_inference_request`] for a request already decoded.
+pub async fn run_inference_request(
+    shard: Arc<LoadedShard>,
+    device: Device,
+    req: InferenceRequest,
+) -> Result<InferenceResponse> {
     let session_id = req.session_id;
     let seq_pos = req.seq_pos as usize;
     let is_first = shard.is_first();

@@ -63,6 +63,15 @@ pub type UnaryHandler = Box<
         + 'static,
 >;
 
+/// A [`UnaryHandler`] that is also told who called: the caller's `PeerId`,
+/// taken from the connection.
+pub type CallerUnaryHandler = Box<
+    dyn Fn(PeerId, Vec<u8>) -> Pin<Box<dyn Future<Output = Result<Vec<u8>, String>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+>;
+
 /// A connected peer, as reported by [`NetworkHandle::list_peers`].
 ///
 /// One entry per **connection**, not per peer: a peer reachable both directly
@@ -685,6 +694,17 @@ impl NetworkHandle {
         proto: &str,
         handler: UnaryHandler,
     ) -> P2PResult<()> {
+        self.add_unary_handler_with_caller(proto, Box::new(move |_, data| handler(data)))
+            .await
+    }
+
+    /// [`NetworkHandle::add_unary_handler_boxed`] for a handler that needs to
+    /// know who called.
+    pub async fn add_unary_handler_with_caller(
+        &self,
+        proto: &str,
+        handler: CallerUnaryHandler,
+    ) -> P2PResult<()> {
         let (tx, mut rx) = mpsc::unbounded_channel::<InboundUnaryCall>();
 
         self.call(|reply| Command::AddUnaryHandler {
@@ -701,7 +721,7 @@ impl NetworkHandle {
             while let Some(call) = rx.recv().await {
                 let handler = std::sync::Arc::clone(&handler);
                 tokio::spawn(async move {
-                    let result = handler(call.data).await;
+                    let result = handler(call.peer, call.data).await;
                     // The receiver is gone only if the stream worker already
                     // gave up (its own timeout); nothing left to report.
                     let _ = call.responder.send(result);
