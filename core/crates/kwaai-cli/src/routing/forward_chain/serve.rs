@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use libp2p::PeerId;
 use tokio::sync::Semaphore;
@@ -23,6 +23,10 @@ use crate::block_rpc::{
 /// Steps computing at once. Past this a step is refused, which its
 /// originator handles by finishing in star.
 const MAX_IN_FLIGHT: usize = 8;
+
+/// How long passing a step on, or delivering a result, may take. The slot is
+/// already free by then; this bounds the task.
+const HAND_OFF_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A unary call to a peer — the daemon in production, a fake in tests.
 pub trait Unary: Send + Sync + 'static {
@@ -62,15 +66,18 @@ pub async fn send_chain<U: Unary + ?Sized>(u: &U, peer: &[u8], req: &ChainReques
 }
 
 async fn deliver<U: Unary + ?Sized>(u: &U, origin: &[u8], proto: &str, r: &ChainResult) {
-    let sent = async {
+    let sent = tokio::time::timeout(HAND_OFF_TIMEOUT, async {
         let bytes = rmp_serde::to_vec_named(r)?;
         let ack: ChainAck = rmp_serde::from_slice(&u.call(origin, proto, bytes).await?)?;
         if !ack.accepted {
             bail!("originator refused: {}", ack.error.unwrap_or_default());
         }
         anyhow::Ok(())
-    };
-    if let Err(e) = sent.await {
+    });
+    if let Err(e) = sent
+        .await
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out")))
+    {
         warn!(
             step = r.step,
             "forward chain: result not delivered to originator: {e:#}"
@@ -83,6 +90,7 @@ pub fn check_route(
     blocks: (u32, u32),
     is_last: bool,
     me: &[u8],
+    caller: &[u8],
     req: &ChainRequest,
 ) -> Result<(), String> {
     if req.start_block != blocks.0 {
@@ -95,6 +103,21 @@ pub fn check_route(
         || PeerId::from_bytes(&req.origin).is_err()
     {
         return Err("result address is not an originator's".into());
+    }
+    // A first hop takes steps only from their originator, a later one only
+    // from the hop before, and token ids only at the first: nobody can turn a
+    // few bytes into hidden states sent where they choose.
+    match req.trace.last() {
+        None if caller != req.origin.as_slice() => {
+            return Err("a first hop takes steps only from their originator".into())
+        }
+        Some(prev) if caller != prev.peer_id.as_slice() || prev.end_block != blocks.0 => {
+            return Err("step does not come from the hop before".into())
+        }
+        Some(_) if req.inner.payload_type == PayloadType::TokenIds => {
+            return Err("token ids past the first hop".into())
+        }
+        _ => {}
     }
     if req.inner.payload_type == PayloadType::TokenIds && blocks.0 != 0 {
         return Err(format!(
@@ -143,6 +166,7 @@ pub async fn finish_hop<U: Unary + ?Sized>(
         origin,
         return_proto,
         step,
+        nonce,
         mut trace,
         start_block: _,
     } = req;
@@ -180,9 +204,16 @@ pub async fn finish_hop<U: Unary + ?Sized>(
                         origin: origin.clone(),
                         return_proto: return_proto.clone(),
                         step,
+                        nonce,
                         trace: trace.clone(),
                     };
-                    match send_chain(u, &next.peer_id, &onward).await {
+                    let sent = tokio::time::timeout(
+                        HAND_OFF_TIMEOUT,
+                        send_chain(u, &next.peer_id, &onward),
+                    )
+                    .await
+                    .unwrap_or_else(|_| Err(anyhow::anyhow!("hand-off timed out")));
+                    match sent {
                         Ok(()) => return,
                         Err(e) => {
                             let msg = format!("{e:#}");
@@ -211,6 +242,7 @@ pub async fn finish_hop<U: Unary + ?Sized>(
     let result = ChainResult {
         session_id,
         step,
+        nonce,
         outcome,
         trace,
     };
@@ -227,6 +259,7 @@ fn ack(accepted: bool, error: Option<String>) -> kwaai_p2p_daemon::error::Result
 async fn admit(
     shard: &ShardCell,
     me: &[u8],
+    caller: &[u8],
     data: &[u8],
 ) -> Result<(Arc<LoadedShard>, ChainRequest), String> {
     let req: ChainRequest =
@@ -237,7 +270,7 @@ async fn admit(
         .clone()
         .ok_or("node warming up — model loading in background")?;
     let (a, b) = s.blocks();
-    check_route((a as u32, b as u32), s.is_last(), me, &req)?;
+    check_route((a as u32, b as u32), s.is_last(), me, caller, &req)?;
     Ok((s, req))
 }
 
@@ -255,7 +288,7 @@ pub async fn register_chain_handler(
     let me = hex::decode(onward.identify().await.context("identify")?)?;
     let onward: Arc<P2PClient> = Arc::new(onward);
     let slots = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
-    let handler = move |data: Vec<u8>| {
+    let handler = move |caller: Vec<u8>, data: Vec<u8>| {
         let (shard, device, onward, me, slots) = (
             shard.clone(),
             device.clone(),
@@ -264,7 +297,7 @@ pub async fn register_chain_handler(
             slots.clone(),
         );
         async move {
-            let (s, req) = match admit(&shard, &me, &data).await {
+            let (s, req) = match admit(&shard, &me, &caller, &data).await {
                 Ok(v) => v,
                 Err(e) => {
                     debug!("forward chain: refused step: {e}");
@@ -275,19 +308,19 @@ pub async fn register_chain_handler(
                 return ack(false, Some("busy".into()));
             };
             tokio::spawn(async move {
-                let _permit = permit;
                 let (a, b) = s.blocks();
                 let started = Instant::now();
                 let (inner, req) = take_inner(req);
                 let computed = run_inference_request(s, device, inner).await;
                 let fwd_ms = started.elapsed().as_secs_f32() * 1000.0;
+                drop(permit);
                 finish_hop(&*onward, &me, (a as u32, b as u32), req, computed, fwd_ms).await;
             });
             ack(true, None)
         }
     };
     client
-        .add_unary_handler(CHAIN_PROTO, handler, false)
+        .add_unary_handler_with_caller(CHAIN_PROTO, handler, false)
         .await
         .context("register forward-chain handler")?;
     info!("forward chain: serving {CHAIN_PROTO}");
@@ -390,6 +423,7 @@ mod tests {
             origin: origin(),
             return_proto: result_proto(7),
             step: 3,
+            nonce: [5; 16],
             trace: vec![],
         }
     }
@@ -411,7 +445,9 @@ mod tests {
             (peer.as_slice(), proto.as_str()),
             (origin().as_slice(), result_proto(7).as_str())
         );
-        rmp_serde::from_slice(data).unwrap()
+        let r: ChainResult = rmp_serde::from_slice(data).unwrap();
+        assert_eq!(r.nonce, [5; 16], "the run's nonce comes back");
+        r
     }
 
     #[tokio::test]
@@ -455,7 +491,7 @@ mod tests {
         assert_eq!((peer.as_slice(), proto.as_str()), (NEXT, CHAIN_PROTO));
         let onward: ChainRequest = rmp_serde::from_slice(data).unwrap();
         assert_eq!(onward.route, vec![hop(&[3], 24, 32)]);
-        assert_eq!(onward.trace.len(), 1);
+        assert_eq!((onward.trace.len(), onward.nonce), (1, [5; 16]));
         assert_eq!(onward.inner.data, vec![5; 4], "our output, not our input");
     }
 
@@ -560,39 +596,80 @@ mod tests {
     #[test]
     fn check_route_rejects_what_cannot_be_served() {
         let ok = request(vec![hop(NEXT, 16, 24), hop(&[3], 24, 32)]);
-        assert!(check_route((8, 16), false, ME, &ok).is_ok());
+        assert!(check_route((8, 16), false, ME, &origin(), &ok).is_ok());
 
         let looped = request(vec![hop(NEXT, 16, 24), hop(ME, 24, 32)]);
-        assert!(check_route((8, 16), false, ME, &looped)
+        assert!(check_route((8, 16), false, ME, &origin(), &looped)
             .unwrap_err()
             .contains("twice"));
 
         let mismatch = request(vec![hop(NEXT, 12, 32)]);
-        assert!(check_route((8, 16), false, ME, &mismatch)
+        assert!(check_route((8, 16), false, ME, &origin(), &mismatch)
             .unwrap_err()
             .contains("starts at"));
 
         let gap = request(vec![hop(NEXT, 16, 20), hop(&[3], 24, 32)]);
-        assert!(check_route((8, 16), false, ME, &gap)
+        assert!(check_route((8, 16), false, ME, &origin(), &gap)
             .unwrap_err()
             .contains("gap"));
 
-        assert!(check_route((8, 16), true, ME, &request(vec![hop(NEXT, 16, 24)])).is_err());
-        assert!(check_route((8, 16), false, ME, &request(vec![])).is_err());
+        assert!(check_route(
+            (8, 16),
+            true,
+            ME,
+            &origin(),
+            &request(vec![hop(NEXT, 16, 24)])
+        )
+        .is_err());
+        assert!(check_route((8, 16), false, ME, &origin(), &request(vec![])).is_err());
 
-        assert!(check_route((4, 16), false, ME, &ok)
+        assert!(check_route((4, 16), false, ME, &origin(), &ok)
             .unwrap_err()
             .contains("planned"));
 
         let mut elsewhere = request(vec![hop(NEXT, 16, 24)]);
         elsewhere.return_proto = "/kwaai/storage/1.0.0".into();
-        assert!(check_route((8, 16), false, ME, &elsewhere)
+        assert!(check_route((8, 16), false, ME, &origin(), &elsewhere)
             .unwrap_err()
             .contains("originator"));
         elsewhere.return_proto = result_proto(7);
         elsewhere.origin = vec![9];
-        assert!(check_route((8, 16), false, ME, &elsewhere)
+        assert!(check_route((8, 16), false, ME, &origin(), &elsewhere)
             .unwrap_err()
             .contains("originator"));
+    }
+
+    #[test]
+    fn check_route_takes_a_step_only_from_who_may_send_it() {
+        let stranger: &[u8] = &[4];
+        let ok = request(vec![hop(NEXT, 16, 32)]);
+        assert!(check_route((8, 16), false, ME, stranger, &ok)
+            .unwrap_err()
+            .contains("originator"));
+        assert!(
+            check_route((8, 16), false, ME, &[], &ok).is_err(),
+            "an unknown caller is refused"
+        );
+
+        let mut later = request(vec![hop(NEXT, 16, 32)]);
+        later.trace.push(HopTrace {
+            peer_id: stranger.to_vec(),
+            start_block: 0,
+            end_block: 8,
+            fwd_ms: 1.0,
+        });
+        assert!(check_route((8, 16), false, ME, stranger, &later).is_ok());
+        assert!(check_route((8, 16), false, ME, &origin(), &later)
+            .unwrap_err()
+            .contains("hop before"));
+
+        // Naming itself as the hop before does not get token ids past block 0.
+        later.inner.payload_type = PayloadType::TokenIds;
+        later.start_block = 0;
+        later.trace[0].end_block = 0;
+        later.route = vec![hop(NEXT, 8, 32)];
+        assert!(check_route((0, 8), false, ME, stranger, &later)
+            .unwrap_err()
+            .contains("token ids"));
     }
 }

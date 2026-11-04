@@ -45,6 +45,9 @@ pub struct ChainRequest {
     pub return_proto: String,
     /// Matches the result to the originator's waiting step.
     pub step: u64,
+    /// The run's secret, echoed in the result so only a hop on the route can
+    /// answer. Never in a protocol name.
+    pub nonce: [u8; 16],
     pub trace: Vec<HopTrace>,
 }
 
@@ -97,6 +100,7 @@ pub enum ChainOutcome {
 pub struct ChainResult {
     pub session_id: u64,
     pub step: u64,
+    pub nonce: [u8; 16],
     pub outcome: ChainOutcome,
     pub trace: Vec<HopTrace>,
 }
@@ -144,11 +148,12 @@ mod tests {
             origin: vec![1; 38],
             return_proto: result_proto(7),
             step: 2,
+            nonce: [5; 16],
             trace: vec![],
         };
         let bytes = rmp_serde::to_vec_named(&req).unwrap();
         let back: ChainRequest = rmp_serde::from_slice(&bytes).unwrap();
-        assert_eq!(back.route, req.route);
+        assert_eq!((back.route, back.nonce), (req.route, req.nonce));
         assert_eq!(back.inner.data, req.inner.data);
         assert_eq!(
             back.return_proto,
@@ -183,6 +188,7 @@ mod tests {
             let r = ChainResult {
                 session_id: 1,
                 step: 2,
+                nonce: [5; 16],
                 outcome,
                 trace: vec![],
             };

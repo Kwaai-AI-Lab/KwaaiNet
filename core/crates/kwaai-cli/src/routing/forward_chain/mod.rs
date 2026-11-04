@@ -34,9 +34,16 @@ use crate::shard_cmd::{
 /// waiting for the result. Decode only, so generous.
 const HOP_BUDGET: Duration = Duration::from_secs(30);
 
-/// Waiting steps, each with the session it was sent under: a retry restarts
-/// the session mid-run.
-type Pending = Arc<Mutex<HashMap<u64, (u64, oneshot::Sender<ChainResult>)>>>;
+/// A step waiting for its result.
+struct Waiting {
+    /// The session it was sent under: a retry restarts the session mid-run.
+    session_id: u64,
+    /// The route's peers in order; only they may answer.
+    route: Vec<Vec<u8>>,
+    tx: oneshot::Sender<ChainResult>,
+}
+
+type Pending = Arc<Mutex<HashMap<u64, Waiting>>>;
 
 /// One run's forward-chain state. Its own daemon connection owns the return
 /// handler, so dropping this releases it.
@@ -44,6 +51,7 @@ pub struct ChainOriginator {
     _returns: P2PClient,
     return_proto: String,
     origin: Vec<u8>,
+    nonce: [u8; 16],
     pending: Pending,
     next_step: u64,
     /// Steps that completed as a forward chain.
@@ -59,12 +67,14 @@ impl ChainOriginator {
             .context("connect forward-chain return client")?;
         let pending = Pending::default();
         let return_proto = result_proto(session_id);
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut nonce).context("forward-chain nonce")?;
         let p = pending.clone();
         client
-            .add_unary_handler(
+            .add_unary_handler_with_caller(
                 &return_proto,
-                move |data: Vec<u8>| {
-                    let ack = accept_result(&p, &data);
+                move |caller: Vec<u8>, data: Vec<u8>| {
+                    let ack = accept_result(&p, &nonce, &caller, &data);
                     async move {
                         rmp_serde::to_vec_named(&ack).map_err(|e| {
                             kwaai_p2p_daemon::error::Error::Protocol(format!(
@@ -81,6 +91,7 @@ impl ChainOriginator {
             _returns: client,
             return_proto,
             origin: origin.to_bytes(),
+            nonce,
             pending,
             next_step: 0,
             steps: 0,
@@ -123,7 +134,14 @@ impl ChainOriginator {
             })
             .collect();
         let (tx, rx) = oneshot::channel();
-        lock(&self.pending).insert(step, (session_id, tx));
+        lock(&self.pending).insert(
+            step,
+            Waiting {
+                session_id,
+                route: chain.iter().map(|e| e.peer_id.to_bytes()).collect(),
+                tx,
+            },
+        );
         let req = ChainRequest {
             start_block: chain[0].start_block as u32,
             inner: request,
@@ -131,6 +149,7 @@ impl ChainOriginator {
             origin: self.origin.clone(),
             return_proto: self.return_proto.clone(),
             step,
+            nonce: self.nonce,
             trace: Vec::new(),
         };
 
@@ -271,8 +290,27 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// Constant-time, so a forger learns nothing from how fast a guess fails.
+fn same_nonce(a: &[u8; 16], b: &[u8; 16]) -> bool {
+    std::hint::black_box(a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y))) == 0
+}
+
+/// Whether `caller` may send this outcome for a step routed along `route`:
+/// logits only from the last hop, a failure only about itself or the hop
+/// after it.
+fn may_answer(route: &[Vec<u8>], caller: &[u8], outcome: &ChainOutcome) -> bool {
+    let Some(at) = route.iter().position(|p| p == caller) else {
+        return false;
+    };
+    match outcome {
+        ChainOutcome::Logits { .. } => at + 1 == route.len(),
+        ChainOutcome::Partial { error, .. } => route.get(at + 1) == Some(&error.peer_id),
+        ChainOutcome::HopFailed { peer_id, .. } => peer_id == caller,
+    }
+}
+
 /// Hand a delivered result to the step waiting for it.
-fn accept_result(pending: &Pending, data: &[u8]) -> ChainAck {
+fn accept_result(pending: &Pending, nonce: &[u8; 16], caller: &[u8], data: &[u8]) -> ChainAck {
     let nack = |e: String| ChainAck {
         accepted: false,
         error: Some(e),
@@ -281,15 +319,24 @@ fn accept_result(pending: &Pending, data: &[u8]) -> ChainAck {
         Ok(r) => r,
         Err(e) => return nack(format!("deserialise ChainResult: {e}")),
     };
+    if !same_nonce(&r.nonce, nonce) {
+        return nack("not this run's result".into());
+    }
     let mut waiting = lock(pending);
     match waiting.get(&r.step) {
         None => return nack(format!("step {} is not waiting", r.step)),
-        Some((sid, _)) if *sid != r.session_id => {
+        Some(w) if w.session_id != r.session_id => {
             return nack(format!("session {} is not step {}'s", r.session_id, r.step))
+        }
+        Some(w) if !may_answer(&w.route, caller, &r.outcome) => {
+            return nack(format!(
+                "step {} was not routed to answer from here",
+                r.step
+            ))
         }
         Some(_) => {}
     }
-    let (_, tx) = waiting
+    let Waiting { tx, .. } = waiting
         .remove(&r.step)
         .expect("checked above under this lock");
     let step = r.step;
@@ -343,45 +390,124 @@ fn emit_trace(
 mod tests {
     use super::*;
 
-    fn result(step: u64, session_id: u64) -> Vec<u8> {
+    const NONCE: [u8; 16] = [5; 16];
+    const ROUTE: [&[u8]; 3] = [&[1], &[2], &[3]];
+
+    fn result(step: u64, session_id: u64, nonce: [u8; 16], outcome: ChainOutcome) -> Vec<u8> {
         rmp_serde::to_vec_named(&ChainResult {
             session_id,
             step,
-            outcome: ChainOutcome::Logits {
-                shape: vec![1, 1, 1],
-                data: vec![0, 0],
-            },
+            nonce,
+            outcome,
             trace: vec![],
         })
         .unwrap()
     }
 
+    fn logits() -> ChainOutcome {
+        ChainOutcome::Logits {
+            shape: vec![1, 1, 1],
+            data: vec![0, 0],
+        }
+    }
+
+    fn wait(pending: &Pending, step: u64, session_id: u64) -> oneshot::Receiver<ChainResult> {
+        let (tx, rx) = oneshot::channel();
+        let route = ROUTE.iter().map(|p| p.to_vec()).collect();
+        lock(pending).insert(
+            step,
+            Waiting {
+                session_id,
+                route,
+                tx,
+            },
+        );
+        rx
+    }
+
+    fn accepted(pending: &Pending, caller: &[u8], data: Vec<u8>) -> bool {
+        accept_result(pending, &NONCE, caller, &data).accepted
+    }
+
     #[test]
     fn a_result_reaches_only_the_step_waiting_for_it() {
         let pending = Pending::default();
-        let (tx, mut rx) = oneshot::channel();
-        lock(&pending).insert(4, (7, tx));
+        let mut rx = wait(&pending, 4, 7);
+        let last = ROUTE[2];
 
         assert!(
-            !accept_result(&pending, &result(4, 8)).accepted,
+            !accepted(&pending, last, result(4, 8, NONCE, logits())),
             "another session's"
         );
         assert!(
-            !accept_result(&pending, &result(5, 7)).accepted,
+            !accepted(&pending, last, result(5, 7, NONCE, logits())),
             "unknown step"
         );
         assert!(rx.try_recv().is_err());
 
-        assert!(accept_result(&pending, &result(4, 7)).accepted);
+        assert!(accepted(&pending, last, result(4, 7, NONCE, logits())));
         assert_eq!(rx.try_recv().unwrap().step, 4);
-        assert!(!accept_result(&pending, &result(4, 7)).accepted, "a replay");
-
-        let (tx, mut rx) = oneshot::channel();
-        lock(&pending).insert(5, (9, tx));
         assert!(
-            accept_result(&pending, &result(5, 9)).accepted,
+            !accepted(&pending, last, result(4, 7, NONCE, logits())),
+            "a replay"
+        );
+
+        let mut rx = wait(&pending, 5, 9);
+        assert!(
+            accepted(&pending, last, result(5, 9, NONCE, logits())),
             "a retry's fresh session"
         );
         assert_eq!(rx.try_recv().unwrap().step, 5);
+    }
+
+    #[test]
+    fn only_the_route_with_the_runs_nonce_may_answer() {
+        let pending = Pending::default();
+        let mut rx = wait(&pending, 0, 7);
+
+        assert!(
+            !accepted(&pending, ROUTE[2], result(0, 7, [6; 16], logits())),
+            "wrong nonce"
+        );
+        assert!(
+            !accepted(&pending, &[9], result(0, 7, NONCE, logits())),
+            "a peer off the route"
+        );
+        assert!(
+            !accepted(&pending, ROUTE[1], result(0, 7, NONCE, logits())),
+            "logits from a middle hop"
+        );
+        let blame = |peer: &[u8]| ChainOutcome::Partial {
+            end_block: 8,
+            shape: vec![],
+            data: vec![],
+            error: ForwardError {
+                peer_id: peer.to_vec(),
+                block: 8,
+                kind: ForwardErrorKind::Failed,
+                msg: String::new(),
+            },
+        };
+        assert!(
+            !accepted(&pending, ROUTE[0], result(0, 7, NONCE, blame(ROUTE[2]))),
+            "blaming a hop that is not next"
+        );
+        let failed = |peer: &[u8]| ChainOutcome::HopFailed {
+            peer_id: peer.to_vec(),
+            block: 0,
+            msg: String::new(),
+        };
+        assert!(
+            !accepted(&pending, ROUTE[0], result(0, 7, NONCE, failed(ROUTE[1]))),
+            "a hop failure reported by another"
+        );
+        assert!(rx.try_recv().is_err());
+
+        assert!(accepted(
+            &pending,
+            ROUTE[0],
+            result(0, 7, NONCE, blame(ROUTE[1]))
+        ));
+        assert!(rx.try_recv().is_ok());
     }
 }
