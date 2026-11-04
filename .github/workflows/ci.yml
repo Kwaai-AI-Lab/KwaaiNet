@@ -98,13 +98,29 @@ jobs:
         with:
           components: clippy
 
+      # sccache writes one Actions cache entry per compiled object. Only pushes
+      # to main write (SCCACHE_GHA_RW_MODE, sccache 0.16+); everywhere else
+      # reads main's entries. A PR's or tag's entries are scoped to that ref,
+      # nothing else can read them, and they evicted main's from the 10 GB
+      # cache (on 2026-10-29 one PR held 2,429 entries, ~2 GB, against main's
+      # 99).
+      #
+      # Pinned because sccache namespaces every entry by its own version: an
+      # unpinned upgrade would silently orphan all of main's entries, leaving
+      # PRs with no hits until main repopulates. Bumping the pin costs the
+      # same, so do it deliberately.
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.19.0
       - name: Configure sccache
         shell: bash
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "SCCACHE_GHA_RW_MODE=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
 
       - name: Install protoc
         run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
@@ -120,7 +136,7 @@ jobs:
       # The repo's Actions cache is capped at 10 GB, so these caches are
       # restored everywhere but saved only from main: a PR that changes
       # Cargo.lock or a build.rs would otherwise save its own multi-GB copy and
-      # evict main's. (sccache still writes from PRs.)
+      # evict main's. sccache follows the same rule (see Install sccache).
       - name: Cache cargo + target
         id: cargo-cache
         uses: actions/cache/restore@v4
@@ -173,12 +189,17 @@ jobs:
       - name: Install sccache
         if: runner.os != 'Windows'
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.19.0
       - name: Configure sccache
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "SCCACHE_GHA_RW_MODE=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
@@ -374,11 +395,16 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.19.0
       - name: Configure sccache
         shell: bash
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "SCCACHE_GHA_RW_MODE=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
 
       - name: Cache wasm-pack binary
         id: wasm-pack-cache
@@ -444,11 +470,16 @@ jobs:
 
       - name: Install sccache
         uses: mozilla-actions/sccache-action@v0.0.9
+        with:
+          version: v0.19.0
       - name: Configure sccache
         shell: bash
         run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
-          echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+          {
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "SCCACHE_GHA_RW_MODE=${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}"
+            echo "RUSTC_WRAPPER=sccache"
+          } >> "$GITHUB_ENV"
 
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
