@@ -1354,6 +1354,10 @@ impl KwaaiNetConfig {
                 self.grpc_port = Some(value.parse().context("grpc_port must be a port number")?)
             }
             "shard.backend" => self.shard.backend = value.parse()?,
+            "shard.forward_chain.serve" => self.shard.forward_chain.serve = parse_bool(value)?,
+            "shard.forward_chain.originate" => {
+                self.shard.forward_chain.originate = parse_bool(value)?
+            }
             "use_gpu" => self.use_gpu = parse_bool(value)?,
             "log_level" => {
                 self.log_level = parse_log_level(value)

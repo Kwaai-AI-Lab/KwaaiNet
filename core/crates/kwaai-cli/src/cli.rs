@@ -393,6 +393,7 @@ pub enum ConfigAction {
     /// Valid keys:
     ///   model, blocks, start_block, port, grpc_port, use_gpu, log_level,
     ///   shard.backend (auto | candle | mlx),
+    ///   shard.forward_chain.serve, shard.forward_chain.originate,
     ///   contribute.storage, contribute.shards, contribute.auto_update,
     ///   public_name, public_ip, announce_addr, no_relay,
     ///   announce_self, enable_upnp, enable_quic, ipv6, only_global_ips,

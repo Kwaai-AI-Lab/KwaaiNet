@@ -125,6 +125,7 @@ impl ChainOriginator {
         let (tx, rx) = oneshot::channel();
         lock(&self.pending).insert(step, (session_id, tx));
         let req = ChainRequest {
+            start_block: chain[0].start_block as u32,
             inner: request,
             route,
             origin: self.origin.clone(),
@@ -139,9 +140,12 @@ impl ChainOriginator {
             let msg = format!("{e:#}");
             self.fall_back(format!("first hop {}: {msg}", chain[0].public_name));
             if classify_forward_error(&msg) == ForwardErrorKind::Failed {
-                return Err(anyhow!(
-                    "forward chain: first hop {} failed: {msg}",
-                    chain[0].public_name
+                return Err(self.hop_failed(
+                    chain,
+                    failed_peers,
+                    &chain[0].peer_id.to_bytes(),
+                    chain[0].start_block as u32,
+                    &msg,
                 ));
             }
             return forward_from(

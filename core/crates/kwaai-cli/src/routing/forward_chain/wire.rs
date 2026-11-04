@@ -36,6 +36,8 @@ pub struct HopTrace {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChainRequest {
     pub inner: InferenceRequest,
+    /// Where the plan has the receiving server start; it refuses otherwise.
+    pub start_block: u32,
     /// The hops after the receiving server, in order.
     pub route: Vec<RouteHop>,
     /// Where the result goes, and on which protocol.
@@ -133,6 +135,7 @@ mod tests {
                 shape: vec![1, 1, 4],
                 data: vec![1, 2, 3, 4, 5, 6, 7, 8],
             },
+            start_block: 0,
             route: vec![RouteHop {
                 peer_id: vec![9; 38],
                 start_block: 8,

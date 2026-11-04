@@ -5,6 +5,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
+use libp2p::PeerId;
+use tokio::sync::Semaphore;
+
 use anyhow::{bail, Context, Result};
 use candle_core::Device;
 use futures::future::BoxFuture;
@@ -16,6 +19,10 @@ use crate::block_rpc::{
     run_inference_request, InferenceRequest, InferenceResponse, LoadedShard, PayloadType,
     ResponseType, ShardCell,
 };
+
+/// Steps computing at once. Past this a step is refused, which its
+/// originator handles by finishing in star.
+const MAX_IN_FLIGHT: usize = 8;
 
 /// A unary call to a peer — the daemon in production, a fake in tests.
 pub trait Unary: Send + Sync + 'static {
@@ -78,6 +85,17 @@ pub fn check_route(
     me: &[u8],
     req: &ChainRequest,
 ) -> Result<(), String> {
+    if req.start_block != blocks.0 {
+        return Err(format!(
+            "planned to start at block {}, this shard starts at {}",
+            req.start_block, blocks.0
+        ));
+    }
+    if !req.return_proto.starts_with(RESULT_PROTO_PREFIX)
+        || PeerId::from_bytes(&req.origin).is_err()
+    {
+        return Err("result address is not an originator's".into());
+    }
     if req.inner.payload_type == PayloadType::TokenIds && blocks.0 != 0 {
         return Err(format!(
             "token ids sent to a shard starting at block {}",
@@ -126,6 +144,7 @@ pub async fn finish_hop<U: Unary + ?Sized>(
         return_proto,
         step,
         mut trace,
+        start_block: _,
     } = req;
     let (session_id, seq_pos) = (inner.session_id, inner.seq_pos);
 
@@ -149,6 +168,7 @@ pub async fn finish_hop<U: Unary + ?Sized>(
                 },
                 (ResponseType::HiddenStates, Some(next)) => {
                     let onward = ChainRequest {
+                        start_block: next.start_block,
                         inner: InferenceRequest {
                             session_id,
                             seq_pos,
@@ -234,9 +254,15 @@ pub async fn register_chain_handler(
         .context("connect forward-chain client")?;
     let me = hex::decode(onward.identify().await.context("identify")?)?;
     let onward: Arc<P2PClient> = Arc::new(onward);
+    let slots = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
     let handler = move |data: Vec<u8>| {
-        let (shard, device, onward, me) =
-            (shard.clone(), device.clone(), onward.clone(), me.clone());
+        let (shard, device, onward, me, slots) = (
+            shard.clone(),
+            device.clone(),
+            onward.clone(),
+            me.clone(),
+            slots.clone(),
+        );
         async move {
             let (s, req) = match admit(&shard, &me, &data).await {
                 Ok(v) => v,
@@ -245,7 +271,11 @@ pub async fn register_chain_handler(
                     return ack(false, Some(e));
                 }
             };
+            let Ok(permit) = slots.try_acquire_owned() else {
+                return ack(false, Some("busy".into()));
+            };
             tokio::spawn(async move {
+                let _permit = permit;
                 let (a, b) = s.blocks();
                 let started = Instant::now();
                 let (inner, req) = take_inner(req);
@@ -331,7 +361,12 @@ mod tests {
 
     const ME: &[u8] = &[1];
     const NEXT: &[u8] = &[2];
-    const ORIGIN: &[u8] = &[9];
+    fn origin() -> Vec<u8> {
+        "12D3KooWDwa7LY7AYiNWqAaSEj42ztFw6sULYqTLRNFATZezogpW"
+            .parse::<PeerId>()
+            .unwrap()
+            .to_bytes()
+    }
 
     fn hop(peer: &[u8], s: u32, e: u32) -> RouteHop {
         RouteHop {
@@ -350,8 +385,9 @@ mod tests {
                 shape: vec![1, 1, 2],
                 data: vec![0; 4],
             },
+            start_block: 8,
             route,
-            origin: ORIGIN.to_vec(),
+            origin: origin(),
             return_proto: result_proto(7),
             step: 3,
             trace: vec![],
@@ -373,7 +409,7 @@ mod tests {
         let (peer, proto, data) = calls.last().expect("a result was delivered");
         assert_eq!(
             (peer.as_slice(), proto.as_str()),
-            (ORIGIN, result_proto(7).as_str())
+            (origin().as_slice(), result_proto(7).as_str())
         );
         rmp_serde::from_slice(data).unwrap()
     }
@@ -541,7 +577,22 @@ mod tests {
             .unwrap_err()
             .contains("gap"));
 
-        assert!(check_route((24, 32), true, ME, &request(vec![hop(NEXT, 32, 40)])).is_err());
+        assert!(check_route((8, 16), true, ME, &request(vec![hop(NEXT, 16, 24)])).is_err());
         assert!(check_route((8, 16), false, ME, &request(vec![])).is_err());
+
+        assert!(check_route((4, 16), false, ME, &ok)
+            .unwrap_err()
+            .contains("planned"));
+
+        let mut elsewhere = request(vec![hop(NEXT, 16, 24)]);
+        elsewhere.return_proto = "/kwaai/storage/1.0.0".into();
+        assert!(check_route((8, 16), false, ME, &elsewhere)
+            .unwrap_err()
+            .contains("originator"));
+        elsewhere.return_proto = result_proto(7);
+        elsewhere.origin = vec![9];
+        assert!(check_route((8, 16), false, ME, &elsewhere)
+            .unwrap_err()
+            .contains("originator"));
     }
 }

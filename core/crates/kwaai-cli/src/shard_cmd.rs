@@ -4330,11 +4330,6 @@ fn rand_f32() -> f32 {
     ((shuffled >> 33) as u32 as f32) / (u32::MAX as f32)
 }
 
-/// Generate a random u64 session ID using splitmix64 over (nanos ⊕ pid).
-///
-/// Using raw `as_nanos() as u64` truncates a u128 and collides if called
-/// twice within the same nanosecond. Mixing in the process ID + splitmix64
-/// gives adequate entropy without adding a dependency.
 /// After a failed hop the session's KV is unusable: hops before it already ran
 /// the step, and a replacement has no history. So a retry re-prefills
 /// everything sent so far, from block 0, under a fresh session.
@@ -4345,6 +4340,11 @@ pub fn restart_session(prompt: &[u32], generated: &[u32]) -> (u64, Vec<u32>) {
     )
 }
 
+/// Generate a random u64 session ID using splitmix64 over (nanos ⊕ pid).
+///
+/// Using raw `as_nanos() as u64` truncates a u128 and collides if called
+/// twice within the same nanosecond. Mixing in the process ID + splitmix64
+/// gives adequate entropy without adding a dependency.
 fn rand_session_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
