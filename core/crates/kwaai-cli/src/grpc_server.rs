@@ -3640,11 +3640,25 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
         }
     };
 
-    // Written only once the bind has succeeded, so a start that loses the port
-    // cannot overwrite a live daemon's token; still before anything serves,
-    // so a client that sees the port file or socket can always read it. The
-    // guard removes it again if anything below fails.
-    let token_file = TokenFileGuard::write(&token)?;
+    // Without TCP the socket is all we would serve, and a live one belongs to
+    // another daemon on this home (`start --concurrent`): leave it and its token.
+    #[cfg(unix)]
+    let serve_socket = bound.is_some() || !unix_socket_live();
+    #[cfg(not(unix))]
+    let serve_socket = false;
+    if bound.is_none() && !serve_socket {
+        warn!("gRPC: no transport left to serve — gRPC disabled");
+    }
+
+    // Written only when something will serve with it, so a start that loses
+    // the port cannot overwrite a live daemon's token; still before anything
+    // serves, so a client that sees the port file or socket can always read
+    // it. The guard removes it again if anything below fails.
+    let token_file = if bound.is_some() || serve_socket {
+        Some(TokenFileGuard::write(&token)?)
+    } else {
+        None
+    };
 
     let mut bound_port = None;
     let mut shutdown_tcp = None;
@@ -3682,40 +3696,38 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
 
     // Unix socket: POSIX only.
     #[cfg(unix)]
-    {
+    let shutdown_unix = serve_socket.then(|| {
         let unix_path = unix_socket_path();
-        let unix_service = service;
         tokio::spawn(async move {
-            if let Err(e) = serve_unix(unix_path.clone(), unix_service, shutdown_unix_rx).await {
+            if let Err(e) = serve_unix(unix_path.clone(), service, shutdown_unix_rx).await {
                 warn!("gRPC Unix server exited with error: {e}");
             }
         });
-        Ok(GrpcServerHandle {
-            shutdown_tcp,
-            #[cfg(unix)]
-            shutdown_unix: Some(shutdown_unix_tx),
-            net: net_slot,
-            dht: dht_slot,
-            port_file,
-            token_file: token_file.keep(),
-        })
-    }
+        shutdown_unix_tx
+    });
     #[cfg(not(unix))]
-    {
-        drop(service); // suppress unused warning on non-unix
-        Ok(GrpcServerHandle {
-            shutdown_tcp,
-            net: net_slot,
-            dht: dht_slot,
-            port_file,
-            token_file: token_file.keep(),
-        })
-    }
+    let _ = (service, serve_socket);
+
+    Ok(GrpcServerHandle {
+        shutdown_tcp,
+        #[cfg(unix)]
+        shutdown_unix,
+        net: net_slot,
+        dht: dht_slot,
+        port_file,
+        token_file: token_file.and_then(TokenFileGuard::keep),
+    })
+}
+
+/// Whether a daemon is accepting on this home's socket; a stale file refuses.
+#[cfg(unix)]
+fn unix_socket_live() -> bool {
+    std::os::unix::net::UnixStream::connect(unix_socket_path()).is_ok()
 }
 
 /// The token file between writing it and handing it to the server handle:
 /// dropped on an early return, it removes the file it wrote.
-struct TokenFileGuard(Option<PathBuf>);
+struct TokenFileGuard(Option<(PathBuf, String)>);
 
 impl TokenFileGuard {
     /// No token, no daemon: a server nobody can authenticate to is just a
@@ -3724,19 +3736,27 @@ impl TokenFileGuard {
         let path = grpc_token_file();
         kwaai_rpc::auth::write_token_file(&path, token)
             .with_context(|| format!("writing {}", path.display()))?;
-        Ok(Self(Some(path)))
+        Ok(Self(Some((path, token.to_owned()))))
     }
 
-    fn keep(mut self) -> Option<PathBuf> {
+    fn keep(mut self) -> Option<(PathBuf, String)> {
         self.0.take()
     }
 }
 
 impl Drop for TokenFileGuard {
     fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
+        if let Some((path, token)) = self.0.take() {
+            remove_token_file(&path, &token);
         }
+    }
+}
+
+/// Remove the token file only while it still holds `token`: another daemon on
+/// this home may have replaced it, and its clients still need it.
+fn remove_token_file(path: &std::path::Path, token: &str) {
+    if kwaai_rpc::auth::read_token_file(path).is_ok_and(|t| t == token) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -3808,9 +3828,9 @@ pub struct GrpcServerHandle {
     dht: Arc<RwLock<Option<DHTStorage>>>,
     /// `run/kwaainet.grpc`, when we managed to write it. Removed on shutdown.
     port_file: Option<PathBuf>,
-    /// `run/kwaainet.token`. Removed on shutdown, so a stale token never
-    /// outlives the daemon it belonged to.
-    token_file: Option<PathBuf>,
+    /// `run/kwaainet.token` and the token we wrote to it. Removed on shutdown
+    /// if still ours, so a stale token never outlives the daemon it belonged to.
+    token_file: Option<(PathBuf, String)>,
 }
 
 impl GrpcServerHandle {
@@ -3840,18 +3860,16 @@ impl GrpcServerHandle {
         if let Some(path) = self.port_file.take() {
             let _ = std::fs::remove_file(path);
         }
-        if let Some(path) = self.token_file.take() {
-            let _ = std::fs::remove_file(path);
-        }
-        #[cfg(unix)]
-        {
-            let _ = std::fs::remove_file(unix_socket_path());
+        if let Some((path, token)) = self.token_file.take() {
+            remove_token_file(&path, &token);
         }
         if let Some(tx) = self.shutdown_tcp.take() {
             let _ = tx.send(());
         }
+        // Only the daemon serving the socket may unlink it.
         #[cfg(unix)]
         if let Some(tx) = self.shutdown_unix.take() {
+            let _ = std::fs::remove_file(unix_socket_path());
             let _ = tx.send(());
         }
     }
@@ -4040,6 +4058,9 @@ mod tests {
             .expect("default-port clash must still come up");
         // No listener means no port file to mislead a client into dialling.
         assert!(!grpc_port_file().exists());
+        // No daemon holds the socket, so it still serves, and needs a token.
+        #[cfg(unix)]
+        assert!(grpc_token_file().exists());
         drop(lenient);
     }
 
@@ -4104,6 +4125,70 @@ mod tests {
         assert_eq!(
             kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap(),
             "live"
+        );
+    }
+
+    /// `start --concurrent` on one home: the second daemon loses the default
+    /// port, and neither its start nor its stop may cost the first its clients.
+    #[tokio::test]
+    async fn second_daemon_on_one_home_leaves_the_first_reachable() {
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let port = ephemeral_port();
+        let first = spawn_on_tcp_port(KwaaiNetConfig::default(), port);
+        assert!(wait_for(Duration::from_secs(2), || tcp_accepting(port)).await);
+        #[cfg(unix)]
+        assert!(
+            wait_for(Duration::from_secs(2), || async {
+                tokio::net::UnixStream::connect(unix_socket_path())
+                    .await
+                    .is_ok()
+            })
+            .await,
+            "Unix socket never came up"
+        );
+        let token = kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap();
+
+        let second = spawn_bound(KwaaiNetConfig::default(), port, false)
+            .expect("default-port clash still comes up");
+        assert_eq!(
+            kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap(),
+            token,
+            "the second start must not replace the live token"
+        );
+        drop(second);
+
+        assert!(
+            grpc_token_file().exists(),
+            "the second stop must not delete it"
+        );
+        #[cfg(unix)]
+        assert!(unix_socket_path().exists(), "nor the first daemon's socket");
+        authed_client(port)
+            .await
+            .ping(PingRequest {})
+            .await
+            .expect("the first daemon still authenticates its clients");
+
+        drop(first);
+        assert!(!grpc_token_file().exists(), "the owner still cleans up");
+    }
+
+    /// A daemon whose token was replaced leaves the replacement on shutdown.
+    #[tokio::test]
+    async fn shutdown_leaves_a_token_it_did_not_write() {
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let handle = spawn_bound(KwaaiNetConfig::default(), 0, true).expect("bind");
+        kwaai_rpc::auth::write_token_file(&grpc_token_file(), "other").unwrap();
+        drop(handle);
+        assert_eq!(
+            kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap(),
+            "other"
         );
     }
 
