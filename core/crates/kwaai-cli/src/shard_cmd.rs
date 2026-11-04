@@ -4846,9 +4846,6 @@ mod tests {
         InferenceProgress::new(std::time::Instant::now(), phase)
     }
 
-    /// The `--stats` table is fed by this sink, so a HopOk must still produce
-    /// exactly the tuple the pre-sink code pushed. This is the regression
-    /// guard for the CLI output.
     #[test]
     fn a_retry_re_prefills_everything_in_a_new_session() {
         let (a, ids) = restart_session(&[1, 2, 3], &[7, 8]);
@@ -4858,6 +4855,9 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    /// The `--stats` table is fed by this sink, so a HopOk must still produce
+    /// exactly the tuple the pre-sink code pushed. This is the regression
+    /// guard for the CLI output.
     #[test]
     fn hop_timing_sink_rebuilds_the_cli_tuple() {
         let sink = HopTimingSink::new();
