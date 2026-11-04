@@ -1454,7 +1454,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     }
 
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
-    let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
+    let mut session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
     let mut router = Router::open(
         RouteMode::resolve(args.route, &cfg),
         session_id,
@@ -1566,7 +1566,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     println!();
                 }
                 print_warning(&format!(
-                    "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
+                    "{e:#} — rebuilding path and re-prefilling {} token(s) in a new session",
+                    token_ids.len() + generated_ids.len()
                 ));
                 unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
                 pinned_path =
@@ -1575,29 +1576,32 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 // stats table reports only the path that actually produced the
                 // token — matching the pre-sink `token_hops.clear()`.
                 let _ = hop_sink.take();
-                // Retry this token with the new path
+                (session_id, current_ids) = restart_session(&token_ids, &generated_ids);
+                seq_pos = 0;
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
                     session_id,
-                    seq_pos: seq_pos as u32,
+                    seq_pos: 0,
                     payload_type: PayloadType::TokenIds,
                     shape: shape2,
                     data: data2,
                 };
+                let retry_ctx =
+                    TokenContext::new(generated_ids.len(), true, generation_start, session_id, 0);
                 let result = router
                     .forward(
                         &mut client,
                         &pinned_path,
                         total_blocks,
                         session_id,
-                        seq_pos as u32,
+                        0,
                         retry_req,
                         Some(&our_peer_id),
                         &mut failed_peers,
                         &unreached,
                         sink_ref,
                         reputation.clone(),
-                        token_ctx,
+                        retry_ctx,
                     )
                     .await?;
                 // Re-indent so the resumed token stream starts cleanly.
@@ -2430,7 +2434,7 @@ async fn run_streaming_inner(
         token_ids.insert(0, bos);
     }
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
-    let session_id: u64 = rand_session_id();
+    let mut session_id: u64 = rand_session_id();
     let mut router = Router::open(RouteMode::resolve(None, &cfg), session_id, &our_peer_id).await;
 
     // Best-effort dial of every server in the chain (matches CLI).
@@ -2524,7 +2528,8 @@ async fn run_streaming_inner(
                         .token(token_ctx)
                         .attempt(path_attempt + 1)
                         .msg(format!(
-                            "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
+                            "{e:#} — rebuilding path and re-prefilling {} token(s) in a new session",
+                            token_ids.len() + generated_ids.len()
                         ));
                     ev.block_start = e.downcast_ref::<ChainPositionError>().map(|c| c.block);
                     ev
@@ -2540,28 +2545,32 @@ async fn run_streaming_inner(
                         .attempt(path_attempt)
                         .msg(format!("{} hop(s)", pinned_path.len()))
                 });
+                (session_id, current_ids) = restart_session(&token_ids, &generated_ids);
+                seq_pos = 0;
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
                     session_id,
-                    seq_pos: seq_pos as u32,
+                    seq_pos: 0,
                     payload_type: PayloadType::TokenIds,
                     shape: shape2,
                     data: data2,
                 };
+                let retry_ctx =
+                    TokenContext::new(generated_ids.len(), true, run_started, session_id, 0);
                 router
                     .forward(
                         &mut client,
                         &pinned_path,
                         total_blocks,
                         session_id,
-                        seq_pos as u32,
+                        0,
                         retry_req,
                         Some(&our_peer_id),
                         &mut failed_peers,
                         &unreached,
                         sink,
                         reputation.clone(),
-                        token_ctx,
+                        retry_ctx,
                     )
                     .await?
             }
@@ -4326,6 +4335,16 @@ fn rand_f32() -> f32 {
 /// Using raw `as_nanos() as u64` truncates a u128 and collides if called
 /// twice within the same nanosecond. Mixing in the process ID + splitmix64
 /// gives adequate entropy without adding a dependency.
+/// After a failed hop the session's KV is unusable: hops before it already ran
+/// the step, and a replacement has no history. So a retry re-prefills
+/// everything sent so far, from block 0, under a fresh session.
+pub fn restart_session(prompt: &[u32], generated: &[u32]) -> (u64, Vec<u32>) {
+    (
+        rand_session_id(),
+        prompt.iter().chain(generated).copied().collect(),
+    )
+}
+
 fn rand_session_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
@@ -4830,6 +4849,15 @@ mod tests {
     /// The `--stats` table is fed by this sink, so a HopOk must still produce
     /// exactly the tuple the pre-sink code pushed. This is the regression
     /// guard for the CLI output.
+    #[test]
+    fn a_retry_re_prefills_everything_in_a_new_session() {
+        let (a, ids) = restart_session(&[1, 2, 3], &[7, 8]);
+        assert_eq!(ids, [1, 2, 3, 7, 8]);
+        let (b, ids) = restart_session(&[1, 2, 3], &[]);
+        assert_eq!(ids, [1, 2, 3], "a failed prefill re-sends the prompt alone");
+        assert_ne!(a, b);
+    }
+
     #[test]
     fn hop_timing_sink_rebuilds_the_cli_tuple() {
         let sink = HopTimingSink::new();

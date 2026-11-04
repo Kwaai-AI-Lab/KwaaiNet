@@ -226,7 +226,7 @@ async fn run_inference(
         token_ids.insert(0, bos);
     }
 
-    let session_id: u64 = {
+    let mut session_id: u64 = {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -238,9 +238,9 @@ async fn run_inference(
         .unwrap_or(crate::routing::RouteMode::Star);
     let mut router = crate::routing::Router::open(route, session_id, &state.our_peer_id).await;
 
-    let mut generated = 0usize;
+    let mut generated_ids: Vec<u32> = Vec::new();
     let mut seq_pos = 0usize;
-    let mut current_ids = token_ids;
+    let mut current_ids = token_ids.clone();
     let device = Device::Cpu;
 
     let mut client_guard = state.client.lock().await;
@@ -271,8 +271,8 @@ async fn run_inference(
 
     loop {
         let token_ctx = crate::shard_cmd::TokenContext::new(
-            generated,
-            generated == 0,
+            generated_ids.len(),
+            generated_ids.is_empty(),
             run_started,
             session_id,
             seq_pos as u32,
@@ -320,11 +320,13 @@ async fn run_inference(
                 ) {
                     Ok(new_path) => {
                         pinned_path = new_path;
-                        // Retry once with rebuilt path
+                        (session_id, current_ids) =
+                            crate::shard_cmd::restart_session(&token_ids, &generated_ids);
+                        seq_pos = 0;
                         let (s2, d2) = token_ids_to_bytes(&current_ids);
                         let retry = InferenceRequest {
                             session_id,
-                            seq_pos: seq_pos as u32,
+                            seq_pos: 0,
                             payload_type: PayloadType::TokenIds,
                             shape: s2,
                             data: d2,
@@ -335,14 +337,20 @@ async fn run_inference(
                                 &pinned_path,
                                 state.total_blocks,
                                 session_id,
-                                seq_pos as u32,
+                                0,
                                 retry,
                                 Some(&state.our_peer_id),
                                 &mut failed_peers,
                                 &unreached,
                                 None,
                                 None,
-                                token_ctx,
+                                crate::shard_cmd::TokenContext::new(
+                                    generated_ids.len(),
+                                    true,
+                                    run_started,
+                                    session_id,
+                                    0,
+                                ),
                             )
                             .await
                         {
@@ -405,10 +413,10 @@ async fn run_inference(
             }
         }
 
-        generated += 1;
+        generated_ids.push(next_id);
         seq_pos += current_ids.len();
 
-        if next_id == state.eos_id || generated >= max_tokens {
+        if next_id == state.eos_id || generated_ids.len() >= max_tokens {
             break;
         }
         current_ids = vec![next_id];

@@ -34,7 +34,9 @@ use crate::shard_cmd::{
 /// waiting for the result. Decode only, so generous.
 const HOP_BUDGET: Duration = Duration::from_secs(30);
 
-type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<ChainResult>>>>;
+/// Waiting steps, each with the session it was sent under: a retry restarts
+/// the session mid-run.
+type Pending = Arc<Mutex<HashMap<u64, (u64, oneshot::Sender<ChainResult>)>>>;
 
 /// One run's forward-chain state. Its own daemon connection owns the return
 /// handler, so dropping this releases it.
@@ -62,7 +64,7 @@ impl ChainOriginator {
             .add_unary_handler(
                 &return_proto,
                 move |data: Vec<u8>| {
-                    let ack = accept_result(&p, session_id, &data);
+                    let ack = accept_result(&p, &data);
                     async move {
                         rmp_serde::to_vec_named(&ack).map_err(|e| {
                             kwaai_p2p_daemon::error::Error::Protocol(format!(
@@ -121,7 +123,7 @@ impl ChainOriginator {
             })
             .collect();
         let (tx, rx) = oneshot::channel();
-        lock(&self.pending).insert(step, tx);
+        lock(&self.pending).insert(step, (session_id, tx));
         let req = ChainRequest {
             inner: request,
             route,
@@ -266,7 +268,7 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// Hand a delivered result to the step waiting for it.
-fn accept_result(pending: &Pending, session_id: u64, data: &[u8]) -> ChainAck {
+fn accept_result(pending: &Pending, data: &[u8]) -> ChainAck {
     let nack = |e: String| ChainAck {
         accepted: false,
         error: Some(e),
@@ -275,21 +277,24 @@ fn accept_result(pending: &Pending, session_id: u64, data: &[u8]) -> ChainAck {
         Ok(r) => r,
         Err(e) => return nack(format!("deserialise ChainResult: {e}")),
     };
-    if r.session_id != session_id {
-        return nack(format!("session {} is not this run's", r.session_id));
-    }
-    match lock(pending).remove(&r.step) {
-        Some(tx) => {
-            let step = r.step;
-            match tx.send(r) {
-                Ok(()) => ChainAck {
-                    accepted: true,
-                    error: None,
-                },
-                Err(_) => nack(format!("step {step} no longer waiting")),
-            }
+    let mut waiting = lock(pending);
+    match waiting.get(&r.step) {
+        None => return nack(format!("step {} is not waiting", r.step)),
+        Some((sid, _)) if *sid != r.session_id => {
+            return nack(format!("session {} is not step {}'s", r.session_id, r.step))
         }
-        None => nack(format!("step {} is not waiting", r.step)),
+        Some(_) => {}
+    }
+    let (_, tx) = waiting
+        .remove(&r.step)
+        .expect("checked above under this lock");
+    let step = r.step;
+    match tx.send(r) {
+        Ok(()) => ChainAck {
+            accepted: true,
+            error: None,
+        },
+        Err(_) => nack(format!("step {step} no longer waiting")),
     }
 }
 
@@ -351,23 +356,28 @@ mod tests {
     fn a_result_reaches_only_the_step_waiting_for_it() {
         let pending = Pending::default();
         let (tx, mut rx) = oneshot::channel();
-        lock(&pending).insert(4, tx);
+        lock(&pending).insert(4, (7, tx));
 
         assert!(
-            !accept_result(&pending, 7, &result(4, 8)).accepted,
-            "another run's"
+            !accept_result(&pending, &result(4, 8)).accepted,
+            "another session's"
         );
         assert!(
-            !accept_result(&pending, 7, &result(5, 7)).accepted,
+            !accept_result(&pending, &result(5, 7)).accepted,
             "unknown step"
         );
         assert!(rx.try_recv().is_err());
 
-        assert!(accept_result(&pending, 7, &result(4, 7)).accepted);
+        assert!(accept_result(&pending, &result(4, 7)).accepted);
         assert_eq!(rx.try_recv().unwrap().step, 4);
+        assert!(!accept_result(&pending, &result(4, 7)).accepted, "a replay");
+
+        let (tx, mut rx) = oneshot::channel();
+        lock(&pending).insert(5, (9, tx));
         assert!(
-            !accept_result(&pending, 7, &result(4, 7)).accepted,
-            "a replay"
+            accept_result(&pending, &result(5, 9)).accepted,
+            "a retry's fresh session"
         );
+        assert_eq!(rx.try_recv().unwrap().step, 5);
     }
 }
