@@ -102,6 +102,16 @@ This quickstart shows how to install the native Rust CLI, start a node, and send
 
 ### 1. Install the `kwaainet` CLI
 
+**Supported platforms** (minimums of the published release binaries):
+
+| Platform | Minimum | Notes |
+| --- | --- | --- |
+| macOS, Apple Silicon | macOS 12.3 | MLX block serving (`--mlx`) needs macOS 14 |
+| macOS, Intel | macOS 10.12 | |
+| Linux x86_64 / arm64 (glibc) | glibc 2.34 | e.g. Ubuntu 22.04, Debian 12, RHEL 9 |
+| Linux x86_64 / arm64 (musl) | — | Statically linked, no glibc requirement |
+| Windows x86_64 | Windows 10 | |
+
 **Shell installer (macOS / Linux):**
 
 ```bash
@@ -352,8 +362,8 @@ Pinned path:
 Add `--stats` for a per-token timing breakdown (prefill, decode, throughput). For local-only
 inference without networking: `kwaainet shard run "prompt" --local`.
 
-On Apple Silicon, pass `--force-blocks` if you want the block path anyway for testing or
-benchmarking — it is not a useful way to contribute. The daemon's own shard child takes no
+On Apple Silicon (macOS 14+), `--mlx` serves blocks on the GPU with MLX, which release builds
+include; `--force-blocks` alone uses candle on CPU and is only for testing. The daemon's own shard child takes no
 flags; it reads `shard.backend` (`auto`, `candle` or `mlx`) from `config.yaml` instead.
 
 See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.

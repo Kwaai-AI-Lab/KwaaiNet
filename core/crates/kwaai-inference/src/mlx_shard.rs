@@ -3,7 +3,7 @@
 //! Uses Apple's MLX framework (via mlx-rs) for unified memory, lazy evaluation,
 //! and automatic kernel fusion.
 //!
-//! Feature-gated: only compiled with `--features mlx` on macOS.
+//! Compiled only with `--features mlx` on Apple Silicon (`cfg(mlx)`).
 
 use crate::error::{InferenceError, InferenceResult};
 use crate::tokenizer::BpeTokenizer;
@@ -457,6 +457,7 @@ impl MlxTransformerShard {
         start: usize,
         end: usize,
     ) -> InferenceResult<Self> {
+        ensure_metallib()?;
         #[derive(serde::Deserialize)]
         struct Hf {
             num_hidden_layers: usize,
@@ -789,9 +790,93 @@ impl MlxTransformerShard {
 }
 
 pub fn mlx_available() -> bool {
+    if let Err(e) = ensure_metallib() {
+        tracing::warn!("MLX unavailable: {e}");
+        return false;
+    }
     let a = Array::from_slice::<f32>(&[1.0, 2.0, 3.0], &[3]);
-    let s: f32 = a.sum(None).expect("sum").item();
-    (s - 6.0).abs() < 0.01
+    match a.sum(None).and_then(|s| s.try_item::<f32>()) {
+        Ok(s) => (s - 6.0).abs() < 0.01,
+        Err(e) => {
+            tracing::warn!("MLX unavailable: {e}");
+            false
+        }
+    }
+}
+
+/// Point MLX at the kernels embedded in this binary, unpacked once to
+/// `$KWAAINET_HOME/mlx/`. Must run before the first MLX op; later calls are free.
+pub fn ensure_metallib() -> InferenceResult<()> {
+    #[cfg(mlx_embedded_metallib)]
+    {
+        static INSTALLED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+        INSTALLED
+            .get_or_init(install_metallib)
+            .clone()
+            .map_err(load_err)
+    }
+    #[cfg(not(mlx_embedded_metallib))]
+    Ok(())
+}
+
+#[cfg(mlx_embedded_metallib)]
+fn install_metallib() -> Result<(), String> {
+    use std::os::unix::ffi::OsStrExt;
+    static METALLIB: &[u8] = include_bytes!(env!("KWAAI_MLX_METALLIB"));
+    const ID: &str = env!("KWAAI_MLX_METALLIB_ID");
+    extern "C" {
+        // Added to MLX by core/patches/mlx-metallib.patch.
+        fn kwaai_mlx_set_metallib_path(path: *const std::ffi::c_char);
+    }
+
+    // The kernels target macOS 14 (patches/mlx-sys.patch); older systems get no MLX.
+    let os = std::process::Command::new("sysctl")
+        .args(["-n", "kern.osproductversion"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if os
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or(0)
+        < 14
+    {
+        return Err(format!("MLX needs macOS 14 or later (this is {os:?})"));
+    }
+    let home = std::env::var_os("KWAAINET_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".kwaainet")))
+        .ok_or("neither KWAAINET_HOME nor HOME is set")?;
+    let dir = home.join("mlx");
+    let name = format!("mlx-{ID}.metallib");
+    let path = dir.join(&name);
+    let current = std::fs::metadata(&path).is_ok_and(|m| m.len() == METALLIB.len() as u64);
+    if !current {
+        let fail = |e: std::io::Error| format!("unpacking {}: {e}", path.display());
+        std::fs::create_dir_all(&dir).map_err(fail)?;
+        let tmp = dir.join(format!(".{name}.{}", std::process::id()));
+        std::fs::write(&tmp, METALLIB).map_err(fail)?;
+        std::fs::rename(&tmp, &path).map_err(fail)?;
+        info!("MLX kernels unpacked to {}", path.display());
+    }
+    // ~90 MB each: drop other releases' kernels and unpacks abandoned mid-write.
+    for old in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let n = old.file_name();
+        let n = n.to_string_lossy();
+        let stale_tmp = n.starts_with(".mlx-")
+            && old
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age.as_secs() > 600));
+        if stale_tmp || (n.starts_with("mlx-") && n.ends_with(".metallib") && n != name.as_str()) {
+            let _ = std::fs::remove_file(old.path());
+        }
+    }
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    // SAFETY: a NUL-terminated path MLX copies; called before any MLX op, once.
+    unsafe { kwaai_mlx_set_metallib_path(c_path.as_ptr()) };
+    Ok(())
 }
 
 #[cfg(test)]
@@ -800,6 +885,11 @@ mod tests {
     use mlx_rs::ops::indexing::IndexOp;
     use mlx_rs::Array;
     use std::time::Instant;
+
+    #[test]
+    fn mlx_runs_on_embedded_kernels() {
+        assert!(super::mlx_available());
+    }
 
     #[test]
     fn test_mlx_raw_matmul_speed() {

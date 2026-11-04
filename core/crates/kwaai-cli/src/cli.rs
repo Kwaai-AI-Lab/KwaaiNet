@@ -921,8 +921,8 @@ pub struct ShardServeArgs {
     #[arg(long)]
     pub force_blocks: bool,
 
-    /// Serve the blocks with MLX on Apple Silicon (needs a binary built with
-    /// `--features mlx`, and its `mlx.metallib` beside it). Implies --force-blocks.
+    /// Serve the blocks with MLX on Apple Silicon (release builds include it;
+    /// a source build needs `--features mlx`). Implies --force-blocks.
     /// For this run only; set `shard.backend: mlx` for the daemon's child.
     #[arg(long)]
     pub mlx: bool,

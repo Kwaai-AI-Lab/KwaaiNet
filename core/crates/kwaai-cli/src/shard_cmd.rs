@@ -325,32 +325,16 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         crate::daemon::ShardManager::new().write_pid(std::process::id());
     }
 
-    // ── macOS: serve the whole model through Ollama, never blocks ───────────
-    //
-    // Block sharding is not viable on Apple hardware. candle's Metal backend is
-    // *slower than CPU* for single-token decode, so `DeviceType::detect_best()`
-    // skips it and a Mac lands on CPU at 2-4 tok/s — while the same machine runs
-    // the same model through Ollama at ~47 tok/s. Gap-filling can also hand a
-    // Mac a partial range it cannot serve on GPU at all (#117), which still
-    // reads as healthy coverage in `shard chain`.
-    //
-    // So a Mac does not register as a block server. It serves whole-model
-    // inference over `/kwaai/ollama-proxy/1.0.0`, which every node already
-    // registers, and stays at announce state 1 (JOINING) because no shard ever
-    // loads — no announce change needed.
-    //
-    // Stopgap. Delete this branch when an Apple fast path lands: MLX
-    // (`mlx_shard.rs`) already implements sharding and failed only on graph
-    // recompilation, and `llama_local.rs` wraps the same llama.cpp engine Ollama
-    // uses. See `projects/kwaai-compute/plans/MacOllamaStopgap-plan.md`.
+    // macOS: whole model via Ollama (candle decodes at 2-4 tok/s there). MLX
+    // blocks are opt-in so an update never switches a Mac off Ollama.
     // A flag applies to this run; the daemon's child gets `shard.backend`.
     let backend = args.backend(&cfg);
     let mlx = backend == crate::config::ShardBackend::Mlx;
     if cfg!(target_os = "macos") && backend == crate::config::ShardBackend::Auto {
         return serve_whole_model_via_ollama(&cfg).await;
     }
-    if mlx && !cfg!(feature = "mlx") {
-        bail!("--mlx needs a binary built with `cargo build -p kwaainet --features mlx`");
+    if mlx && !cfg!(mlx) {
+        bail!("--mlx needs Apple Silicon and a binary built with `--features mlx` (releases are)");
     }
 
     let target_blocks = snap_to_valid_blocks(args.blocks.unwrap_or(cfg.blocks) as usize);
@@ -2629,13 +2613,14 @@ pub async fn cmd_shard_status() -> Result<()> {
     // inference ran on CPU (#118). Label it as configuration and state the
     // serving mode separately.
     println!("  GPU (config): {}", cfg.use_gpu);
-    if cfg!(target_os = "macos") {
+    if cfg!(target_os = "macos") && cfg.shard.backend == crate::config::ShardBackend::Mlx {
+        println!("  Mode:         blocks with MLX (shard.backend: mlx)");
+    } else if cfg!(target_os = "macos") {
         println!(
             "  Mode:         whole model via Ollama (localhost:{})",
             cfg.ollama_port
         );
-        println!("                block sharding is not viable on Metal — see #117");
-        println!("                the range above is unused on this platform");
+        println!("                the range above is unused unless shard.backend: mlx");
     }
     println!("  DHT prefix:   {}", cfg.effective_dht_prefix());
     println!();
@@ -4310,13 +4295,13 @@ fn load_serving_shard(
     end: usize,
     mlx: bool,
 ) -> Result<LoadedShard> {
-    #[cfg(feature = "mlx")]
+    #[cfg(mlx)]
     if mlx {
         let shard =
             kwaai_inference::mlx_shard::MlxTransformerShard::load(paths, config_path, start, end)?;
         return Ok(LoadedShard::mlx(shard));
     }
-    #[cfg(not(feature = "mlx"))]
+    #[cfg(not(mlx))]
     if mlx {
         bail!("this binary was built without MLX support");
     }
