@@ -141,6 +141,16 @@ it:
    entity cards alone, which makes it the natural testbed. Compare recall
    with exact-predicate edges against similarity-matched edges, with the
    empty-graph floor as the reference.
+   - **Measure `answer_recall`, not Eval v2's `coverage`.** In the
+     forgetting smoke run (2026-10-20, Manhattan, graph-only), the NLI scorer
+     gave short, unrelated entity cards 0.9+ entailment against gold nuggets,
+     and 11 of 12 covered nuggets inspected were false positives. Coverage
+     scored on graph cards is not trustworthy without a precision check
+     against labelled pairs. `answer_recall`, with the long answer as the
+     premise, looked sound.
+   - On a famous corpus, a thin graph lets the model answer from what it
+     already knows, which is why the empty-graph floor matters. A corpus the
+     model has not seen gives the cleaner signal.
 4. **What does the ontology become?** It currently governs write-time
    acceptance. Here it would supply prototypes for projection and the
    symbolic layer for axioms. Open:
