@@ -333,14 +333,10 @@ async fn main() -> Result<()> {
 
             let mgr = DaemonManager::new();
 
-            if mgr.is_running() && !args.concurrent {
-                print_warning("A KwaaiNet node is already running. Use --concurrent to allow multiple instances.");
+            // The early, friendly refusal; `run_node`'s instance lock is the guarantee.
+            if mgr.is_running() {
+                print_warning("A KwaaiNet node is already running on this KWAAINET_HOME.");
                 print_info("Stop the existing node with: kwaainet stop");
-                std::process::exit(1);
-            }
-
-            if !mgr.try_acquire_lock()? {
-                print_error("Another instance is starting. Try again shortly.");
                 std::process::exit(1);
             }
 

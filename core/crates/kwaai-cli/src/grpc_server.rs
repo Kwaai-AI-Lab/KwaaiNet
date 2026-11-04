@@ -3640,10 +3640,11 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
         }
     };
 
-    // Written only once the bind has succeeded, so a start that loses the port
-    // cannot overwrite a live daemon's token; still before anything serves,
-    // so a client that sees the port file or socket can always read it. The
-    // guard removes it again if anything below fails.
+    // No other daemon shares this home's run/ — `run_node` holds the instance
+    // lock — so a lost default port overwrites nothing but a dead daemon's
+    // token. Written before anything serves, so a client that sees the port
+    // file or socket can always read it; the guard removes it if anything
+    // below fails.
     let token_file = TokenFileGuard::write(&token)?;
 
     let mut bound_port = None;
@@ -3715,7 +3716,7 @@ fn spawn_bound(config: KwaaiNetConfig, tcp_port: u16, explicit: bool) -> Result<
 
 /// The token file between writing it and handing it to the server handle:
 /// dropped on an early return, it removes the file it wrote.
-struct TokenFileGuard(Option<PathBuf>);
+struct TokenFileGuard(Option<(PathBuf, String)>);
 
 impl TokenFileGuard {
     /// No token, no daemon: a server nobody can authenticate to is just a
@@ -3724,19 +3725,27 @@ impl TokenFileGuard {
         let path = grpc_token_file();
         kwaai_rpc::auth::write_token_file(&path, token)
             .with_context(|| format!("writing {}", path.display()))?;
-        Ok(Self(Some(path)))
+        Ok(Self(Some((path, token.to_owned()))))
     }
 
-    fn keep(mut self) -> Option<PathBuf> {
+    fn keep(mut self) -> Option<(PathBuf, String)> {
         self.0.take()
     }
 }
 
 impl Drop for TokenFileGuard {
     fn drop(&mut self) {
-        if let Some(path) = self.0.take() {
-            let _ = std::fs::remove_file(path);
+        if let Some((path, token)) = self.0.take() {
+            remove_token_file(&path, &token);
         }
+    }
+}
+
+/// Remove the token file only while it still holds `token`: a successor (an
+/// update respawn) may already have replaced it, and its clients need it.
+fn remove_token_file(path: &std::path::Path, token: &str) {
+    if kwaai_rpc::auth::read_token_file(path).is_ok_and(|t| t == token) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -3808,9 +3817,9 @@ pub struct GrpcServerHandle {
     dht: Arc<RwLock<Option<DHTStorage>>>,
     /// `run/kwaainet.grpc`, when we managed to write it. Removed on shutdown.
     port_file: Option<PathBuf>,
-    /// `run/kwaainet.token`. Removed on shutdown, so a stale token never
-    /// outlives the daemon it belonged to.
-    token_file: Option<PathBuf>,
+    /// `run/kwaainet.token` and the token we wrote to it. Removed on shutdown
+    /// if still ours, so a stale token never outlives the daemon it belonged to.
+    token_file: Option<(PathBuf, String)>,
 }
 
 impl GrpcServerHandle {
@@ -3840,8 +3849,8 @@ impl GrpcServerHandle {
         if let Some(path) = self.port_file.take() {
             let _ = std::fs::remove_file(path);
         }
-        if let Some(path) = self.token_file.take() {
-            let _ = std::fs::remove_file(path);
+        if let Some((path, token)) = self.token_file.take() {
+            remove_token_file(&path, &token);
         }
         #[cfg(unix)]
         {
@@ -4104,6 +4113,22 @@ mod tests {
         assert_eq!(
             kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap(),
             "live"
+        );
+    }
+
+    /// A daemon whose token was replaced leaves the replacement on shutdown.
+    #[tokio::test]
+    async fn shutdown_leaves_a_token_it_did_not_write() {
+        let _serial = TEST_LOCK.lock().await;
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let handle = spawn_bound(KwaaiNetConfig::default(), 0, true).expect("bind");
+        kwaai_rpc::auth::write_token_file(&grpc_token_file(), "other").unwrap();
+        drop(handle);
+        assert_eq!(
+            kwaai_rpc::auth::read_token_file(&grpc_token_file()).unwrap(),
+            "other"
         );
     }
 
