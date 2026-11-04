@@ -1455,12 +1455,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let mut session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
-    let mut router = Router::open(
-        RouteMode::resolve(args.route, &cfg),
-        session_id,
-        &our_peer_id,
-    )
-    .await;
+    let mut router = Router::open(RouteMode::resolve(args.route, &cfg), &our_peer_id).await;
     let max_tokens = args.max_tokens;
     let temperature = args.temperature;
     let top_k = args.top_k;
@@ -1507,6 +1502,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let mut token_times_ms: Vec<f64> = Vec::new();
     // Decode steps that re-prefilled after a failed hop: kept out of decode stats.
     let mut reprefill_ms: Vec<f64> = Vec::new();
+    let mut session_replaced = false;
     // Per-token hop breakdowns: outer index = token, inner = hops for that token.
     let mut all_hop_timings: Vec<Vec<HopTiming>> = Vec::new();
     let generation_start = std::time::Instant::now();
@@ -1582,8 +1578,9 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 (session_id, current_ids) = restart_session(&token_ids, &generated_ids);
                 seq_pos = 0;
                 reprefilled = !generated_ids.is_empty();
-                if args.session_id.is_some() {
+                if args.session_id.is_some() && !session_replaced {
                     print_warning(&format!("--session-id replaced by {session_id}"));
+                    session_replaced = true;
                 }
                 let (shape2, data2) = token_ids_to_bytes(&current_ids);
                 let retry_req = InferenceRequest {
@@ -2453,7 +2450,7 @@ async fn run_streaming_inner(
     }
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let mut session_id: u64 = rand_session_id();
-    let mut router = Router::open(RouteMode::resolve(None, &cfg), session_id, &our_peer_id).await;
+    let mut router = Router::open(RouteMode::resolve(None, &cfg), &our_peer_id).await;
 
     // Best-effort dial of every server in the chain (matches CLI).
     for entry in &chain {

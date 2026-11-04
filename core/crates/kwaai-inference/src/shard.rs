@@ -423,18 +423,25 @@ impl Session {
         }
     }
 
-    /// Take a step of `seq_len` tokens at `seq_pos`, refusing one the cache
-    /// already holds: running it would append its KV twice.
     fn advance(&mut self, seq_pos: usize, seq_len: usize) -> InferenceResult<()> {
-        if seq_pos < self.next_pos {
-            return Err(InferenceError::InferenceFailed(format!(
-                "step at position {seq_pos} is already in this session's KV (next is {})",
-                self.next_pos
-            )));
-        }
-        self.next_pos = seq_pos + seq_len;
-        Ok(())
+        advance_kv(&mut self.next_pos, seq_pos, seq_len)
     }
+}
+
+/// Take a step of `seq_len` tokens at `seq_pos`, refusing one the cache
+/// already holds: running it would append its KV twice.
+pub(crate) fn advance_kv(
+    next_pos: &mut usize,
+    seq_pos: usize,
+    seq_len: usize,
+) -> InferenceResult<()> {
+    if seq_pos < *next_pos {
+        return Err(InferenceError::InferenceFailed(format!(
+            "step at position {seq_pos} is already in this session's KV (next is {next_pos})"
+        )));
+    }
+    *next_pos = seq_pos + seq_len;
+    Ok(())
 }
 
 // ── TransformerShard ──────────────────────────────────────────────────────────

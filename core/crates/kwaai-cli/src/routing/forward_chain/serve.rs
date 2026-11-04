@@ -105,8 +105,8 @@ pub fn check_route(
         return Err("result address is not an originator's".into());
     }
     // A first hop takes steps only from their originator, a later one only
-    // from the hop before, and token ids only at the first: nobody can turn a
-    // few bytes into hidden states sent where they choose.
+    // from the hop before, and token ids only at the first. Both are fields
+    // the sender writes, so this names the sender; it does not authenticate it.
     match req.trace.last() {
         None if caller != req.origin.as_slice() => {
             return Err("a first hop takes steps only from their originator".into())
@@ -118,6 +118,15 @@ pub fn check_route(
             return Err("token ids past the first hop".into())
         }
         _ => {}
+    }
+    // Only single-token decode steps travel by chain, so no request can make a
+    // hop send on more than one token's hidden state.
+    let one_token = match req.inner.payload_type {
+        PayloadType::TokenIds => req.inner.data.len() == 4,
+        PayloadType::HiddenStates => req.inner.shape.get(..2) == Some(&[1, 1][..]),
+    };
+    if req.inner.seq_pos == 0 || !one_token {
+        return Err("a chain step must be a single-token decode step".into());
     }
     if req.inner.payload_type == PayloadType::TokenIds && blocks.0 != 0 {
         return Err(format!(
@@ -639,6 +648,34 @@ mod tests {
             .contains("originator"));
     }
 
+    #[test]
+    fn check_route_takes_only_single_token_decode_steps() {
+        let me = &origin();
+        let mut prefill = request(vec![hop(NEXT, 16, 32)]);
+        prefill.inner.seq_pos = 0;
+        assert!(check_route((8, 16), false, ME, me, &prefill)
+            .unwrap_err()
+            .contains("single-token"));
+
+        let mut wide = request(vec![hop(NEXT, 16, 32)]);
+        wide.inner.shape = vec![1, 2, 2];
+        assert!(check_route((8, 16), false, ME, me, &wide).is_err());
+
+        let mut tokens = request(vec![hop(NEXT, 8, 32)]);
+        tokens.start_block = 0;
+        tokens.inner.payload_type = PayloadType::TokenIds;
+        tokens.inner.data = vec![0; 8];
+        assert!(
+            check_route((0, 8), false, ME, me, &tokens).is_err(),
+            "two ids"
+        );
+        tokens.inner.data = vec![0; 4];
+        assert!(check_route((0, 8), false, ME, me, &tokens).is_ok());
+    }
+
+    /// These name the sender rather than authenticate it: `origin` and
+    /// `trace` are the sender's own fields. The single-token rule is what
+    /// bounds what a stranger can get sent on.
     #[test]
     fn check_route_takes_a_step_only_from_who_may_send_it() {
         let stranger: &[u8] = &[4];

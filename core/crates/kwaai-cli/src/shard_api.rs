@@ -228,8 +228,7 @@ async fn run_inference(
     }
 
     let mut session_id = crate::shard_cmd::rand_session_id();
-    let mut router =
-        crate::routing::Router::open(state.route, session_id, &state.our_peer_id).await;
+    let mut router = crate::routing::Router::open(state.route, &state.our_peer_id).await;
 
     let mut generated_ids: Vec<u32> = Vec::new();
     let mut seq_pos = 0usize;

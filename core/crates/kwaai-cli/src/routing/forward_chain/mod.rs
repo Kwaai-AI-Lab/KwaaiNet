@@ -61,14 +61,16 @@ pub struct ChainOriginator {
 }
 
 impl ChainOriginator {
-    pub async fn open(session_id: u64, origin: &PeerId) -> Result<Self> {
+    pub async fn open(origin: &PeerId) -> Result<Self> {
         let client = P2PClient::connect(&daemon_socket())
             .await
             .context("connect forward-chain return client")?;
         let pending = Pending::default();
-        let return_proto = result_proto(session_id);
+        let mut tag = [0u8; 8];
         let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut tag).context("forward-chain return tag")?;
         getrandom::getrandom(&mut nonce).context("forward-chain nonce")?;
+        let return_proto = result_proto(u64::from_le_bytes(tag));
         let p = pending.clone();
         client
             .add_unary_handler_with_caller(

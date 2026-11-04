@@ -408,12 +408,15 @@ fn compiled_block_forward(inputs: &[Array]) -> Result<Vec<Array>, mlx_rs::error:
 
 struct MlxSession {
     kv: Vec<Option<(Array, Array)>>,
+    /// The position after the last step taken.
+    next_pos: usize,
     last_access: Instant,
 }
 impl MlxSession {
     fn new(n: usize) -> Self {
         Self {
             kv: vec![None; n],
+            next_pos: 0,
             last_access: Instant::now(),
         }
     }
@@ -623,16 +626,21 @@ impl MlxTransformerShard {
     pub fn gc_sessions(&self) {
         self.sessions().gc()
     }
-    /// Take the session out of the table for the forward. A forward that fails
-    /// drops it: its KV cache is half-appended and cannot be resumed.
-    fn take_session(&self, sid: u64) -> MlxSession {
-        let mut sess = self
-            .sessions()
-            .lock()
+    /// Take the session out of the table for a step of `len` tokens at `sp`,
+    /// refusing one its KV already holds. A forward that fails drops it: its
+    /// KV cache is half-appended and cannot be resumed.
+    fn take_session(&self, sid: u64, sp: usize, len: usize) -> InferenceResult<MlxSession> {
+        let sessions = self.sessions();
+        let mut table = sessions.lock();
+        let mut sess = table
             .remove(&sid)
             .unwrap_or_else(|| MlxSession::new(self.blocks.len()));
+        if let Err(e) = crate::shard::advance_kv(&mut sess.next_pos, sp, len) {
+            table.insert(sid, sess);
+            return Err(e);
+        }
         sess.last_access = Instant::now();
-        sess
+        Ok(sess)
     }
     fn put_session(&self, sid: u64, sess: MlxSession) {
         self.sessions().lock().insert(sid, sess);
@@ -642,7 +650,7 @@ impl MlxTransformerShard {
         // decode step at offset 0. The uncompiled path is the default;
         // KWAAINET_MLX_COMPILE=1 opts back in for A/B timing.
         if std::env::var("KWAAINET_MLX_COMPILE").as_deref() != Ok("1") {
-            let mut sess = self.take_session(sid);
+            let mut sess = self.take_session(sid, sp, x.shape()[1] as usize)?;
             for (i, b) in self.blocks.iter_mut().enumerate() {
                 x = b.forward(&x, &mut sess.kv[i], sp)?;
             }
@@ -678,7 +686,7 @@ impl MlxTransformerShard {
             .lock()
             .unwrap();
 
-        let mut s = self.take_session(sid);
+        let mut s = self.take_session(sid, sp, x.shape()[1] as usize)?;
 
         let empty_kv = Array::from_slice::<f32>(&[0.0], &[1]);
 

@@ -52,10 +52,10 @@ pub enum Router {
 impl Router {
     /// A chain the node cannot set up degrades to star with a warning rather
     /// than failing the run.
-    pub async fn open(mode: RouteMode, session_id: u64, our_peer_id: &PeerId) -> Self {
+    pub async fn open(mode: RouteMode, our_peer_id: &PeerId) -> Self {
         match mode {
             RouteMode::Star => Self::Star,
-            RouteMode::Chain => match ChainOriginator::open(session_id, our_peer_id).await {
+            RouteMode::Chain => match ChainOriginator::open(our_peer_id).await {
                 Ok(o) => Self::Chain(o),
                 Err(e) => {
                     print_warning(&format!("forward chain unavailable ({e:#}) — using star"));

@@ -8,13 +8,14 @@ use crate::block_rpc::InferenceRequest;
 /// any compute — never the result.
 pub const CHAIN_PROTO: &str = "/kwaai/inference-chain/1.0.0";
 
-/// The originator's per-run return protocol is this plus the session id in
+/// The originator's per-run return protocol is this plus a random tag in
 /// hex. Per run because handler registration is last-writer-wins: a shared
-/// name would let two runs on one node take each other's results.
+/// name would let two runs on one node take each other's results. Not the
+/// session id: identify advertises every protocol a node serves.
 pub const RESULT_PROTO_PREFIX: &str = "/kwaai/inference-result/1.0.0/";
 
-pub fn result_proto(session_id: u64) -> String {
-    format!("{RESULT_PROTO_PREFIX}{session_id:016x}")
+pub fn result_proto(tag: u64) -> String {
+    format!("{RESULT_PROTO_PREFIX}{tag:016x}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
