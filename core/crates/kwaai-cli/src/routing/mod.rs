@@ -162,5 +162,11 @@ mod tests {
         assert!(cfg.shard.forward_chain.originate && cfg.shard.forward_chain.serve);
         let y = serde_yaml::to_string(&KwaaiNetConfig::default()).unwrap();
         assert!(!y.contains("forward_chain"), "{y}");
+
+        let mut cfg = KwaaiNetConfig::default();
+        cfg.set_key("shard.forward_chain.originate", "true")
+            .unwrap();
+        cfg.set_key("shard.forward_chain.serve", "false").unwrap();
+        assert!(cfg.shard.forward_chain.originate && !cfg.shard.forward_chain.serve);
     }
 }
