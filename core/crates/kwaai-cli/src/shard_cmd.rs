@@ -5033,9 +5033,6 @@ mod tests {
         InferenceProgress::new(std::time::Instant::now(), phase)
     }
 
-    /// The `--stats` table is fed by this sink, so a HopOk must still produce
-    /// exactly the tuple the pre-sink code pushed. This is the regression
-    /// guard for the CLI output.
     #[test]
     fn a_retry_re_prefills_everything_in_a_new_session() {
         let mut cur = PrefillCursor::new(vec![1, 2, 3], 42, 2);
@@ -5056,6 +5053,9 @@ mod tests {
         assert!(cur.advance(1), "the in-flight token is re-sent once");
     }
 
+    /// The `--stats` table is fed by this sink, so a HopOk must still produce
+    /// exactly the tuple the pre-sink code pushed. This is the regression
+    /// guard for the CLI output.
     #[test]
     fn hop_timing_sink_rebuilds_the_cli_tuple() {
         let sink = HopTimingSink::new();
