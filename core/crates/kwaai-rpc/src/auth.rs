@@ -359,11 +359,46 @@ mod tests {
             LocalFree(sd);
             s
         };
-        let sid = windows_acl::current_user_sid().unwrap();
         // Flags: P (protected) is what matters; Windows adds AI on every write.
         let (flags, aces) = sddl.split_at(sddl.find('(').expect("one ACE"));
         assert!(flags.starts_with("D:P"), "DACL not protected: {sddl}");
-        assert_eq!(aces, format!("(A;;FA;;;{sid})"));
+        let ace_sid = aces
+            .strip_prefix("(A;;FA;;;")
+            .and_then(|s| s.strip_suffix(')'))
+            .unwrap_or_else(|| panic!("not one full-control allow ACE: {sddl}"));
+        // Compare SIDs, not strings: SDDL writes well-known accounts as aliases,
+        // e.g. the built-in Administrator (RID 500) as "LA", while
+        // current_user_sid() always gives the S-1-5-… form (#269).
+        let user_sid = windows_acl::current_user_sid().unwrap();
+        assert!(
+            sids_equal(ace_sid, &user_sid),
+            "ACE grants {ace_sid}, not the current user {user_sid}"
+        );
+    }
+
+    /// Whether two SID strings, in either S-1-5-… or SDDL alias form, name the
+    /// same account.
+    #[cfg(windows)]
+    fn sids_equal(a: &str, b: &str) -> bool {
+        use std::ptr::null_mut;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+        use windows_sys::Win32::Security::{EqualSid, PSID};
+
+        let parse = |s: &str| -> PSID {
+            let wide: Vec<u16> = s.encode_utf16().chain(Some(0)).collect();
+            let mut sid: PSID = null_mut();
+            let ok = unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut sid) };
+            assert_ne!(ok, 0, "ConvertStringSidToSidW({s})");
+            sid
+        };
+        let (a, b) = (parse(a), parse(b));
+        unsafe {
+            let equal = EqualSid(a, b) != 0;
+            LocalFree(a.cast());
+            LocalFree(b.cast());
+            equal
+        }
     }
 
     #[test]
