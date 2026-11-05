@@ -35,7 +35,7 @@ cudarc = { path = "patches/cudarc" }
 # Root package for examples
 [package]
 name = "kwaai-core"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2021"
 publish = false
 
@@ -112,7 +112,7 @@ name = "petals_dht"
 path = "examples/petals_dht.rs"
 
 [workspace.package]
-version = "0.7.2"
+version = "0.7.3"
 
 edition = "2021"
 authors = ["Kwaai AI Lab <dev@kwaai.ai>"]
@@ -123,21 +123,21 @@ keywords = ["ai", "decentralized", "p2p", "wasm", "inference"]
 categories = ["network-programming", "wasm", "science"]
 
 [workspace.dependencies]
-kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.7.2" }
-kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.7.2" }
+kwaai-compression  = { path = "crates/kwaai-compression",  version = "0.7.3" }
+kwaai-trust        = { path = "crates/kwaai-trust",        version = "0.7.3" }
 # `default-features = false` here, or a member cannot turn them off: cargo
 # ignores a member's `default-features = false` unless the workspace entry
 # already says so. Members that want the defaults say `default-features = true`.
-kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.7.2", default-features = false }
-kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.7.2" }
-kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.7.2" }
-kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.7.2" }
-kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.7.2" }
-kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.7.2", default-features = false }
-kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.7.2" }
-kwaai-storage      = { path = "crates/kwaai-storage",      version = "0.7.2" }
-kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.7.2" }
-kwaai-rpc          = { path = "crates/kwaai-rpc",          version = "0.7.2" }
+kwaai-p2p          = { path = "crates/kwaai-p2p",          version = "0.7.3", default-features = false }
+kwaai-hivemind-dht = { path = "crates/kwaai-hivemind-dht", version = "0.7.3" }
+kwaai-distributed  = { path = "crates/kwaai-distributed",  version = "0.7.3" }
+kwaai-inference    = { path = "crates/kwaai-inference",    version = "0.7.3" }
+kwaai-cli          = { path = "crates/kwaai-cli",          version = "0.7.3" }
+kwaai-p2p-daemon   = { path = "crates/kwaai-p2p-daemon",   version = "0.7.3", default-features = false }
+kwaai-wasm         = { path = "crates/kwaai-wasm",         version = "0.7.3" }
+kwaai-storage      = { path = "crates/kwaai-storage",      version = "0.7.3" }
+kwaai-rag          = { path = "crates/kwaai-rag",          version = "0.7.3" }
+kwaai-rpc          = { path = "crates/kwaai-rpc",          version = "0.7.3" }
 
 # Async runtime
 tokio = { version = "1.35", features = ["full"] }
