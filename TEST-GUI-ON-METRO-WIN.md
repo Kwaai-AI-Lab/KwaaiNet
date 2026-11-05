@@ -10,9 +10,11 @@ first that sends the daemon's gRPC bearer token (KwaaiNetGUI#8). An older GUI
 cannot talk to a v0.7.3 daemon at all, so a GUI that can is the last gate
 before KwaaiNet 0.8.0.
 
-You are testing the **CI build of GUI `main`** at the merge of KwaaiNetGUI#11
-(CI run `41957071954`). The release workflow builds the same way, so this is
-the release before it is tagged.
+You are testing the **CI build of KwaaiNetGUI#12**. That is GUI `main` (the
+merge of #11) with one test-only change: the Windows build bundles kwaainet
+v0.7.3's `-cuda-full` build, so the GUI's own node can use this machine's GPU.
+The release itself will not bundle the CUDA build, because it cannot start
+without an NVIDIA driver. Everything else is what v0.5.0 will ship.
 
 You are checking four things:
 
@@ -71,7 +73,9 @@ The node must be running at this point. If it is not, start it with
 
 ```powershell
 $gui = "$env:USERPROFILE\kwaainet-gui-test"
-gh run download 41957071954 -R Kwaai-AI-Lab/KwaaiNetGUI -n kwaainet-gui-windows -D $gui
+gh run list -R Kwaai-AI-Lab/KwaaiNetGUI -b test/bundle-cuda-full -w CI -L 1
+$run = gh run list -R Kwaai-AI-Lab/KwaaiNetGUI -b test/bundle-cuda-full -w CI -L 1 --json databaseId --jq '.[0].databaseId'
+gh run download $run -R Kwaai-AI-Lab/KwaaiNetGUI -n kwaainet-gui-windows -D $gui
 Get-ChildItem $gui -Recurse -Depth 1
 ```
 
@@ -84,11 +88,14 @@ Get-ChildItem $gui\app -Recurse -Include *.exe | Format-Table FullName,Length
 & (Get-ChildItem $gui\app -Recurse -Filter kwaainet.exe | Select-Object -First 1).FullName --version
 ```
 
-Expect the bundled `kwaainet.exe` to report **0.7.3**. Record which exe is the
-GUI (probably `kwaainet_gui.exe`).
+The run must be `completed` / `success`; if it is still running, wait (the
+artifact is about 1 GB). Expect the bundled `kwaainet.exe` to report **0.7.3**,
+and the CUDA DLLs to sit beside it:
 
-Note that CI bundles the plain `kwaainet-x86_64-pc-windows-msvc.zip`, the
-**CPU** build. That matters in section 6.
+```powershell
+$app = Split-Path (Get-ChildItem $gui\app -Recurse -Filter kwaainet_gui.exe | Select-Object -First 1).FullName
+Get-ChildItem $app -Filter *64_1*.dll | Format-Table Name,Length   # expect cublas64_12, cudart64_12, curand64_10, ...
+```
 
 ## 2. Launch against the running node
 
@@ -189,9 +196,14 @@ Get-Content $env:USERPROFILE\.kwaainet\run\start-args.json
 **Record, not judge:**
 
 - Which binary is running: the bundled one under `$gui\app`, or `.cargo\bin`.
-- 👀 Whether the GUI shows it running, and whether Chat answers. If it does,
-  note whether the GPU was used. The bundled build is CPU-only, so we expect it
-  not to be. That is a known gap and not a failure of this test, but record it.
+- 👀 Whether the GUI shows it running, and whether Chat answers.
+- Whether the bundled node uses the GPU. It should, since it is the CUDA
+  build. While Chat runs, check:
+  ```powershell
+  nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv
+  kwaainet logs | Select-String -Pattern 'cuda|gpu|cpu fallback' | Select-Object -Last 20
+  ```
+  A fallback to CPU here is a FAIL.
 - Whether `start-args.json` changed, and how.
 - The token's ACL. It must be exactly one entry, the current user, with
   FullControl and Allow.
