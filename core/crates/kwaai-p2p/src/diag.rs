@@ -30,7 +30,8 @@ pub struct RelayServerStats {
     circuits_accepted: u64,
     circuits_closed: u64,
     circuits_denied: BTreeMap<String, u64>,
-    denied_sources: HashMap<String, u64>,
+    reservation_denied_sources: HashMap<String, u64>,
+    circuit_denied_sources: HashMap<String, u64>,
 }
 
 impl RelayServerStats {
@@ -42,10 +43,20 @@ impl RelayServerStats {
         }
     }
 
-    pub fn reservation_denied(&mut self, status: impl std::fmt::Debug) {
+    /// `src_ip` names the source when its connection is known, else the peer does.
+    pub fn reservation_denied(
+        &mut self,
+        status: impl std::fmt::Debug,
+        src: PeerId,
+        src_ip: Option<IpAddr>,
+    ) {
         *self
             .reservations_denied
             .entry(format!("{status:?}"))
+            .or_default() += 1;
+        *self
+            .reservation_denied_sources
+            .entry(source_label(src, src_ip))
             .or_default() += 1;
     }
 
@@ -72,26 +83,33 @@ impl RelayServerStats {
             .circuits_denied
             .entry(format!("{status:?}"))
             .or_default() += 1;
-        let who = src_ip.map_or_else(|| src.to_string(), |ip| ip.to_string());
-        *self.denied_sources.entry(who).or_default() += 1;
+        *self
+            .circuit_denied_sources
+            .entry(source_label(src, src_ip))
+            .or_default() += 1;
     }
 
     /// The summary line's fields, resetting the window.
-    pub fn take(&mut self, reservations_held: usize) -> String {
+    pub fn take(&mut self, peers_with_reservations: usize) -> String {
         let s = std::mem::take(self);
         format!(
-            "reservations held={reservations_held} new={} renewed={} ended={} denied={} | \
-             circuits opened={} closed={} denied={}{}",
+            "reservations peers-holding={peers_with_reservations} new={} renewed={} ended={} \
+             denied={}{} | circuits opened={} closed={} denied={}{}",
             s.reservations_accepted,
             s.reservations_renewed,
             s.reservations_ended,
             fmt_counts(&s.reservations_denied),
+            fmt_top_sources(s.reservation_denied_sources),
             s.circuits_accepted,
             s.circuits_closed,
             fmt_counts(&s.circuits_denied),
-            fmt_top_sources(s.denied_sources),
+            fmt_top_sources(s.circuit_denied_sources),
         )
     }
+}
+
+fn source_label(src: PeerId, src_ip: Option<IpAddr>) -> String {
+    src_ip.map_or_else(|| src.to_string(), |ip| ip.to_string())
 }
 
 /// Why one address of an outbound dial failed.
@@ -100,8 +118,11 @@ pub enum DialFailure {
     RelayRateLimited,
     RelayNoReservation,
     RelayRefused,
+    RelayCannotReachPeer,
+    RelayUnsupported,
     Timeout,
     Refused,
+    Unreachable,
     WrongPeer,
     NoAddresses,
     DeniedLocally,
@@ -114,8 +135,11 @@ impl DialFailure {
             Self::RelayRateLimited => "relay-rate-limited",
             Self::RelayNoReservation => "relay-no-reservation",
             Self::RelayRefused => "relay-refused",
+            Self::RelayCannotReachPeer => "relay-cannot-reach-peer",
+            Self::RelayUnsupported => "relay-unsupported",
             Self::Timeout => "timeout",
             Self::Refused => "refused",
+            Self::Unreachable => "unreachable",
             Self::WrongPeer => "wrong-peer",
             Self::NoAddresses => "no-addresses",
             Self::DeniedLocally => "denied-locally",
@@ -130,7 +154,7 @@ pub fn classify(error: &DialError) -> Vec<(bool, DialFailure)> {
     match error {
         DialError::Transport(attempts) => attempts
             .iter()
-            .map(|(addr, e)| (is_circuit(addr), classify_text(&error_chain(e))))
+            .map(|(addr, e)| (is_circuit(addr), classify_error(e)))
             .collect(),
         DialError::WrongPeerId { address, .. } => {
             vec![(is_circuit(address), DialFailure::WrongPeer)]
@@ -140,6 +164,44 @@ pub fn classify(error: &DialError) -> Vec<(bool, DialFailure)> {
         DialError::LocalPeerId { .. } => vec![(false, DialFailure::Other)],
         DialError::Aborted | DialError::DialPeerConditionFalse(_) => Vec::new(),
     }
+}
+
+/// Walks the error chain for the relay's typed refusal or an I/O error kind;
+/// text matching is only the fallback. `io::Error::source` skips a custom
+/// error's own frame, so its `get_ref` is followed instead.
+fn classify_error(e: &(dyn std::error::Error + 'static)) -> DialFailure {
+    use libp2p::relay::outbound::hop::ConnectError;
+    use std::io::ErrorKind;
+
+    let mut cur: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = cur {
+        if let Some(c) = err.downcast_ref::<ConnectError>() {
+            match c {
+                ConnectError::ResourceLimitExceeded => return DialFailure::RelayRateLimited,
+                ConnectError::NoReservation => return DialFailure::RelayNoReservation,
+                ConnectError::PermissionDenied => return DialFailure::RelayRefused,
+                ConnectError::ConnectionFailed => return DialFailure::RelayCannotReachPeer,
+                ConnectError::Unsupported => return DialFailure::RelayUnsupported,
+                ConnectError::Io(_) | ConnectError::Protocol(_) => {}
+            }
+        }
+        if let Some(io) = err.downcast_ref::<std::io::Error>() {
+            match io.kind() {
+                ErrorKind::TimedOut => return DialFailure::Timeout,
+                ErrorKind::ConnectionRefused => return DialFailure::Refused,
+                ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable => {
+                    return DialFailure::Unreachable
+                }
+                _ => {}
+            }
+            if let Some(inner) = io.get_ref() {
+                cur = Some(inner);
+                continue;
+            }
+        }
+        cur = err.source();
+    }
+    classify_text(&error_chain(e))
 }
 
 fn classify_text(text: &str) -> DialFailure {
@@ -170,9 +232,11 @@ fn error_chain(e: &(dyn std::error::Error + 'static)) -> String {
     out
 }
 
-/// Outbound dial and hole-punch outcomes since the last summary.
+/// Outbound dial and hole-punch outcomes since the last summary. A failed
+/// punch's own dials also count as failed dials; punch counts are dcutr events.
 #[derive(Debug, Default)]
 pub struct DialStats {
+    punch_failures_logged: std::collections::HashSet<PeerId>,
     dials_failed: u64,
     direct: BTreeMap<DialFailure, u64>,
     circuit: BTreeMap<DialFailure, u64>,
@@ -195,6 +259,11 @@ impl DialStats {
             };
             *bucket.entry(why).or_default() += 1;
         }
+    }
+
+    /// Whether this is `peer`'s first failed punch in the window, the one worth an INFO line.
+    pub fn first_punch_failure(&mut self, peer: PeerId) -> bool {
+        self.punch_failures_logged.insert(peer)
     }
 
     pub fn punch(&mut self, ok: bool) {
@@ -288,6 +357,50 @@ mod tests {
     }
 
     #[test]
+    fn classifies_the_relay_error_as_the_transport_stack_wraps_it() {
+        use libp2p::relay::{client::transport::Error, outbound::hop::ConnectError};
+        let circuit = "/ip4/198.51.100.1/tcp/8000/p2p/QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc/p2p-circuit";
+        let wrapped = |c: ConnectError| {
+            (
+                circuit.parse().unwrap(),
+                TransportError::Other(std::io::Error::other(Error::Connect(c))),
+            )
+        };
+        let err = DialError::Transport(vec![
+            wrapped(ConnectError::NoReservation),
+            wrapped(ConnectError::Unsupported),
+            (
+                "/ip4/192.0.2.1/tcp/8080".parse().unwrap(),
+                TransportError::Other(std::io::Error::from(std::io::ErrorKind::ConnectionRefused)),
+            ),
+        ]);
+        assert_eq!(
+            classify(&err),
+            vec![
+                (true, DialFailure::RelayNoReservation),
+                (true, DialFailure::RelayUnsupported),
+                (false, DialFailure::Refused),
+            ]
+        );
+    }
+
+    #[test]
+    fn reservation_denials_name_their_source() {
+        let mut stats = RelayServerStats::default();
+        let ip: IpAddr = "203.0.113.9".parse().unwrap();
+        stats.reservation_denied(
+            StatusCode::ResourceLimitExceeded,
+            PeerId::random(),
+            Some(ip),
+        );
+        let line = stats.take(0);
+        assert!(
+            line.contains("denied=1 (ResourceLimitExceeded:1) top-denied-sources=[203.0.113.9:1]"),
+            "{line}"
+        );
+    }
+
+    #[test]
     fn our_own_aborts_are_not_failures() {
         let mut stats = DialStats::default();
         stats.dial_failed(&DialError::Aborted);
@@ -306,11 +419,16 @@ mod tests {
             );
         }
         stats.circuit_denied(StatusCode::NoReservation, PeerId::random(), None);
+        stats.reservation_denied(
+            StatusCode::ResourceLimitExceeded,
+            PeerId::random(),
+            Some(ip),
+        );
         stats.circuit_accepted();
         stats.reservation_accepted(true);
         let line = stats.take(5);
         assert!(
-            line.contains("reservations held=5 new=0 renewed=1"),
+            line.contains("reservations peers-holding=5 new=0 renewed=1"),
             "{line}"
         );
         assert!(
