@@ -786,6 +786,25 @@ message NetworkUpdate {
     // suppressed as an unchanged snapshot.
     uint32 bootstrap_total = 6;
     uint32 bootstrap_reachable = 7;
+
+    // Hole punching and relay use since the daemon started. Counters only,
+    // so not part of the subscription's change identity: they ride along on
+    // the next update or heartbeat.
+    HolePunchStats hole_punch = 8;
+}
+
+// DCUtR outcomes and relayed connections. A punch is counted per dial, on
+// both sides of it; one that failed before any dial counts once in each of
+// `attempted` and `failed`.
+message HolePunchStats {
+    uint64 attempted = 1;
+    uint64 succeeded = 2;
+    uint64 failed = 3;
+    // Live connections that run over a relay circuit.
+    uint32 relayed_connections = 4;
+    // Relayed connections closed because a confirmed direct one replaced
+    // them, freeing the relay's circuit slot.
+    uint64 relayed_released = 5;
 }
 
 // `kwaainet vpk discover` — VPK storage nodes from the DHT.

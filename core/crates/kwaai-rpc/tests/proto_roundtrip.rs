@@ -17,8 +17,8 @@
 use kwaai_rpc::v1::{
     client_frame, server_frame, ChatMessage, ChatToken, ClientFrame, ConnectedPeer, DhtKnownKey,
     DhtRecord, DhtRecordKind, DhtRecordsReply, DhtRecordsRequest, DhtRole, DhtSubkey, DhtValueView,
-    KadStatus, NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer, SelfStatus, ServerFrame,
-    UpdateReason,
+    HolePunchStats, KadStatus, NetworkRequest, NetworkUpdate, PeerConnKind, RoutingPeer,
+    SelfStatus, ServerFrame, UpdateReason,
 };
 use prost::Message;
 
@@ -285,6 +285,13 @@ fn network_update_roundtrip_all_sections() {
         ],
         bootstrap_total: 2,
         bootstrap_reachable: 1,
+        hole_punch: Some(HolePunchStats {
+            attempted: 5,
+            succeeded: 3,
+            failed: 2,
+            relayed_connections: 1,
+            relayed_released: 3,
+        }),
     };
 
     let decoded = NetworkUpdate::decode(original.encode_to_vec().as_slice())

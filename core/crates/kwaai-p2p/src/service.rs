@@ -41,8 +41,8 @@ use crate::behaviour::{KwaaiBehaviour, KwaaiBehaviourEvent};
 use crate::config::{Ipv6Mode, Ipv6Status, NetworkConfig, IPV6_BUILD};
 use crate::error::{P2PError, P2PResult};
 use crate::handle::{
-    parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
-    KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
+    parse_protocols, Command, Direction, HolePunchStats, InboundStreamSender, InboundUnaryCall,
+    InboundUnarySender, KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
 };
 use crate::learned_addrs::LearnedAddrs;
 use crate::raw_stream;
@@ -68,6 +68,13 @@ const LAST_CONNECTED_CAP: usize = 1024;
 
 /// How often the relay manager retries candidates whose backoff has expired.
 const RELAY_TICK_INTERVAL: Duration = Duration::from_secs(15);
+
+/// How often a relayed connection waiting on in-flight requests is re-checked.
+const RETIRE_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// How long a retiring relayed connection must sit unused before it closes:
+/// a request the peer sent just before its direct path opened is still crossing the relay.
+const RETIRE_QUIET: Duration = Duration::from_secs(2);
 
 /// Upper bound on `pinned_addrs` peers. Explicit dials only, so a memory
 /// bound rather than a policy; oldest pin evicted, same shape as `last_connected`.
@@ -149,6 +156,15 @@ struct Connection {
     /// *despite* both ends being behind NAT, which is the difference between
     /// "no NAT in the way" and "the NAT was traversed".
     dcutr: bool,
+    /// Over a relay circuit, in either direction.
+    relayed: bool,
+    /// Direct, and the peer has answered on it (identify or ping).
+    confirmed: bool,
+    /// Relayed, and a confirmed direct connection to the same peer replaces it;
+    /// closed once nothing is using it. See [`NetworkService::retire_relayed`].
+    retiring: bool,
+    /// While retiring: since when we have seen nothing using it.
+    quiet_since: Option<Instant>,
 }
 
 /// Owns the swarm and drives it. Construct with [`NetworkService::spawn`].
@@ -262,6 +278,8 @@ pub struct NetworkService {
     bootstrap_addrs: Vec<Multiaddr>,
     /// Cadence of the maintenance arm (`NetworkConfig::kad_maintenance_interval`).
     kad_maintenance_interval: Duration,
+    /// Relayed connections closed because a direct one replaced them.
+    relayed_released: u64,
 }
 
 /// A parked DHT lookup.
@@ -307,6 +325,22 @@ enum RoutedRequest {
     Connect {
         reply: oneshot::Sender<P2PResult<PeerId>>,
     },
+}
+
+impl RoutedRequest {
+    /// Whether this is session traffic that should hold the peer's connection open.
+    fn is_application_traffic(&self) -> bool {
+        match self {
+            RoutedRequest::Unary { proto, .. } => is_application_proto(proto),
+            RoutedRequest::RawStream { .. } => true,
+            RoutedRequest::Connect { .. } => false,
+        }
+    }
+}
+
+/// Hivemind DHT calls go to every peer in passing, so they hold no connection open.
+fn is_application_proto(proto: &str) -> bool {
+    !proto.starts_with("DHTProtocol.")
 }
 
 /// How far one burst of parked routed requests has got: dial, then at most one
@@ -654,6 +688,7 @@ impl NetworkService {
             kad_maintenance_interval: config
                 .kad_maintenance_interval
                 .max(MIN_KAD_MAINTENANCE_INTERVAL),
+            relayed_released: 0,
         };
         service.apply_reachability_effects(startup_effects);
         // `force_private` starts Private, so this is what makes reservations
@@ -698,6 +733,10 @@ impl NetworkService {
         let mut relay_tick = tokio::time::interval(RELAY_TICK_INTERVAL);
         relay_tick.tick().await;
 
+        // Closes retiring relayed connections once their last request finishes.
+        let mut retire_tick = tokio::time::interval(RETIRE_CHECK_INTERVAL);
+        retire_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
         loop {
             tokio::select! {
                 command = self.commands.recv() => {
@@ -733,6 +772,7 @@ impl NetworkService {
                     let actions = self.relays.on_tick(Instant::now());
                     self.apply_relay_actions(actions);
                 }
+                _ = retire_tick.tick() => self.retire_relayed(),
             }
         }
         info!("network service stopped");
@@ -762,7 +802,7 @@ impl NetworkService {
                         // and is, so answer success rather than surfacing an
                         // error for a no-op.
                         Err(P2PError::AlreadyConnected) => {
-                            let resolved = peer_id_from_multiaddr(&addr);
+                            let resolved = dest_peer_id(&addr);
                             let _ = reply.send(
                                 resolved.ok_or_else(|| P2PError::DialFailed(addr.to_string())),
                             );
@@ -790,6 +830,7 @@ impl NetworkService {
             }
 
             Command::DisconnectPeer { peer, reply } => {
+                self.swarm.behaviour_mut().keep_alive.release(&peer);
                 let result = match self.swarm.disconnect_peer_id(peer) {
                     Ok(()) => Ok(()),
                     Err(()) => Err(P2PError::PeerNotFound(peer.to_base58())),
@@ -826,6 +867,7 @@ impl NetworkService {
                         .iter()
                         .map(|(p, at)| (*p, at.elapsed()))
                         .collect(),
+                    hole_punch: self.hole_punch_stats(),
                 });
             }
 
@@ -1196,14 +1238,10 @@ impl NetworkService {
             }
         }
 
-        // Only for a plain address naming one peer. A circuit address carries
-        // *two* `/p2p/` components — the relay's and the target's — and
-        // `peer_id_from_multiaddr` returns the first, which is the relay.
-        // Conditioning on that would skip a dial to the target whenever we
-        // happened to be connected to the relay, which is always: holding a
-        // connection to the relay is what makes the circuit dialable at all.
-        let peer = peer_id_from_multiaddr(&addr);
-        let condition_safe = peer.is_some() && !is_circuit(&addr);
+        // Condition on the peer the address reaches — for a circuit the
+        // destination, not the relay: a peer we already reach is not worth a
+        // second circuit.
+        let peer = dest_peer_id(&addr);
 
         // Nothing here touches the port policy. `DialOpts` defaults to
         // `PortUse::Reuse` — `#[default]` on the enum itself — and that default
@@ -1219,9 +1257,15 @@ impl NetworkService {
             // DisconnectedAndNotDialing rather than Disconnected: the latter
             // still permits a second dial while the first is in flight, which
             // is exactly the window a periodic re-dial lands in.
-            Some(peer) if condition_safe => DialOpts::peer_id(peer)
+            // A circuit is the fallback path, so only a live connection
+            // suppresses it, never another dial still in flight.
+            Some(peer) => DialOpts::peer_id(peer)
                 .addresses(vec![addr.clone()])
-                .condition(PeerCondition::DisconnectedAndNotDialing)
+                .condition(if is_circuit(&addr) {
+                    PeerCondition::Disconnected
+                } else {
+                    PeerCondition::DisconnectedAndNotDialing
+                })
                 .build(),
             // `unknown_peer_id().address(..)` and `DialOpts::from(addr)` are
             // the same dial; the builder form just reads consistently above.
@@ -1548,6 +1592,10 @@ impl NetworkService {
             self.dispatch_local(request);
             return;
         }
+        if request.is_application_traffic() {
+            self.swarm.behaviour_mut().keep_alive.lease(peer);
+        }
+        // A live connection always wins: no dial, and no new relay circuit.
         if self.swarm.is_connected(&peer) {
             self.forward_routed(peer, request);
             return;
@@ -2107,7 +2155,11 @@ impl NetworkService {
                 }
                 self.last_connected.insert(peer_id, Instant::now());
 
-                self.connections.entry(peer_id).or_default().insert(
+                let relayed = is_circuit(&addr) || via.is_some();
+                let conns = self.connections.entry(peer_id).or_default();
+                // A circuit opened after a direct path was confirmed is redundant.
+                let retiring = relayed && conns.values().any(|c| c.confirmed);
+                conns.insert(
                     connection_id,
                     Connection {
                         addr,
@@ -2116,6 +2168,10 @@ impl NetworkService {
                         // Set later if dcutr reports success for this id;
                         // the upgrade always follows establishment.
                         dcutr: false,
+                        relayed,
+                        confirmed: false,
+                        retiring,
+                        quiet_since: None,
                     },
                 );
 
@@ -2302,8 +2358,13 @@ impl NetworkService {
         match event {
             KwaaiBehaviourEvent::Identify(event) => self.handle_identify_event(event),
             KwaaiBehaviourEvent::Kad(event) => self.handle_kad_event(event),
-            KwaaiBehaviourEvent::Ping(ping::Event { peer, result, .. }) => match result {
+            KwaaiBehaviourEvent::Ping(ping::Event {
+                peer,
+                connection,
+                result,
+            }) => match result {
                 Ok(rtt) => {
+                    self.confirm_direct(peer, connection);
                     trace!(peer = %peer, ?rtt, "ping");
                     // Last-write-wins: the peer table reports current latency,
                     // not a smoothed average. A failed ping deliberately leaves
@@ -2315,11 +2376,16 @@ impl NetworkService {
                 Err(e) => debug!(peer = %peer, error = %e, "ping failed"),
             },
             KwaaiBehaviourEvent::Unary(unary::Event::InboundRequest { peer, request }) => {
+                if is_application_proto(request.proto.as_ref()) {
+                    self.swarm.behaviour_mut().keep_alive.lease(peer);
+                }
                 self.dispatch_unary(peer, request)
             }
             KwaaiBehaviourEvent::RawStream(raw_stream::Event::InboundStream(inbound)) => {
+                self.swarm.behaviour_mut().keep_alive.lease(inbound.peer);
                 self.dispatch_stream(inbound)
             }
+            KwaaiBehaviourEvent::KeepAlive(never) => match never {},
 
             // ---- NAT traversal -------------------------------------
             KwaaiBehaviourEvent::Autonat(event) => self.handle_autonat_event(event),
@@ -2376,38 +2442,81 @@ impl NetworkService {
                         }
                     }
 
-                    // Retire the circuit the punch just replaced, migrating
-                    // traffic onto the newly punched connection
-                    let circuits: Vec<ConnectionId> = self
-                        .connections
-                        .get(&remote_peer_id)
-                        .map(|conns| {
-                            conns
-                                .iter()
-                                .filter(|(id, c)| {
-                                    // `via` is what identifies an *inbound*
-                                    // relayed connection: its `addr` is a bare
-                                    // `/p2p/<peer>` with no circuit component.
-                                    **id != connection_id
-                                        && (is_circuit(&c.addr) || c.via.is_some())
-                                })
-                                .map(|(id, _)| *id)
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    for id in circuits {
-                        if self.swarm.close_connection(id) {
-                            debug!(
-                                peer = %remote_peer_id, ?id,
-                                "closing the relayed path the punch replaced"
-                            );
-                        }
-                    }
+                    // The relayed path is retired once this connection is
+                    // confirmed; see `confirm_direct`.
                 }
                 Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
             },
 
             KwaaiBehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
+        }
+    }
+
+    /// The peer answered on `connection`. If it is direct, every relayed
+    /// connection to the peer is now redundant: mark them for retirement.
+    fn confirm_direct(&mut self, peer: PeerId, connection: ConnectionId) {
+        let Some(conns) = self.connections.get_mut(&peer) else {
+            return;
+        };
+        match conns.get_mut(&connection) {
+            Some(c) if !c.relayed && !c.confirmed => c.confirmed = true,
+            _ => return,
+        }
+        let mut any = false;
+        for c in conns.values_mut().filter(|c| c.relayed) {
+            c.retiring = true;
+            any = true;
+        }
+        if any {
+            self.retire_relayed();
+        }
+    }
+
+    /// Close every retiring relayed connection that has carried no request or
+    /// stream for [`RETIRE_QUIET`], freeing its slot on the relay.
+    fn retire_relayed(&mut self) {
+        let now = Instant::now();
+        let behaviour = self.swarm.behaviour();
+        let mut idle = Vec::new();
+        for (peer, conns) in &mut self.connections {
+            // The direct path that justified retiring may have died since.
+            if !conns.values().any(|c| c.confirmed) {
+                for c in conns.values_mut() {
+                    c.retiring = false;
+                    c.quiet_since = None;
+                }
+                continue;
+            }
+            for (id, c) in conns.iter_mut().filter(|(_, c)| c.retiring) {
+                if behaviour.unary.busy(*id) || behaviour.raw_stream.busy(*id) {
+                    c.quiet_since = None;
+                } else if c.quiet_since.get_or_insert(now).elapsed().ge(&RETIRE_QUIET) {
+                    c.retiring = false;
+                    idle.push((*peer, *id));
+                }
+            }
+        }
+        for (peer, id) in idle {
+            if self.swarm.close_connection(id) {
+                self.relayed_released += 1;
+                debug!(%peer, ?id, "closing the relayed path a direct connection replaced");
+            }
+        }
+    }
+
+    fn hole_punch_stats(&self) -> HolePunchStats {
+        let punch = self.swarm.behaviour().dcutr.stats();
+        HolePunchStats {
+            attempted: punch.attempted,
+            succeeded: punch.succeeded,
+            failed: punch.failed,
+            relayed_connections: self
+                .connections
+                .values()
+                .flat_map(|m| m.values())
+                .filter(|c| c.relayed)
+                .count(),
+            relayed_released: self.relayed_released,
         }
     }
 
@@ -2652,7 +2761,12 @@ impl NetworkService {
 
     fn handle_identify_event(&mut self, event: identify::Event) {
         match event {
-            identify::Event::Received { peer_id, info, .. } => {
+            identify::Event::Received {
+                peer_id,
+                connection_id,
+                info,
+            } => {
+                self.confirm_direct(peer_id, connection_id);
                 debug!(
                     peer = %peer_id,
                     protocol_version = %info.protocol_version,

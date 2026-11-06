@@ -53,7 +53,7 @@
 use std::time::Duration;
 
 use libp2p::{
-    autonat, connection_limits, dcutr, identify, kad,
+    autonat, connection_limits, identify, kad,
     kad::store::MemoryStore,
     ping, relay,
     swarm::{behaviour::toggle::Toggle, NetworkBehaviour},
@@ -61,7 +61,7 @@ use libp2p::{
 };
 
 use crate::config::{NetworkConfig, KAD_MULTI_PROTOCOL_BUILD};
-use crate::{raw_stream, unary};
+use crate::{keep_alive, punch, raw_stream, unary};
 
 /// The `protocol_version` advertised over identify.
 ///
@@ -90,7 +90,9 @@ pub struct KwaaiBehaviour {
     pub autonat: autonat::Behaviour,
     pub relay_client: relay::client::Behaviour,
     pub relay_server: Toggle<relay::Behaviour>,
-    pub dcutr: dcutr::Behaviour,
+    pub dcutr: punch::Behaviour,
+    /// Holds a peer's connections open while requests to it are flowing.
+    pub keep_alive: keep_alive::Behaviour,
     pub upnp: Toggle<upnp::tokio::Behaviour>,
 }
 
@@ -250,7 +252,9 @@ impl KwaaiBehaviour {
 
         // dcutr has no Config in 0.11 — it acts on relayed connections by
         // itself, so there is nothing to tune and nothing to drive.
-        let dcutr = dcutr::Behaviour::new(local_peer_id);
+        // Wrapped only to count punches.
+        let dcutr = punch::Behaviour::new(local_peer_id);
+        let keep_alive = keep_alive::Behaviour::new(config.active_peer_keep_alive);
 
         // upnp is `Default`-only. Off in tests: SSDP is a LAN broadcast, and CI
         // has no business talking to whatever gateway happens to answer.
@@ -267,6 +271,7 @@ impl KwaaiBehaviour {
             relay_client,
             relay_server,
             dcutr,
+            keep_alive,
             upnp,
         }
     }

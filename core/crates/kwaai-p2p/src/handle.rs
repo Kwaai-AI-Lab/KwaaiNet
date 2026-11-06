@@ -176,6 +176,23 @@ pub struct NetworkSnapshot {
     /// into kad, but an entry here proves a dial actually succeeded. Bounded
     /// recency cache (see the service), not a full history.
     pub last_contact: Vec<(PeerId, Duration)>,
+    /// Hole punching and relay use since the node started.
+    pub hole_punch: HolePunchStats,
+}
+
+/// DCUtR outcomes and relayed connections, as reported in [`NetworkSnapshot`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HolePunchStats {
+    /// Punch dials started, plus punches that failed before any dial.
+    pub attempted: u64,
+    /// Punch dials that produced a direct connection.
+    pub succeeded: u64,
+    /// Punch dials that failed, plus punches that failed before any dial.
+    pub failed: u64,
+    /// Live connections that run over a relay circuit.
+    pub relayed_connections: usize,
+    /// Relayed connections closed because a confirmed direct one replaced them.
+    pub relayed_released: u64,
 }
 
 /// A peer we know at least one dialable address for, as reported by
