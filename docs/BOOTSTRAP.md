@@ -85,6 +85,7 @@ requires them.
 | key | usual value | default | why |
 |---|---|---|---|
 | `enable_upnp` | `false` | `true` | A host at a known, already-reachable address has no gateway to ask, and SSDP multicast from a datacentre subnet is noise. Set it to whatever is true of the host; a bootstrap behind a home router may well want it left on. |
+| `enable_mdns` | `false` | `true` | Local-network discovery, for nodes sharing a home router. A datacentre subnet has no such neighbours, and many (AWS VPCs among them) carry no multicast at all. |
 
 ### Turn off what a bootstrap has no use for
 
@@ -118,6 +119,7 @@ health_monitoring:
 
 # Independent of the above — set to whatever is true of this host.
 enable_upnp: false
+enable_mdns: false
 ```
 
 ## Storage

@@ -157,6 +157,15 @@ impl LearnedAddrs {
         dropped
     }
 
+    /// Drop everything held for `peer`. Returns whether there was anything.
+    pub fn remove(&mut self, peer: &PeerId) -> bool {
+        let existed = self.peers.remove(peer).is_some();
+        if existed {
+            self.order.retain(|p| p != peer);
+        }
+        existed
+    }
+
     /// How many peers the map currently holds.
     pub fn len(&self) -> usize {
         self.peers.len()

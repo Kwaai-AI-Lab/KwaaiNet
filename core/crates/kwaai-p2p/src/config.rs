@@ -181,6 +181,12 @@ pub struct NetworkConfig {
     #[serde(default = "default_true")]
     pub enable_upnp: bool,
 
+    /// Find peers on the local network by mDNS and dial them directly. Only
+    /// discovery: the same-router rule in [`crate::lan`] applies either way.
+    /// On by default; off in [`NetworkConfig::for_tests`], like UPnP.
+    #[serde(default = "default_true")]
+    pub enable_mdns: bool,
+
     /// Declare this node unreachable without waiting for AutoNAT to say so.
     ///
     /// Parity with p2pd's `-forceReachabilityPrivate`: relay reservations start
@@ -450,6 +456,7 @@ impl Default for NetworkConfig {
             relay_max_circuit_duration: default_relay_max_circuit_duration(),
             kad_protocols: default_kad_protocol_field(),
             enable_upnp: true,
+            enable_mdns: true,
             force_private: false,
             external_addr: None,
             require_global_ips: true,
@@ -481,7 +488,7 @@ impl NetworkConfig {
     /// forced into server mode (nothing will confirm an external address on
     /// 127.0.0.1, and a client-mode kad answers no queries).
     ///
-    /// The hop server and UPnP are off. UPnP because SSDP is a LAN broadcast
+    /// The hop server, UPnP and mDNS are off. UPnP and mDNS because both are LAN multicast
     /// that has no business firing from CI; the hop server because most tests
     /// do not need it and the relay tests that do set `relay_server: true`
     /// explicitly, which reads better than every other test silently running a
@@ -494,6 +501,7 @@ impl NetworkConfig {
             dht_server: true,
             relay_server: false,
             enable_upnp: false,
+            enable_mdns: false,
             // Loopback fixtures are tabled through AutoNAT's dial-back, which
             // the strict setting refuses to make to 127.0.0.1.
             require_global_ips: false,

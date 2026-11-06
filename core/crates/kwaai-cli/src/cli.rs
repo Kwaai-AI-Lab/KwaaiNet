@@ -395,7 +395,7 @@ pub enum ConfigAction {
     ///   shard.backend (auto | candle | mlx),
     ///   contribute.storage, contribute.shards, contribute.auto_update,
     ///   public_name, public_ip, announce_addr, no_relay,
-    ///   announce_self, enable_upnp, enable_quic, ipv6, only_global_ips,
+    ///   announce_self, enable_upnp, enable_mdns, enable_quic, ipv6, only_global_ips,
     ///   max_connections,
     ///   announce_online_without_shard,
     ///   decentralized_dht, dht_replication,

@@ -211,6 +211,12 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_enable_upnp")]
     pub enable_upnp: bool,
 
+    /// Find other nodes on the local network by mDNS and connect to them
+    /// directly instead of through a relay. On by default; it opens no ports
+    /// on the router. Applied at startup, so changing it needs a restart.
+    #[serde(default = "default_true")]
+    pub enable_mdns: bool,
+
     /// Listen on and dial QUIC as well as TCP. Off by default: some networks
     /// block or throttle UDP. Bound at startup, so changing it needs a
     /// restart.
@@ -983,6 +989,7 @@ impl Default for KwaaiNetConfig {
             force_private: default_force_private(),
             native_p2p: None,
             enable_upnp: default_enable_upnp(),
+            enable_mdns: true,
             enable_quic: None,
             ipv6: kwaai_p2p::Ipv6Mode::Auto,
             only_global_ips: true,
@@ -1352,6 +1359,7 @@ impl KwaaiNetConfig {
             }
             "announce_self" => self.announce_self = parse_bool(value)?,
             "enable_upnp" => self.enable_upnp = parse_bool(value)?,
+            "enable_mdns" => self.enable_mdns = parse_bool(value)?,
             "enable_quic" => self.enable_quic = Some(parse_bool(value)?),
             "ipv6" => self.ipv6 = value.parse().map_err(|e| anyhow::anyhow!("ipv6: {e}"))?,
             "only_global_ips" => self.only_global_ips = parse_bool(value)?,
@@ -1721,6 +1729,7 @@ mod tests {
             "a config written before announce_self existed must keep announcing"
         );
         assert!(c.enable_upnp, "likewise for enable_upnp");
+        assert!(c.enable_mdns, "and for enable_mdns");
         assert!(
             c.only_global_ips,
             "and a node on the internet must not start announcing reserved space"
@@ -1742,6 +1751,8 @@ mod tests {
             .expect("announce_self is a valid key");
         c.set_key("enable_upnp", "false")
             .expect("enable_upnp is a valid key");
+        c.set_key("enable_mdns", "false")
+            .expect("enable_mdns is a valid key");
         c.set_key("ipv6", "false").expect("ipv6 is a valid key");
         c.set_key("only_global_ips", "false")
             .expect("only_global_ips is a valid key");
@@ -1750,6 +1761,7 @@ mod tests {
         let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
         assert!(!reloaded.announce_self);
         assert!(!reloaded.enable_upnp);
+        assert!(!reloaded.enable_mdns);
         assert_eq!(reloaded.ipv6, kwaai_p2p::Ipv6Mode::Off);
         assert!(!reloaded.only_global_ips);
 

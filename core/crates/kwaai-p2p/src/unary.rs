@@ -66,6 +66,8 @@ use tracing::{debug, trace, warn};
 
 use kwaai_hivemind_dht::wire;
 
+use crate::addresses::is_circuit;
+
 /// A hivemind unary protocol ID: the bare handler name, no leading slash.
 ///
 /// This type exists because `libp2p::StreamProtocol` refuses slash-less names;
@@ -712,13 +714,24 @@ impl fmt::Debug for InboundStreamRequestEvent {
 // Behaviour
 // ============================================================================
 
+/// The connection to send on: the oldest direct one, else the oldest relayed,
+/// so a LAN or hole-punched connection carries traffic once it exists.
+pub(crate) fn preferred_connection(connections: &[(ConnectionId, bool)]) -> ConnectionId {
+    connections
+        .iter()
+        .find(|(_, relayed)| !relayed)
+        .or(connections.first())
+        .map(|(id, _)| *id)
+        .expect("called with at least one connection")
+}
+
 /// The hivemind unary RPC behaviour. See the module docs for the design.
 pub struct Behaviour {
     config: Config,
     /// Inbound protocol registrations, shared with every connection handler.
     inbound_protocols: Arc<RwLock<HashSet<UnaryProtocol>>>,
-    /// Live connections per peer, most-recent last.
-    connected: HashMap<PeerId, Vec<ConnectionId>>,
+    /// Live connections per peer, oldest first, each flagged when relayed.
+    connected: HashMap<PeerId, Vec<(ConnectionId, bool)>>,
     /// Requests to not-yet-connected peers, flushed on establishment, failed
     /// on dial failure.
     pending_outbound_requests: HashMap<PeerId, Vec<OutboundMessage>>,
@@ -788,10 +801,9 @@ impl Behaviour {
 
         match self.connected.get(&peer) {
             Some(connections) if !connections.is_empty() => {
-                // Streams are cheap; the first connection is fine.
                 self.pending_events.push_back(ToSwarm::NotifyHandler {
                     peer_id: peer,
-                    handler: NotifyHandler::One(connections[0]),
+                    handler: NotifyHandler::One(preferred_connection(connections)),
                     event: message,
                 });
             }
@@ -827,16 +839,21 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _local_addr: &Multiaddr,
-        _remote_addr: &Multiaddr,
+        local_addr: &Multiaddr,
+        remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
+        // An inbound circuit names the relay only in our local (listener) address.
+        let relayed = is_circuit(local_addr) || is_circuit(remote_addr);
         let mut handler = Handler::new(
             peer,
             Arc::clone(&self.inbound_protocols),
             self.config.clone(),
         );
         self.preload_new_handler(&mut handler, peer);
-        self.connected.entry(peer).or_default().push(connection_id);
+        self.connected
+            .entry(peer)
+            .or_default()
+            .push((connection_id, relayed));
         Ok(handler)
     }
 
@@ -844,17 +861,21 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _addr: &Multiaddr,
+        addr: &Multiaddr,
         _role_override: Endpoint,
         _port_use: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
+        let relayed = is_circuit(addr);
         let mut handler = Handler::new(
             peer,
             Arc::clone(&self.inbound_protocols),
             self.config.clone(),
         );
         self.preload_new_handler(&mut handler, peer);
-        self.connected.entry(peer).or_default().push(connection_id);
+        self.connected
+            .entry(peer)
+            .or_default()
+            .push((connection_id, relayed));
         Ok(handler)
     }
 
@@ -880,7 +901,7 @@ impl NetworkBehaviour for Behaviour {
         match event {
             FromSwarm::ConnectionClosed(closed) => {
                 if let Some(connections) = self.connected.get_mut(&closed.peer_id) {
-                    connections.retain(|&id| id != closed.connection_id);
+                    connections.retain(|&(id, _)| id != closed.connection_id);
                     if connections.is_empty() {
                         self.connected.remove(&closed.peer_id);
                     }
@@ -947,6 +968,22 @@ impl NetworkBehaviour for Behaviour {
 mod tests {
     use super::*;
     use libp2p::core::upgrade::ProtocolError;
+
+    #[test]
+    fn a_direct_connection_is_preferred_over_an_older_relayed_one() {
+        let (circuit, lan) = (
+            ConnectionId::new_unchecked(1),
+            ConnectionId::new_unchecked(2),
+        );
+        assert_eq!(preferred_connection(&[(circuit, true), (lan, false)]), lan);
+        assert_eq!(preferred_connection(&[(circuit, true)]), circuit);
+        let later = ConnectionId::new_unchecked(3);
+        assert_eq!(
+            preferred_connection(&[(lan, false), (later, false)]),
+            lan,
+            "among direct ones the oldest still wins"
+        );
+    }
 
     /// How multistream-select actually surfaces a refusal: the enum is moved
     /// into an `io::Error` as its inner error (`From<NegotiationError>`).

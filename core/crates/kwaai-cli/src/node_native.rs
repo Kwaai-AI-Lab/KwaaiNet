@@ -173,6 +173,8 @@ impl NativeNode {
             // `-natPortMap`. On by default; off for a node deployed at a known
             // address (a bootstrap node), which has no gateway to ask.
             enable_upnp: config.enable_upnp,
+            // LAN discovery; private addresses it finds stay per-peer dial candidates.
+            enable_mdns: config.enable_mdns,
             enable_quic: config.quic(),
             ipv6: config.ipv6(),
             // `-forceReachabilityPrivate`. Defaults true, so relay reservations
@@ -1035,6 +1037,7 @@ mod tests {
         KwaaiNetConfig {
             announce_self,
             enable_upnp: false,
+            enable_mdns: false,
             port: 0,
             initial_peers: Vec::new(),
             vpk_enabled: false,

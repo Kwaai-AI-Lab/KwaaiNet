@@ -19,6 +19,7 @@ libp2p = { workspace = true }
 kwaai-hivemind-dht = { workspace = true }  # hivemind unary wire codec
 uuid = { workspace = true }                # 16-byte call IDs on the unary wire
 prost = { workspace = true }               # DHT request/response encode/decode
+if-addrs = "0.15"                          # interface subnets for the same-router rule (lan.rs)
 
 # Serialization
 serde = { workspace = true }

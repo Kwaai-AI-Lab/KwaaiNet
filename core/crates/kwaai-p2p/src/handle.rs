@@ -274,6 +274,11 @@ pub enum Command {
     ExternalAddrs {
         reply: oneshot::Sender<Vec<Multiaddr>>,
     },
+    /// The addresses a routed dial to `peer` would try, in order.
+    DialCandidates {
+        peer: PeerId,
+        reply: oneshot::Sender<Vec<Multiaddr>>,
+    },
     /// The protocol list a connected peer advertised over identify.
     PeerProtocols {
         peer: PeerId,
@@ -520,6 +525,13 @@ impl NetworkHandle {
     /// Addresses confirmed reachable from outside (see [`Command::ExternalAddrs`]).
     pub async fn external_addrs(&self) -> P2PResult<Vec<Multiaddr>> {
         self.call(|reply| Command::ExternalAddrs { reply }).await
+    }
+
+    /// The addresses a routed dial to `peer` would try, in order: LAN
+    /// addresses of a peer behind our own router first. Local diagnostics only.
+    pub async fn dial_candidates(&self, peer: PeerId) -> P2PResult<Vec<Multiaddr>> {
+        self.call(|reply| Command::DialCandidates { peer, reply })
+            .await
     }
 
     /// The protocols `peer` advertised in its most recent identify response, or

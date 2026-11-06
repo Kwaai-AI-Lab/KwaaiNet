@@ -55,6 +55,7 @@ use libp2p::PeerId;
 use tokio::sync::oneshot;
 use tracing::{debug, trace};
 
+use crate::addresses::is_circuit;
 use crate::unary::{Protocols, UnaryProtocol};
 
 /// A negotiated raw libp2p stream.
@@ -373,8 +374,8 @@ impl ConnectionHandler for Handler {
 pub struct Behaviour {
     /// Inbound protocol registrations, shared with every connection handler.
     inbound_protocols: Arc<RwLock<HashSet<UnaryProtocol>>>,
-    /// Live connections per peer.
-    connected: HashMap<PeerId, Vec<ConnectionId>>,
+    /// Live connections per peer, oldest first, each flagged when relayed.
+    connected: HashMap<PeerId, Vec<(ConnectionId, bool)>>,
     /// Requests to not-yet-connected peers, flushed on establishment, failed on
     /// dial failure.
     pending_opens: HashMap<PeerId, Vec<OutboundOpen>>,
@@ -454,7 +455,7 @@ impl Behaviour {
             Some(connections) if !connections.is_empty() => {
                 self.pending_events.push_back(ToSwarm::NotifyHandler {
                     peer_id: peer,
-                    handler: NotifyHandler::One(connections[0]),
+                    handler: NotifyHandler::One(crate::unary::preferred_connection(connections)),
                     event: open,
                 });
             }
@@ -490,12 +491,17 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _local_addr: &Multiaddr,
-        _remote_addr: &Multiaddr,
+        local_addr: &Multiaddr,
+        remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
+        // An inbound circuit names the relay only in our local (listener) address.
+        let relayed = is_circuit(local_addr) || is_circuit(remote_addr);
         let mut handler = Handler::new(Arc::clone(&self.inbound_protocols));
         self.preload_new_handler(&mut handler, peer);
-        self.connected.entry(peer).or_default().push(connection_id);
+        self.connected
+            .entry(peer)
+            .or_default()
+            .push((connection_id, relayed));
         Ok(handler)
     }
 
@@ -503,13 +509,17 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _addr: &Multiaddr,
+        addr: &Multiaddr,
         _role_override: Endpoint,
         _port_use: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
+        let relayed = is_circuit(addr);
         let mut handler = Handler::new(Arc::clone(&self.inbound_protocols));
         self.preload_new_handler(&mut handler, peer);
-        self.connected.entry(peer).or_default().push(connection_id);
+        self.connected
+            .entry(peer)
+            .or_default()
+            .push((connection_id, relayed));
         Ok(handler)
     }
 
@@ -535,7 +545,7 @@ impl NetworkBehaviour for Behaviour {
         match event {
             FromSwarm::ConnectionClosed(closed) => {
                 if let Some(connections) = self.connected.get_mut(&closed.peer_id) {
-                    connections.retain(|&id| id != closed.connection_id);
+                    connections.retain(|&(id, _)| id != closed.connection_id);
                     if connections.is_empty() {
                         self.connected.remove(&closed.peer_id);
                     }
