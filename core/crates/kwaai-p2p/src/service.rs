@@ -216,6 +216,10 @@ pub struct NetworkService {
     /// NATed peer's circuit through us into the k-bucket; it is dropped
     /// again when the last reservation ends (`drop_own_circuits`).
     relay_reservations: RelayReservations,
+    /// Relay-server activity since the last summary.
+    relay_stats: crate::diag::RelayServerStats,
+    /// Outbound dial and hole-punch outcomes since the last summary.
+    dial_stats: crate::diag::DialStats,
     /// Most recent ping round-trip time per peer. Sampled: overwritten on every
     /// ping event rather than accumulated, so this is "latency now", not an
     /// average. Same lifetime as `peer_protocols` — dropped with the last
@@ -628,6 +632,8 @@ impl NetworkService {
             dials_quic: config.enable_quic,
             peer_protocols: HashMap::new(),
             relay_reservations: RelayReservations::default(),
+            relay_stats: Default::default(),
+            dial_stats: Default::default(),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
             unary_handlers: HashMap::new(),
@@ -698,6 +704,9 @@ impl NetworkService {
         let mut relay_tick = tokio::time::interval(RELAY_TICK_INTERVAL);
         relay_tick.tick().await;
 
+        let mut summary_tick = tokio::time::interval(crate::diag::SUMMARY_INTERVAL);
+        summary_tick.tick().await;
+
         loop {
             tokio::select! {
                 command = self.commands.recv() => {
@@ -733,6 +742,7 @@ impl NetworkService {
                     let actions = self.relays.on_tick(Instant::now());
                     self.apply_relay_actions(actions);
                 }
+                _ = summary_tick.tick() => self.log_summaries(),
             }
         }
         info!("network service stopped");
@@ -2182,6 +2192,7 @@ impl NetworkService {
                 peer_id,
                 error,
             } => {
+                self.dial_stats.dial_failed(&error);
                 // Must remove the pending entry here or `connect_peer` hangs.
                 if let Some(reply) = self.pending_dials.remove(&connection_id) {
                     let _ = reply.send(Err(dial_error(&error, peer_id)));
@@ -2344,17 +2355,51 @@ impl NetworkService {
                     renewed,
                 } => {
                     self.relay_reservations.granted(src_peer_id, renewed);
+                    self.relay_stats.reservation_accepted(renewed);
                     trace!(peer = %src_peer_id, renewed, "relay reservation granted");
                 }
                 // Both are per connection: the peer may still hold one on
                 // another, and only the count knows the difference.
                 relay::Event::ReservationClosed { src_peer_id }
                 | relay::Event::ReservationTimedOut { src_peer_id } => {
+                    self.relay_stats.reservation_ended();
                     let still_held = self.relay_reservations.released(&src_peer_id);
                     if !still_held {
                         self.drop_own_circuits(src_peer_id);
                     }
                     trace!(peer = %src_peer_id, still_held, "relay reservation ended");
+                }
+                relay::Event::ReservationReqDenied {
+                    src_peer_id,
+                    status,
+                } => {
+                    self.relay_stats.reservation_denied(&status);
+                    debug!(peer = %src_peer_id, ?status, "relay reservation denied");
+                }
+                relay::Event::CircuitReqAccepted {
+                    src_peer_id,
+                    dst_peer_id,
+                } => {
+                    self.relay_stats.circuit_accepted();
+                    trace!(src = %src_peer_id, dst = %dst_peer_id, "relay circuit opened");
+                }
+                relay::Event::CircuitReqDenied {
+                    src_peer_id,
+                    dst_peer_id,
+                    status,
+                } => {
+                    let src_ip = self.peer_ip(&src_peer_id);
+                    self.relay_stats
+                        .circuit_denied(&status, src_peer_id, src_ip);
+                    debug!(src = %src_peer_id, dst = %dst_peer_id, ?status, "relay circuit denied");
+                }
+                relay::Event::CircuitClosed {
+                    src_peer_id,
+                    dst_peer_id,
+                    ..
+                } => {
+                    self.relay_stats.circuit_closed();
+                    trace!(src = %src_peer_id, dst = %dst_peer_id, "relay circuit closed");
                 }
                 other => trace!(?other, "relay hop server event"),
             },
@@ -2367,6 +2412,7 @@ impl NetworkService {
                 // direct one — the whole point of holding the circuit.
                 Ok(connection_id) => {
                     info!(peer = %remote_peer_id, ?connection_id, "dcutr hole punch succeeded");
+                    self.dial_stats.punch(true);
                     // Mark the specific connection, not the peer: a peer can
                     // hold both an upgraded connection and a plain one, and
                     // only the former was earned by DCUtR.
@@ -2404,7 +2450,16 @@ impl NetworkService {
                         }
                     }
                 }
-                Err(e) => debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed"),
+                Err(e) => {
+                    self.dial_stats.punch(false);
+                    let direct: Vec<String> = self
+                        .dial_candidates(&remote_peer_id)
+                        .iter()
+                        .filter(|a| !is_circuit(a))
+                        .map(ToString::to_string)
+                        .collect();
+                    info!(peer = %remote_peer_id, error = %e, known_direct = ?direct, "dcutr hole punch failed");
+                }
             },
 
             KwaaiBehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
@@ -2464,6 +2519,26 @@ impl NetworkService {
             );
             true
         });
+    }
+
+    /// One INFO line each for dial outcomes and, when serving as a relay, relay activity.
+    fn log_summaries(&mut self) {
+        info!(summary = %self.dial_stats.take(), "network summary (last 5 min)");
+        if self.swarm.behaviour().relay_server.is_enabled() {
+            let held = self.relay_reservations.held.len();
+            info!(summary = %self.relay_stats.take(held), "relay server summary (last 5 min)");
+        }
+    }
+
+    /// The IP a connected peer reaches us from, if any connection carries one.
+    fn peer_ip(&self, peer: &PeerId) -> Option<std::net::IpAddr> {
+        self.connections.get(peer)?.values().find_map(|c| {
+            c.addr.iter().find_map(|p| match p {
+                libp2p::multiaddr::Protocol::Ip4(a) => Some(a.into()),
+                libp2p::multiaddr::Protocol::Ip6(a) => Some(a.into()),
+                _ => None,
+            })
+        })
     }
 
     /// Turn relay-seeking on or off to match the current reachability verdict.
