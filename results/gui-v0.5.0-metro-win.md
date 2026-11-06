@@ -249,6 +249,57 @@ PS> kwaainet status
   That shows the node does not depend on the GUI process; it does **not** show
   that the GUI's Quit leaves it running.
 
+### 4b. Tray-quit retry with Reza (16:29–16:40) — FAIL: no tray icon
+
+Reza retried the tray quit himself. Node before: PID 5612 (`run-node
+--shard`, from `.cargo\bin`, started 14:00:45 at restore), shard 20752,
+storage 12012. GUI launched by the session at 16:29:03 (PID 20816).
+
+Reza's answers, word for word:
+
+1. "there is no quit option when I right click the tray icon"
+2. "I clicked the X of the thumbnail that appears when I rightclicked the tray
+   icon" — this was the taskbar button's window preview, not a tray menu.
+   Both GUI processes were still alive afterwards (the window had hidden).
+3. "I didnt find a KwaaiNet logo. Is the GUI running? Let's try again."
+4. After a clean relaunch (one GUI, PID 13064) and with the notification-area
+   overflow open: "no icon."
+5. "I see only one in the task manager" (one `kwaainet_gui`, PID 13064).
+
+What the session observed:
+
+- **No KwaaiNet tray icon, in the taskbar or in the overflow.** Screenshot of
+  the open overflow at 16:36 shows seven icons (AnyDesk, Windows Security,
+  NVIDIA, volume, a USB device, two others), none of them KwaaiNet.
+- So **Quit KwaaiNet is unreachable on Windows.** The menu exists in code
+  (`lib/src/tray/tray.dart` → `_rebuildMenu`: status line, Start service,
+  Stop service, Open KwaaiNet…, Quit KwaaiNet), but no icon is ever shown to
+  open it.
+- **Two GUIs can run at once.** At 16:29:30, 27 s after the session's launch,
+  a second `kwaainet_gui` (PID 18720, parent `explorer.exe`) started from the
+  same exe. Both ran side by side with no window; neither prevented the other.
+  The session ended both before the clean retry.
+- The GUI did write its tray image: `AppData\Local\Temp\tray_kwaai_logo.png`,
+  1410 bytes, 16:29:33.
+- Node PID 5612 and its shard and storage children ran throughout; no GUI
+  action touched them.
+
+**Likely cause, from reading the code (not verified on this machine):**
+`tray.dart` → `init()` hands the tray a PNG on every platform:
+
+```dart
+_iconPath = await _materializeIcon('assets/tray_kwaai_logo@2x.png', 'tray_kwaai_logo.png');
+await trayManager.setIcon(_iconPath!, isTemplate: true);
+```
+
+`tray_manager` on Windows expects an `.ico`, and a PNG fails silently. The
+comment above the call speaks only of the macOS menu bar. The repo already
+has `windows/runner/resources/app_icon.ico`.
+
+**Consequence:** "Keep running in tray when window is closed" is on by default,
+so on Windows the window's X leaves an invisible GUI with no way back and no
+Quit, short of Task Manager; launching again starts a second copy.
+
 ## 5. Relaunch and attach again
 
 Relaunched 13:57:51; after 30 s:
@@ -426,18 +477,23 @@ not to the node.
 - **3. Every tab: PARTIAL — 👀 not answered.** Chat PASS: two answers over the
   authenticated channel, no auth error in logs, GPU used in bursts. Peers,
   DHT, Sharding/map, Settings and RAG were not checked tab by tab.
-- **4. Quit the GUI: NOT TESTED** (tray quit). Killing the GUI process left the
+- **4. Quit the GUI: FAIL.** No tray icon on Windows, so there is no tray menu
+  and no Quit (section 4b, Reza: "no icon."). Killing the GUI process left the
   node running with the same PID.
-- **5. Relaunch: PASS on processes; tray quit NOT TESTED.** Attached to the
+- **5. Relaunch: PASS on processes; tray quit impossible (see 4).** Attached to the
   same PID again; no state left behind.
 - **6. No node running: PARTIAL.** GUI started the bundled node (PASS); token
   ACL correct (PASS); no orphan after stop (PASS, but stopped via CLI, not the
   GUI). GPU **not exercised**: the GUI starts the node without a shard.
-  Chat, "stop from GUI" and tray quit NOT TESTED.
+  Chat and "stop from GUI" NOT TESTED; tray quit impossible (see 4).
 - **Restore: PASS.**
 
 ## Surprising, even where it passed
 
+0. **No tray icon on Windows** (section 4b). With the default "keep running in
+   tray", closing the window strands an invisible GUI with no Quit; launching
+   again runs a second copy, since nothing enforces a single instance. Likely
+   a PNG handed to `tray_manager`, which wants an `.ico` on Windows.
 1. **The GUI reports itself as 0.4.0.** Settings → Updates: "KwaaiNet 0.4.0 is
    up to date." This build is meant to become v0.5.0, so its version string
    has not been bumped. With "Download updates automatically" on, it is worth
