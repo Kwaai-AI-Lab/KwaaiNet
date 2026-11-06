@@ -46,10 +46,9 @@ pub const KWAAI_BOOTSTRAP_SERVERS_DNS: &[&str] = &[
 ];
 
 /// Whether a node listens on and dials QUIC unless its config says otherwise.
-/// The single source for both crates' defaults, so they cannot drift. Off:
-/// some networks block or throttle UDP, and the installed base has the key
-/// written as `false` (#212), so a flip here alone would reach no one.
-pub const DEFAULT_ENABLE_QUIC: bool = false;
+/// The single source for both crates' defaults. On: hole punching rarely
+/// succeeds over TCP, and TCP stays alongside for networks that block UDP.
+pub const DEFAULT_ENABLE_QUIC: bool = true;
 
 /// Configuration for the P2P network
 #[derive(Debug, Clone, Serialize, Deserialize)]
