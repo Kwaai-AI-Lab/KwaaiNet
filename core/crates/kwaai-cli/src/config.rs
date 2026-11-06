@@ -458,6 +458,10 @@ impl std::str::FromStr for ShardBackend {
 pub struct ShardConfig {
     #[serde(default)]
     pub backend: ShardBackend,
+    /// Serve synthetic blocks instead of a model (bed routing tests).
+    #[cfg(feature = "synthetic")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthetic: Option<crate::synthetic::SyntheticConfig>,
 }
 
 fn shard_config_is_default(s: &ShardConfig) -> bool {
@@ -1264,6 +1268,10 @@ impl KwaaiNetConfig {
     /// snapshot is available locally. Falls back to a name-based heuristic
     /// (32 / 40 / 80) when the model has not been downloaded yet.
     pub fn model_total_blocks(&self) -> i32 {
+        #[cfg(feature = "synthetic")]
+        if let Some(sc) = &self.shard.synthetic {
+            return sc.total_blocks as i32;
+        }
         if let Ok(model_dir) = crate::hf::resolve_snapshot(&self.model) {
             let config_path = model_dir.join("config.json");
             if let Ok(s) = std::fs::read_to_string(&config_path) {

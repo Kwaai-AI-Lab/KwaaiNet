@@ -155,5 +155,8 @@ rag = ["kwaai-rag", "uuid", "dep:tempfile"]
 # package — hence a feature, off by default, never enabled by a manifest.
 #   cargo build --release -p kwaainet --features kad-multi-protocol
 kad-multi-protocol = ["kwaai-p2p/kad-multi-protocol"]
+# Synthetic shards: weightless block servers whose payloads every hop and the
+# originator validate. For routing tests on the bed; never in a release build.
+synthetic = []
 
 
