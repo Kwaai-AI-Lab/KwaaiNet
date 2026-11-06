@@ -87,3 +87,88 @@ async fn an_explicit_request_still_dials_a_backed_off_peer_once() {
     .expect("an explicit request with a good address must get its dial");
     assert_eq!(connected, b_id);
 }
+
+async fn connected(handle: &NetworkHandle, peer: PeerId) -> bool {
+    handle
+        .list_peers()
+        .await
+        .expect("list_peers")
+        .iter()
+        .any(|p| p.peer_id == peer)
+}
+
+/// Whether `handle` holds a connection *it* dialed to `peer`.
+async fn dialed_out(handle: &NetworkHandle, peer: PeerId) -> bool {
+    handle
+        .list_peers()
+        .await
+        .expect("list_peers")
+        .iter()
+        .any(|p| p.peer_id == peer && p.direction == kwaai_p2p::Direction::Outbound)
+}
+
+/// Put `peer` in A's backoff with a dial to a port nothing listens on, then
+/// file its real address in A's routing table for kad to find.
+async fn back_off_then_table(a: &NetworkHandle, peer: PeerId, real: Multiaddr) {
+    within(
+        "the failing connect",
+        a.connect_peer_with_addrs(peer, vec!["/ip4/127.0.0.1/tcp/1".parse().unwrap()]),
+    )
+    .await
+    .expect_err("nothing listens on port 1");
+    a.add_kad_address(peer, real)
+        .await
+        .expect("seed the real address");
+}
+
+#[tokio::test]
+async fn a_walk_may_not_dial_a_backed_off_peer_but_the_service_may() {
+    let (a, _a_task, _) = spawn_isolated();
+    let (b, _b_task, b_id) = spawn_isolated();
+    let b_addr = first_listen_addr(&b).await;
+    back_off_then_table(&a, b_id, b_addr.clone()).await;
+
+    // kad's walk would dial B from the routing table; the gate must refuse it.
+    a.bootstrap(vec![]).await.expect("bootstrap starts");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !dialed_out(&a, b_id).await,
+        "a walk-originated dial reached a peer in backoff"
+    );
+
+    let explicit = format!("{b_addr}/p2p/{b_id}");
+    within("the explicit connect", a.connect_peer(&explicit))
+        .await
+        .expect("a service dial is exempt from the backoff");
+}
+
+#[tokio::test]
+async fn an_inbound_connection_clears_the_backoff() {
+    let (a, _a_task, a_id) = spawn_isolated();
+    let (b, _b_task, b_id) = spawn_isolated();
+    let a_addr = first_listen_addr(&a).await;
+    let b_addr = first_listen_addr(&b).await;
+    back_off_then_table(&a, b_id, b_addr).await;
+
+    // B reaches A on its own, then leaves.
+    within("B dials A", b.connect_peer(&format!("{a_addr}/p2p/{a_id}")))
+        .await
+        .expect("B reaches A");
+    b.disconnect_peer(a_id).await.expect("disconnect");
+    let deadline = tokio::time::Instant::now() + TEST_TIMEOUT;
+    while connected(&a, b_id).await {
+        assert!(tokio::time::Instant::now() < deadline, "close never landed");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // Proven alive, so kad's walk may dial B again.
+    a.bootstrap(vec![]).await.expect("bootstrap starts");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !dialed_out(&a, b_id).await {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the walk was still refused after B connected in"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}

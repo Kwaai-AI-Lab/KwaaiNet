@@ -1229,7 +1229,8 @@ impl NetworkService {
             _ => DialOpts::unknown_peer_id().address(addr.clone()).build(),
         };
         let connection_id = opts.connection_id();
-        match self.dial_exempt(opts) {
+        let relays = circuit_relay(&addr).into_iter().collect();
+        match self.dial_exempt(opts, relays) {
             Ok(()) => {
                 debug!(%addr, ?connection_id, "dialing");
                 Ok(connection_id)
@@ -1542,11 +1543,22 @@ impl NetworkService {
     }
 
     /// Dial past the backoff gate: the service's own dials carry their own policy.
-    fn dial_exempt(&mut self, opts: libp2p::swarm::dial_opts::DialOpts) -> Result<(), DialError> {
+    /// `relays` stay dialable until the dial resolves, for the relay client's hop dial.
+    fn dial_exempt(
+        &mut self,
+        opts: libp2p::swarm::dial_opts::DialOpts,
+        relays: Vec<PeerId>,
+    ) -> Result<(), DialError> {
         let id = opts.connection_id();
-        self.swarm.behaviour_mut().dial_backoff.exempt(id);
+        let gate = &mut self.swarm.behaviour_mut().dial_backoff;
+        gate.exempt(id);
+        gate.hold_relays(id, relays);
         let result = self.swarm.dial(opts);
-        self.swarm.behaviour_mut().dial_backoff.clear_exempt(id);
+        let gate = &mut self.swarm.behaviour_mut().dial_backoff;
+        gate.clear_exempt(id);
+        if result.is_err() {
+            gate.release_relays(id);
+        }
         result
     }
 
@@ -1572,8 +1584,12 @@ impl NetworkService {
             return;
         }
 
-        // In backoff: one dial on known addresses, with no lookup or retry behind it.
-        if let Some(remaining) = self.swarm.behaviour().dial_backoff.remaining(&peer) {
+        // In backoff: one dial on known addresses, and a lookup only if this
+        // window has not had one (a peer that moved relays must stay findable).
+        let backoff = self.swarm.behaviour().dial_backoff.remaining(&peer);
+        let lookup_ok =
+            backoff.is_none() || self.swarm.behaviour_mut().dial_backoff.take_lookup(&peer);
+        if let (Some(remaining), false) = (backoff, lookup_ok) {
             let attempt = self.routed_attempts.entry(peer).or_default();
             attempt.lookup_spent = true;
             attempt.learned_retry_spent = true;
@@ -1659,6 +1675,7 @@ impl NetworkService {
             .map(|a| a.with(libp2p::multiaddr::Protocol::P2p(peer)))
             .collect();
         debug!(%peer, seeded = addrs.len(), "routed request — dialing");
+        let relays = addrs_relays(&addrs);
 
         let opts = DialOpts::peer_id(peer)
             .addresses(addrs)
@@ -1666,7 +1683,7 @@ impl NetworkService {
             .build();
         let connection_id = opts.connection_id();
 
-        let dial = match self.dial_exempt(opts) {
+        let dial = match self.dial_exempt(opts, relays) {
             Ok(()) => RoutedDial::Ours(connection_id),
             Err(DialError::DialPeerConditionFalse(_)) => RoutedDial::Shared,
             Err(e) => {
@@ -1806,7 +1823,8 @@ impl NetworkService {
                 }
                 let opts = DialOpts::peer_id(peer).build();
                 let connection_id = opts.connection_id();
-                match self.dial_exempt(opts) {
+                let relays = addrs_relays(&self.dial_candidates(&peer));
+                match self.dial_exempt(opts, relays) {
                     Ok(()) => {
                         self.pending_dials.insert(connection_id, reply);
                     }
@@ -1836,15 +1854,18 @@ impl NetworkService {
         }
 
         // Not connected after the walk: dial once more from whatever it learned.
+        let found_nothing = self.dial_candidates(&peer).is_empty();
         if self.dial_routed(peer) {
             return;
         }
 
         debug!(%peer, "find_peer produced no usable addresses — failing parked requests");
-        self.swarm
-            .behaviour_mut()
-            .dial_backoff
-            .record_failure(peer, crate::dial_backoff::Verdict::Failed);
+        if found_nothing {
+            self.swarm
+                .behaviour_mut()
+                .dial_backoff
+                .record_lookup_failure(peer);
+        }
         self.fail_routed(
             peer,
             format!("{peer}: peer not found in DHT (no addresses)"),
@@ -2872,6 +2893,11 @@ impl NetworkService {
             other => trace!(?other, "kad event"),
         }
     }
+}
+
+/// The relays named in `addrs`' circuit addresses.
+fn addrs_relays(addrs: &[Multiaddr]) -> Vec<PeerId> {
+    addrs.iter().filter_map(circuit_relay).collect()
 }
 
 /// The addresses a failed dial actually tried, bare, or nothing.

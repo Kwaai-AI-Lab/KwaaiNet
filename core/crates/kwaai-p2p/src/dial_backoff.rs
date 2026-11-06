@@ -38,19 +38,51 @@ pub enum Verdict {
     Gone,
 }
 
-/// Classify a dial error.
+/// Classify a dial error. Gone only if every address said so; relay-side refusals
+/// and wrong-peer answers are about the relay or the address, not the peer.
 pub fn classify(error: &DialError) -> Verdict {
-    match error {
-        DialError::Transport(_) => {
-            let gone = libp2p::relay::outbound::hop::ConnectError::NoReservation.to_string();
-            if error.to_string().contains(&gone) {
-                Verdict::Gone
-            } else {
-                Verdict::Failed
-            }
-        }
-        DialError::WrongPeerId { .. } => Verdict::Failed,
-        _ => Verdict::Ignore,
+    let DialError::Transport(attempts) = error else {
+        return Verdict::Ignore;
+    };
+    let verdicts: Vec<Verdict> = attempts
+        .iter()
+        .map(|(_, e)| classify_text(&chain_text(e)))
+        .collect();
+    if !verdicts.is_empty() && verdicts.iter().all(|v| *v == Verdict::Gone) {
+        Verdict::Gone
+    } else if verdicts.contains(&Verdict::Failed) {
+        Verdict::Failed
+    } else {
+        Verdict::Ignore
+    }
+}
+
+/// One address's error, with its whole source chain.
+fn chain_text(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(e) = source {
+        text.push_str(": ");
+        text.push_str(&e.to_string());
+        source = e.source();
+    }
+    text
+}
+
+fn classify_text(text: &str) -> Verdict {
+    use libp2p::relay::{client::transport::Error, outbound::hop::ConnectError};
+    if text.contains(&ConnectError::NoReservation.to_string()) {
+        return Verdict::Gone;
+    }
+    let not_the_peer = [
+        ConnectError::ResourceLimitExceeded.to_string(),
+        ConnectError::PermissionDenied.to_string(),
+        Error::ResponseFromBehaviourCanceled(futures::channel::oneshot::Canceled).to_string(),
+    ];
+    if not_the_peer.iter().any(|t| text.contains(t.as_str())) {
+        Verdict::Ignore
+    } else {
+        Verdict::Failed
     }
 }
 
@@ -58,6 +90,8 @@ pub fn classify(error: &DialError) -> Verdict {
 struct Entry {
     failures: u32,
     until: Instant,
+    /// Whether this window's one DHT lookup has been used.
+    lookup_spent: bool,
 }
 
 /// The backoff bookkeeping, with time passed in so it can be tested.
@@ -80,13 +114,28 @@ impl DialBackoff {
         (now < until).then(|| until - now)
     }
 
-    /// Count a failure for `peer`, returning the backoff it now serves.
-    pub fn record_failure(&mut self, peer: PeerId, verdict: Verdict, now: Instant) -> Duration {
+    /// Count a failure for `peer`, returning the backoff it now serves. A failure
+    /// inside a running window does not extend it; `lookup` marks the window's lookup used.
+    pub fn record_failure(
+        &mut self,
+        peer: PeerId,
+        verdict: Verdict,
+        lookup: bool,
+        now: Instant,
+    ) -> Duration {
         if verdict == Verdict::Ignore || self.connected.contains_key(&peer) {
             return Duration::ZERO;
         }
+        if let Some(entry) = self.entries.get_mut(&peer).filter(|e| now < e.until) {
+            entry.lookup_spent |= lookup;
+            return entry.until - now;
+        }
         let seen = self.seen.contains_key(&peer);
-        let failures = self.entries.get(&peer).map_or(0, |e| e.failures) + 1;
+        // A peer quiet for a full cap past its last window starts the schedule over.
+        let failures = match self.entries.get(&peer) {
+            Some(e) if now < e.until + MAX_BACKOFF => e.failures + 1,
+            _ => 1,
+        };
         let delay = backoff_for(failures, seen, verdict == Verdict::Gone);
         self.prune(now);
         self.entries.insert(
@@ -94,9 +143,21 @@ impl DialBackoff {
             Entry {
                 failures,
                 until: now + delay,
+                lookup_spent: lookup,
             },
         );
         delay
+    }
+
+    /// Take the current window's one DHT lookup, if it is still unused.
+    pub fn take_lookup(&mut self, peer: &PeerId, now: Instant) -> bool {
+        match self.entries.get_mut(peer) {
+            Some(e) if now < e.until && !e.lookup_spent => {
+                e.lookup_spent = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// A connection to `peer` was established: it is alive, forget its failures.
@@ -183,6 +244,8 @@ impl std::error::Error for InBackoff {}
 pub struct Behaviour {
     state: DialBackoff,
     exempt: HashSet<ConnectionId>,
+    /// Relays an exempt circuit dial needs, held until that dial resolves.
+    relay_holds: HashMap<ConnectionId, Vec<PeerId>>,
     /// Targets of our own lookups: the walk must be free to dial the peer it seeks.
     sought: HashMap<PeerId, usize>,
 }
@@ -192,6 +255,25 @@ impl Behaviour {
     /// [`Self::clear_exempt`] once `Swarm::dial` returns.
     pub fn exempt(&mut self, id: ConnectionId) {
         self.exempt.insert(id);
+    }
+
+    /// Let the relay client's own dials to `relays` through until dial `id` resolves.
+    pub fn hold_relays(&mut self, id: ConnectionId, relays: Vec<PeerId>) {
+        if relays.is_empty() {
+            return;
+        }
+        for relay in &relays {
+            self.seek(*relay);
+        }
+        self.release_relays(id);
+        self.relay_holds.insert(id, relays);
+    }
+
+    /// End the hold for dial `id`; idempotent.
+    pub fn release_relays(&mut self, id: ConnectionId) {
+        for relay in self.relay_holds.remove(&id).unwrap_or_default() {
+            self.unseek(&relay);
+        }
     }
 
     pub fn clear_exempt(&mut self, id: ConnectionId) {
@@ -217,9 +299,15 @@ impl Behaviour {
         self.state.remaining(peer, Instant::now())
     }
 
-    /// Count a failure that never reached a dial (e.g. a lookup found nothing).
-    pub fn record_failure(&mut self, peer: PeerId, verdict: Verdict) -> Duration {
-        self.state.record_failure(peer, verdict, Instant::now())
+    /// Count a lookup for `peer` that found no address to dial.
+    pub fn record_lookup_failure(&mut self, peer: PeerId) -> Duration {
+        self.state
+            .record_failure(peer, Verdict::Failed, true, Instant::now())
+    }
+
+    /// See [`DialBackoff::take_lookup`].
+    pub fn take_lookup(&mut self, peer: &PeerId) -> bool {
+        self.state.take_lookup(peer, Instant::now())
     }
 }
 
@@ -273,7 +361,12 @@ impl NetworkBehaviour for Behaviour {
     fn on_swarm_event(&mut self, event: FromSwarm) {
         let now = Instant::now();
         match event {
-            FromSwarm::ConnectionEstablished(ConnectionEstablished { peer_id, .. }) => {
+            FromSwarm::ConnectionEstablished(ConnectionEstablished {
+                peer_id,
+                connection_id,
+                ..
+            }) => {
+                self.release_relays(connection_id);
                 self.state.on_connected(peer_id, now);
             }
             FromSwarm::ConnectionClosed(ConnectionClosed {
@@ -282,13 +375,16 @@ impl NetworkBehaviour for Behaviour {
                 ..
             }) => self.state.on_closed(&peer_id, remaining_established),
             FromSwarm::DialFailure(DialFailure {
-                peer_id: Some(peer),
+                peer_id,
                 error,
                 connection_id,
             }) => {
-                self.exempt.remove(&connection_id);
+                self.release_relays(connection_id);
+                let Some(peer) = peer_id else {
+                    return;
+                };
                 let verdict = classify(error);
-                let delay = self.state.record_failure(peer, verdict, now);
+                let delay = self.state.record_failure(peer, verdict, false, now);
                 if !delay.is_zero() {
                     tracing::debug!(%peer, ?verdict, secs = delay.as_secs(), "dial failed — backing off");
                 }
@@ -315,18 +411,33 @@ impl NetworkBehaviour for Behaviour {
 mod tests {
     use super::*;
     use libp2p::core::transport::TransportError;
+    use libp2p::relay::{client::transport::Error as RelayError, outbound::hop::ConnectError};
 
     fn peer() -> PeerId {
         PeerId::random()
     }
 
-    fn transport_error(inner: Box<dyn std::error::Error + Send + Sync>) -> DialError {
-        let addr: Multiaddr = "/ip4/198.51.100.1/tcp/8000".parse().unwrap();
-        DialError::Transport(vec![(
-            addr,
+    fn attempt(
+        addr: &str,
+        inner: Box<dyn std::error::Error + Send + Sync>,
+    ) -> (Multiaddr, TransportError<std::io::Error>) {
+        (
+            addr.parse().unwrap(),
             TransportError::Other(std::io::Error::other(inner)),
-        )])
+        )
     }
+
+    fn relay(e: ConnectError) -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(RelayError::Connect(e))
+    }
+
+    fn refused() -> Box<dyn std::error::Error + Send + Sync> {
+        Box::new(std::io::Error::from(std::io::ErrorKind::ConnectionRefused))
+    }
+
+    const CIRCUIT_A: &str = "/ip4/198.51.100.1/tcp/8000/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN/p2p-circuit";
+    const CIRCUIT_B: &str = "/ip4/198.51.100.2/tcp/8000/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN/p2p-circuit";
+    const DIRECT: &str = "/ip4/198.51.100.3/tcp/8000";
 
     #[test]
     fn schedule_doubles_from_the_seen_base_to_the_cap() {
@@ -356,13 +467,76 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(b.remaining(&p, t0), None);
 
-        assert_eq!(b.record_failure(p, Verdict::Failed, t0), UNSEEN_BASE);
+        assert_eq!(b.record_failure(p, Verdict::Failed, false, t0), UNSEEN_BASE);
         assert_eq!(b.remaining(&p, t0), Some(UNSEEN_BASE));
         assert_eq!(b.remaining(&p, t0 + UNSEEN_BASE), None);
 
         // The count survives expiry, so the next failure waits longer.
         let t1 = t0 + UNSEEN_BASE;
-        assert_eq!(b.record_failure(p, Verdict::Failed, t1), UNSEEN_BASE * 2);
+        assert_eq!(
+            b.record_failure(p, Verdict::Failed, false, t1),
+            UNSEEN_BASE * 2
+        );
+    }
+
+    #[test]
+    fn a_failure_inside_the_window_does_not_extend_it() {
+        let mut b = DialBackoff::default();
+        let p = peer();
+        let t0 = Instant::now();
+        b.record_failure(p, Verdict::Failed, false, t0);
+        let t1 = t0 + Duration::from_secs(10);
+        assert_eq!(
+            b.record_failure(p, Verdict::Gone, false, t1),
+            UNSEEN_BASE - Duration::from_secs(10)
+        );
+        // Still the first failure: the next window doubles once, not twice.
+        assert_eq!(
+            b.record_failure(p, Verdict::Failed, false, t0 + UNSEEN_BASE),
+            UNSEEN_BASE * 2
+        );
+    }
+
+    #[test]
+    fn a_long_quiet_peer_starts_the_schedule_over() {
+        let mut b = DialBackoff::default();
+        let p = peer();
+        let mut t = Instant::now();
+        for _ in 0..8 {
+            let d = b.record_failure(p, Verdict::Failed, false, t);
+            t += d;
+        }
+        assert_eq!(b.record_failure(p, Verdict::Failed, false, t), MAX_BACKOFF);
+        let quiet = t + MAX_BACKOFF + MAX_BACKOFF;
+        assert_eq!(
+            b.record_failure(p, Verdict::Failed, false, quiet),
+            UNSEEN_BASE
+        );
+    }
+
+    #[test]
+    fn each_window_offers_one_lookup_unless_a_lookup_opened_it() {
+        let mut b = DialBackoff::default();
+        let p = peer();
+        let t0 = Instant::now();
+        assert!(!b.take_lookup(&p, t0), "no window, nothing to grant");
+
+        b.record_failure(p, Verdict::Gone, false, t0);
+        assert!(b.take_lookup(&p, t0));
+        assert!(!b.take_lookup(&p, t0), "one per window");
+
+        let t1 = t0 + MAX_BACKOFF;
+        b.record_failure(p, Verdict::Failed, true, t1);
+        assert!(
+            !b.take_lookup(&p, t1),
+            "a lookup already failed in this window"
+        );
+
+        // A lookup failing inside a dial-opened window spends its lookup.
+        let q = peer();
+        b.record_failure(q, Verdict::Failed, false, t0);
+        b.record_failure(q, Verdict::Failed, true, t0);
+        assert!(!b.take_lookup(&q, t0));
     }
 
     #[test]
@@ -370,11 +544,11 @@ mod tests {
         let mut b = DialBackoff::default();
         let p = peer();
         let t0 = Instant::now();
-        b.record_failure(p, Verdict::Failed, t0);
+        b.record_failure(p, Verdict::Failed, false, t0);
         b.on_connected(p, t0);
         assert_eq!(b.remaining(&p, t0), None);
         b.on_closed(&p, 0);
-        assert_eq!(b.record_failure(p, Verdict::Failed, t0), SEEN_BASE);
+        assert_eq!(b.record_failure(p, Verdict::Failed, false, t0), SEEN_BASE);
     }
 
     #[test]
@@ -385,12 +559,18 @@ mod tests {
         let p = peer();
         let t0 = Instant::now();
         b.on_connected(p, t0);
-        assert_eq!(b.record_failure(p, Verdict::Gone, t0), Duration::ZERO);
+        assert_eq!(
+            b.record_failure(p, Verdict::Gone, false, t0),
+            Duration::ZERO
+        );
         assert_eq!(b.remaining(&p, t0), None);
         b.on_closed(&p, 1);
-        assert_eq!(b.record_failure(p, Verdict::Failed, t0), Duration::ZERO);
+        assert_eq!(
+            b.record_failure(p, Verdict::Failed, false, t0),
+            Duration::ZERO
+        );
         b.on_closed(&p, 0);
-        assert_eq!(b.record_failure(p, Verdict::Failed, t0), SEEN_BASE);
+        assert_eq!(b.record_failure(p, Verdict::Failed, false, t0), SEEN_BASE);
     }
 
     #[test]
@@ -398,31 +578,65 @@ mod tests {
         let mut b = DialBackoff::default();
         let p = peer();
         let t0 = Instant::now();
-        assert_eq!(b.record_failure(p, Verdict::Ignore, t0), Duration::ZERO);
+        assert_eq!(
+            b.record_failure(p, Verdict::Ignore, false, t0),
+            Duration::ZERO
+        );
         assert_eq!(b.remaining(&p, t0), None);
     }
 
     #[test]
     fn classify_spots_a_missing_reservation_through_the_wrapping() {
-        use libp2p::relay::{client::transport::Error, outbound::hop::ConnectError};
-        let gone = transport_error(Box::new(Error::Connect(ConnectError::NoReservation)));
+        let gone =
+            DialError::Transport(vec![attempt(CIRCUIT_A, relay(ConnectError::NoReservation))]);
         assert_eq!(classify(&gone), Verdict::Gone);
-
-        let limited = transport_error(Box::new(Error::Connect(
-            ConnectError::ResourceLimitExceeded,
-        )));
-        assert_eq!(classify(&limited), Verdict::Failed);
-
-        let refused = transport_error(Box::new(std::io::Error::from(
-            std::io::ErrorKind::ConnectionRefused,
-        )));
+        let refused = DialError::Transport(vec![attempt(DIRECT, refused())]);
         assert_eq!(classify(&refused), Verdict::Failed);
+    }
+
+    #[test]
+    fn gone_needs_every_address_to_say_so() {
+        let mixed = DialError::Transport(vec![
+            attempt(CIRCUIT_A, relay(ConnectError::NoReservation)),
+            attempt(DIRECT, refused()),
+        ]);
+        assert_eq!(classify(&mixed), Verdict::Failed);
+        let limited = DialError::Transport(vec![
+            attempt(CIRCUIT_A, relay(ConnectError::NoReservation)),
+            attempt(CIRCUIT_B, relay(ConnectError::ResourceLimitExceeded)),
+        ]);
+        assert_eq!(classify(&limited), Verdict::Ignore);
+        let both = DialError::Transport(vec![
+            attempt(CIRCUIT_A, relay(ConnectError::NoReservation)),
+            attempt(CIRCUIT_B, relay(ConnectError::NoReservation)),
+        ]);
+        assert_eq!(classify(&both), Verdict::Gone);
+    }
+
+    #[test]
+    fn relay_side_refusals_do_not_count_against_the_destination() {
+        for e in [
+            relay(ConnectError::ResourceLimitExceeded),
+            relay(ConnectError::PermissionDenied),
+            Box::new(RelayError::ResponseFromBehaviourCanceled(
+                futures::channel::oneshot::Canceled,
+            )),
+        ] {
+            let text = e.to_string();
+            let dial = DialError::Transport(vec![attempt(CIRCUIT_A, e)]);
+            assert_eq!(classify(&dial), Verdict::Ignore, "{text}");
+        }
     }
 
     #[test]
     fn classify_ignores_errors_that_say_nothing_about_the_peer() {
         assert_eq!(classify(&DialError::NoAddresses), Verdict::Ignore);
         assert_eq!(classify(&DialError::Aborted), Verdict::Ignore);
+        let wrong = DialError::WrongPeerId {
+            obtained: peer(),
+            address: DIRECT.parse().unwrap(),
+        };
+        assert_eq!(classify(&wrong), Verdict::Ignore);
         let denied = DialError::Denied {
             cause: ConnectionDenied::new(InBackoff {
                 peer: peer(),
@@ -436,7 +650,8 @@ mod tests {
     fn the_gate_refuses_a_peer_in_backoff_unless_the_dial_is_exempt() {
         let mut gate = Behaviour::default();
         let p = peer();
-        gate.record_failure(p, Verdict::Failed);
+        gate.state
+            .record_failure(p, Verdict::Failed, false, Instant::now());
 
         let id = ConnectionId::new_unchecked(1);
         assert!(gate
@@ -449,6 +664,11 @@ mod tests {
             .is_ok());
         gate.clear_exempt(id);
 
+        // A dial with no peer id has nothing to look up.
+        assert!(gate
+            .handle_pending_outbound_connection(id, None, &[], Endpoint::Dialer)
+            .is_ok());
+
         // Nor is the target of one of our own lookups, until the lookup ends.
         gate.seek(p);
         gate.seek(p);
@@ -460,11 +680,31 @@ mod tests {
         assert!(gate
             .handle_pending_outbound_connection(id, Some(p), &[], Endpoint::Dialer)
             .is_err());
+    }
 
-        // A dial with no peer id has nothing to look up.
+    #[test]
+    fn a_relay_in_backoff_is_let_through_until_the_circuit_dial_resolves() {
+        let mut gate = Behaviour::default();
+        let relay_peer = peer();
+        gate.state
+            .record_failure(relay_peer, Verdict::Failed, false, Instant::now());
+        let circuit = ConnectionId::new_unchecked(10);
+        let relay_dial = ConnectionId::new_unchecked(11);
+
+        gate.hold_relays(circuit, vec![relay_peer]);
         assert!(gate
-            .handle_pending_outbound_connection(id, None, &[], Endpoint::Dialer)
+            .handle_pending_outbound_connection(relay_dial, Some(relay_peer), &[], Endpoint::Dialer)
             .is_ok());
+
+        gate.on_swarm_event(FromSwarm::DialFailure(DialFailure {
+            peer_id: None,
+            error: &DialError::Aborted,
+            connection_id: circuit,
+        }));
+        assert!(gate
+            .handle_pending_outbound_connection(relay_dial, Some(relay_peer), &[], Endpoint::Dialer)
+            .is_err());
+        gate.release_relays(circuit);
     }
 
     #[test]
@@ -472,7 +712,7 @@ mod tests {
         let mut b = DialBackoff::default();
         let t0 = Instant::now();
         for _ in 0..MAX_TRACKED + 10 {
-            b.record_failure(peer(), Verdict::Failed, t0);
+            b.record_failure(peer(), Verdict::Failed, false, t0);
         }
         assert!(b.entries.len() <= MAX_TRACKED);
     }
