@@ -46,6 +46,7 @@ pub mod learned_addrs;
 pub mod peer_record;
 pub mod raw_stream;
 pub mod reachability;
+pub mod relay_limits;
 pub mod relay_manager;
 pub mod service;
 pub mod transport;

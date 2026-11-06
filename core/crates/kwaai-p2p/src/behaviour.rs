@@ -231,8 +231,8 @@ impl KwaaiBehaviour {
             },
         );
 
-        // Hop server: libp2p's rate limiters and concurrency caps stay; only the
-        // per-circuit volume and duration are raised, to match the p2pd relay.
+        // Hop server: libp2p's concurrency caps and per-peer rate stay; volume,
+        // duration and the per-IP rate are configurable.
         let max_circuit_duration = config
             .relay_max_circuit_duration
             // libp2p converts this to u32 seconds and panics otherwise.
@@ -243,6 +243,13 @@ impl KwaaiBehaviour {
                 relay::Config {
                     max_circuit_bytes: config.relay_max_circuit_bytes,
                     max_circuit_duration,
+                    circuit_src_rate_limiters: vec![
+                        crate::relay_limits::per_peer_default(),
+                        crate::relay_limits::per_ip(
+                            config.relay_circuit_ip_burst,
+                            config.relay_circuit_ip_refill,
+                        ),
+                    ],
                     ..relay::Config::default()
                 },
             )

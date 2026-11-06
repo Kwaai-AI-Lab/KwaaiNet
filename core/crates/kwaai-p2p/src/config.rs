@@ -162,6 +162,15 @@ pub struct NetworkConfig {
     #[serde(default = "default_relay_max_circuit_duration")]
     pub relay_max_circuit_duration: Duration,
 
+    /// Circuit requests this relay grants one source IP in a burst; every peer
+    /// behind that address shares it. libp2p's default.
+    #[serde(default = "default_relay_circuit_ip_burst")]
+    pub relay_circuit_ip_burst: u32,
+
+    /// How often one source IP earns back a circuit request. libp2p's default.
+    #[serde(default = "default_relay_circuit_ip_refill")]
+    pub relay_circuit_ip_refill: Duration,
+
     /// Kad protocol names this swarm serves, in outbound preference order.
     ///
     /// **Not a user-facing setting** — `#[serde(skip)]`, no `config.yaml`
@@ -415,6 +424,16 @@ fn default_relay_max_circuit_duration() -> Duration {
     Duration::from_secs(30 * 60)
 }
 
+/// 60, libp2p's per-IP circuit burst.
+pub fn default_relay_circuit_ip_burst() -> u32 {
+    60
+}
+
+/// One a minute, libp2p's per-IP circuit refill.
+pub fn default_relay_circuit_ip_refill() -> Duration {
+    Duration::from_secs(60)
+}
+
 /// 5 minutes, matching kad's own periodic bootstrap.
 fn default_kad_maintenance_interval() -> Duration {
     Duration::from_secs(5 * 60)
@@ -448,6 +467,8 @@ impl Default for NetworkConfig {
             relay_server: true,
             relay_max_circuit_bytes: default_relay_max_circuit_bytes(),
             relay_max_circuit_duration: default_relay_max_circuit_duration(),
+            relay_circuit_ip_burst: default_relay_circuit_ip_burst(),
+            relay_circuit_ip_refill: default_relay_circuit_ip_refill(),
             kad_protocols: default_kad_protocol_field(),
             enable_upnp: true,
             force_private: false,

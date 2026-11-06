@@ -396,7 +396,7 @@ pub enum ConfigAction {
     ///   contribute.storage, contribute.shards, contribute.auto_update,
     ///   public_name, public_ip, announce_addr, no_relay,
     ///   announce_self, enable_upnp, enable_quic, ipv6, only_global_ips,
-    ///   max_connections,
+    ///   max_connections, relay_circuit_ip_burst, relay_circuit_ip_refill_secs,
     ///   announce_online_without_shard,
     ///   decentralized_dht, dht_replication,
     ///   vpk_enabled, vpk_mode, vpk_local_port,

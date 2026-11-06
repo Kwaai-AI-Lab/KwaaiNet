@@ -188,6 +188,8 @@ impl NativeNode {
             // The only bound on connection growth, and so on the memory the
             // swarm holds: idle connections live for ten minutes.
             max_connections: config.max_connections,
+            relay_circuit_ip_burst: config.relay_circuit_ip_burst,
+            relay_circuit_ip_refill: Duration::from_secs(config.relay_circuit_ip_refill_secs),
             ..NetworkConfig::default()
         };
 

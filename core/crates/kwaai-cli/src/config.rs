@@ -254,6 +254,16 @@ pub struct KwaaiNetConfig {
     #[serde(default = "default_max_connections")]
     pub max_connections: usize,
 
+    /// Circuit requests this node, as a relay, grants one source IP in a
+    /// burst. Every node behind a home router shares one budget, so a
+    /// bootstrap serving many homes wants this well above the default.
+    #[serde(default = "kwaai_p2p::config::default_relay_circuit_ip_burst")]
+    pub relay_circuit_ip_burst: u32,
+
+    /// Seconds for one source IP to earn back a circuit request.
+    #[serde(default = "default_relay_circuit_ip_refill_secs")]
+    pub relay_circuit_ip_refill_secs: u64,
+
     /// Whether this node publishes DHT records *of its own* — its block range,
     /// `_petals.models`, `_kwaai.inference.nodes` and the VPK registry entry —
     /// and, symmetrically, the `state = -1` tombstone on shutdown.
@@ -895,6 +905,10 @@ fn default_max_connections() -> usize {
     100
 }
 
+fn default_relay_circuit_ip_refill_secs() -> u64 {
+    kwaai_p2p::config::default_relay_circuit_ip_refill().as_secs()
+}
+
 fn default_enable_upnp() -> bool {
     true
 }
@@ -987,6 +1001,8 @@ impl Default for KwaaiNetConfig {
             ipv6: kwaai_p2p::Ipv6Mode::Auto,
             only_global_ips: true,
             max_connections: default_max_connections(),
+            relay_circuit_ip_burst: kwaai_p2p::config::default_relay_circuit_ip_burst(),
+            relay_circuit_ip_refill_secs: default_relay_circuit_ip_refill_secs(),
             announce_self: true,
             decentralized_dht: false,
             dht_replication: default_dht_replication(),
@@ -1365,6 +1381,18 @@ impl KwaaiNetConfig {
                     anyhow::bail!("max_connections must be at least 8");
                 }
                 self.max_connections = n;
+            }
+            "relay_circuit_ip_burst" | "relay_circuit_ip_refill_secs" => {
+                let n: u32 = value
+                    .parse()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| anyhow::anyhow!("{key} must be a positive integer"))?;
+                if key == "relay_circuit_ip_burst" {
+                    self.relay_circuit_ip_burst = n;
+                } else {
+                    self.relay_circuit_ip_refill_secs = u64::from(n);
+                }
             }
             "decentralized_dht" => self.decentralized_dht = parse_bool(value)?,
             "dht_replication" => {
@@ -1792,6 +1820,34 @@ mod tests {
         assert!(
             c.announce_self,
             "a rejected set must not have changed the field"
+        );
+    }
+
+    /// Absent keys keep libp2p's per-IP limit; a bootstrap's raised values survive the YAML round-trip.
+    #[test]
+    fn relay_circuit_ip_limits_default_to_libp2p_and_round_trip() {
+        let c: KwaaiNetConfig = serde_yaml::from_str("{}").expect("empty config parses");
+        assert_eq!(
+            (c.relay_circuit_ip_burst, c.relay_circuit_ip_refill_secs),
+            (60, 60)
+        );
+
+        let mut c = c;
+        c.set_key("relay_circuit_ip_burst", "1200")
+            .expect("valid key");
+        c.set_key("relay_circuit_ip_refill_secs", "1")
+            .expect("valid key");
+        assert!(c.set_key("relay_circuit_ip_burst", "0").is_err());
+        assert!(c.set_key("relay_circuit_ip_refill_secs", "-1").is_err());
+
+        let yaml = serde_yaml::to_string(&c).expect("serialise");
+        let reloaded: KwaaiNetConfig = serde_yaml::from_str(&yaml).expect("reload");
+        assert_eq!(
+            (
+                reloaded.relay_circuit_ip_burst,
+                reloaded.relay_circuit_ip_refill_secs
+            ),
+            (1200, 1)
         );
     }
 
