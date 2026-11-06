@@ -705,6 +705,8 @@ impl NetworkService {
         relay_tick.tick().await;
 
         let mut summary_tick = tokio::time::interval(crate::diag::SUMMARY_INTERVAL);
+        // After a stall or sleep, one summary rather than a burst of empty ones.
+        summary_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         summary_tick.tick().await;
 
         loop {
@@ -2373,7 +2375,9 @@ impl NetworkService {
                     src_peer_id,
                     status,
                 } => {
-                    self.relay_stats.reservation_denied(&status);
+                    let src_ip = self.peer_ip(&src_peer_id);
+                    self.relay_stats
+                        .reservation_denied(&status, src_peer_id, src_ip);
                     debug!(peer = %src_peer_id, ?status, "relay reservation denied");
                 }
                 relay::Event::CircuitReqAccepted {
@@ -2452,13 +2456,11 @@ impl NetworkService {
                 }
                 Err(e) => {
                     self.dial_stats.punch(false);
-                    let direct: Vec<String> = self
-                        .dial_candidates(&remote_peer_id)
-                        .iter()
-                        .filter(|a| !is_circuit(a))
-                        .map(ToString::to_string)
-                        .collect();
-                    info!(peer = %remote_peer_id, error = %e, known_direct = ?direct, "dcutr hole punch failed");
+                    if self.dial_stats.first_punch_failure(remote_peer_id) {
+                        info!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed");
+                    } else {
+                        debug!(peer = %remote_peer_id, error = %e, "dcutr hole punch failed");
+                    }
                 }
             },
 
@@ -2521,18 +2523,21 @@ impl NetworkService {
         });
     }
 
-    /// One INFO line each for dial outcomes and, when serving as a relay, relay activity.
+    /// One INFO line each for dial outcomes and, when serving as a relay, relay
+    /// activity; logged even when idle, so silence means the node is not running.
     fn log_summaries(&mut self) {
-        info!(summary = %self.dial_stats.take(), "network summary (last 5 min)");
+        let window_secs = crate::diag::SUMMARY_INTERVAL.as_secs();
+        info!(window_secs, summary = %self.dial_stats.take(), "network summary");
         if self.swarm.behaviour().relay_server.is_enabled() {
-            let held = self.relay_reservations.held.len();
-            info!(summary = %self.relay_stats.take(held), "relay server summary (last 5 min)");
+            let peers = self.relay_reservations.held.len();
+            info!(window_secs, summary = %self.relay_stats.take(peers), "relay server summary");
         }
     }
 
     /// The IP a connected peer reaches us from, if any connection carries one.
     fn peer_ip(&self, peer: &PeerId) -> Option<std::net::IpAddr> {
-        self.connections.get(peer)?.values().find_map(|c| {
+        let conns = self.connections.get(peer)?.values();
+        conns.filter(|c| !is_circuit(&c.addr)).find_map(|c| {
             c.addr.iter().find_map(|p| match p {
                 libp2p::multiaddr::Protocol::Ip4(a) => Some(a.into()),
                 libp2p::multiaddr::Protocol::Ip6(a) => Some(a.into()),
