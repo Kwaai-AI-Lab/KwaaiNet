@@ -193,6 +193,8 @@ pub struct HolePunchStats {
     pub relayed_connections: usize,
     /// Relayed connections closed because a confirmed direct one replaced them.
     pub relayed_released: u64,
+    /// Relayed connections closed after `relayed_peer_keep_alive` without application traffic.
+    pub relayed_idled: u64,
 }
 
 /// A peer we know at least one dialable address for, as reported by

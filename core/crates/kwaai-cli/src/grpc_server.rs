@@ -3366,6 +3366,7 @@ fn build_network_update(
             failed: snapshot.hole_punch.failed,
             relayed_connections: snapshot.hole_punch.relayed_connections as u32,
             relayed_released: snapshot.hole_punch.relayed_released,
+            relayed_idled: snapshot.hole_punch.relayed_idled,
         }),
     }
 }

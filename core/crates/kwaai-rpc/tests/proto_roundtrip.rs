@@ -291,6 +291,7 @@ fn network_update_roundtrip_all_sections() {
             failed: 2,
             relayed_connections: 1,
             relayed_released: 3,
+            relayed_idled: 1,
         }),
     };
 

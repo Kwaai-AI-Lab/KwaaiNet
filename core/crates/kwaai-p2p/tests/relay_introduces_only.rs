@@ -338,3 +338,99 @@ async fn the_hold_ends_when_the_lease_does() {
         "the connection should idle out once the lease expires"
     );
 }
+
+/// The relay rig with no punch possible, a two-second hold on circuits and an
+/// idle timeout long enough that only the hold can close them.
+fn short_relay_hold() -> NetworkConfig {
+    NetworkConfig {
+        idle_connection_timeout: Duration::from_secs(60),
+        active_peer_keep_alive: Duration::from_secs(60),
+        relayed_peer_keep_alive: Duration::from_secs(2),
+        ..unreachable_config()
+    }
+}
+
+#[tokio::test]
+async fn a_relayed_session_is_held_only_briefly_once_it_goes_quiet() {
+    let r = rig(short_relay_hold).await;
+    serve_echo(&r.alice, Duration::from_secs(4)).await;
+    r.bob
+        .add_kad_address(r.alice_id, r.circuit.clone())
+        .await
+        .expect("seed the circuit");
+
+    // A call longer than the hold is in flight, not idle.
+    let reply = r
+        .bob
+        .call_unary_handler(r.alice_id, APP_PROTO, b"slow")
+        .await
+        .expect("a call outlasting the hold must complete");
+    assert_eq!(reply, b"slow");
+    assert_eq!(conns_to(&r.bob, r.alice_id).await.len(), 1);
+
+    // Then quiet: the circuit goes after the short hold, not the 60 s lease.
+    eventually("the quiet circuit to close", || async {
+        conns_to(&r.bob, r.alice_id).await.is_empty().then_some(())
+    })
+    .await;
+    let bob = r.bob.network_snapshot().await.expect("snapshot").hole_punch;
+    let alice = r
+        .alice
+        .network_snapshot()
+        .await
+        .expect("snapshot")
+        .hole_punch;
+    assert!(
+        bob.relayed_idled + alice.relayed_idled >= 1,
+        "{bob:?} {alice:?}"
+    );
+}
+
+#[tokio::test]
+async fn steady_steps_over_a_relay_keep_one_circuit() {
+    let r = rig(short_relay_hold).await;
+    serve_echo(&r.alice, Duration::ZERO).await;
+    r.bob
+        .add_kad_address(r.alice_id, r.circuit.clone())
+        .await
+        .expect("seed the circuit");
+    // Steps a second apart, each well inside the two-second hold.
+    for step in 0..6 {
+        r.bob
+            .call_unary_handler(r.alice_id, APP_PROTO, b"step")
+            .await
+            .unwrap_or_else(|e| panic!("step {step}: {e}"));
+        let conns = conns_to(&r.bob, r.alice_id).await;
+        assert_eq!(conns.len(), 1, "one circuit throughout: {conns:?}");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let s = r.bob.network_snapshot().await.expect("snapshot").hole_punch;
+    assert_eq!(s.relayed_idled, 0, "{s:?}");
+}
+
+#[tokio::test]
+async fn a_direct_active_peer_keeps_the_full_lease() {
+    let config = || NetworkConfig {
+        idle_connection_timeout: Duration::from_secs(1),
+        ..short_relay_hold()
+    };
+    let (alice, _at, alice_id) = spawn(NetworkConfig {
+        listen_addrs: vec!["/ip4/127.0.0.1/tcp/0".to_string()],
+        ..config()
+    });
+    let (bob, _bt, _) = spawn(config());
+    serve_echo(&alice, Duration::ZERO).await;
+    let addr = eventually("alice's listen address", || async {
+        alice.listen_addrs().await.ok()?.into_iter().next()
+    })
+    .await
+    .with(Protocol::P2p(alice_id));
+    bob.connect_peer(&addr.to_string()).await.expect("connect");
+    bob.call_unary_handler(alice_id, APP_PROTO, b"x")
+        .await
+        .expect("call");
+    assert!(
+        connected_after(&bob, alice_id, Duration::from_secs(5)).await,
+        "a direct connection is held for the full lease, not the relay hold"
+    );
+}

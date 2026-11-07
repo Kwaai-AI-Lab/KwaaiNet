@@ -165,6 +165,9 @@ struct Connection {
     retiring: bool,
     /// While retiring: since when we have seen nothing using it.
     quiet_since: Option<Instant>,
+    /// When application traffic to this peer last used or was routed here;
+    /// `None` until there is any. Drives the short hold on relayed connections.
+    app_used: Option<Instant>,
 }
 
 /// Owns the swarm and drives it. Construct with [`NetworkService::spawn`].
@@ -280,6 +283,10 @@ pub struct NetworkService {
     kad_maintenance_interval: Duration,
     /// Relayed connections closed because a direct one replaced them.
     relayed_released: u64,
+    /// Relayed connections closed for want of application traffic.
+    relayed_idled: u64,
+    /// `NetworkConfig::relayed_peer_keep_alive`.
+    relayed_keep_alive: Duration,
 }
 
 /// A parked DHT lookup.
@@ -689,6 +696,8 @@ impl NetworkService {
                 .kad_maintenance_interval
                 .max(MIN_KAD_MAINTENANCE_INTERVAL),
             relayed_released: 0,
+            relayed_idled: 0,
+            relayed_keep_alive: config.relayed_peer_keep_alive,
         };
         service.apply_reachability_effects(startup_effects);
         // `force_private` starts Private, so this is what makes reservations
@@ -772,7 +781,10 @@ impl NetworkService {
                     let actions = self.relays.on_tick(Instant::now());
                     self.apply_relay_actions(actions);
                 }
-                _ = retire_tick.tick() => self.retire_relayed(),
+                _ = retire_tick.tick() => {
+                    self.retire_relayed();
+                    self.idle_out_relayed();
+                }
             }
         }
         info!("network service stopped");
@@ -1593,7 +1605,7 @@ impl NetworkService {
             return;
         }
         if request.is_application_traffic() {
-            self.swarm.behaviour_mut().keep_alive.lease(peer);
+            self.note_app_use(peer);
         }
         // A live connection always wins: no dial, and no new relay circuit.
         if self.swarm.is_connected(&peer) {
@@ -2156,6 +2168,12 @@ impl NetworkService {
                 self.last_connected.insert(peer_id, Instant::now());
 
                 let relayed = is_circuit(&addr) || via.is_some();
+                let app_used = self
+                    .swarm
+                    .behaviour()
+                    .keep_alive
+                    .is_leased(&peer_id)
+                    .then(Instant::now);
                 let conns = self.connections.entry(peer_id).or_default();
                 // A circuit opened after a direct path was confirmed is redundant.
                 let retiring = relayed && conns.values().any(|c| c.confirmed);
@@ -2172,6 +2190,7 @@ impl NetworkService {
                         confirmed: false,
                         retiring,
                         quiet_since: None,
+                        app_used,
                     },
                 );
 
@@ -2377,12 +2396,12 @@ impl NetworkService {
             },
             KwaaiBehaviourEvent::Unary(unary::Event::InboundRequest { peer, request }) => {
                 if is_application_proto(request.proto.as_ref()) {
-                    self.swarm.behaviour_mut().keep_alive.lease(peer);
+                    self.note_app_use(peer);
                 }
                 self.dispatch_unary(peer, request)
             }
             KwaaiBehaviourEvent::RawStream(raw_stream::Event::InboundStream(inbound)) => {
-                self.swarm.behaviour_mut().keep_alive.lease(inbound.peer);
+                self.note_app_use(inbound.peer);
                 self.dispatch_stream(inbound)
             }
             KwaaiBehaviourEvent::KeepAlive(never) => match never {},
@@ -2504,6 +2523,51 @@ impl NetworkService {
         }
     }
 
+    /// Application traffic involves `peer`: lease its direct connections and
+    /// restart the short hold on its relayed ones.
+    fn note_app_use(&mut self, peer: PeerId) {
+        self.swarm.behaviour_mut().keep_alive.lease(peer);
+        let now = Instant::now();
+        for c in self
+            .connections
+            .get_mut(&peer)
+            .into_iter()
+            .flat_map(|m| m.values_mut())
+        {
+            c.app_used = Some(now);
+        }
+    }
+
+    /// Close relayed connections that carried application traffic but have had
+    /// none, and nothing in flight, for `relayed_peer_keep_alive`.
+    fn idle_out_relayed(&mut self) {
+        if self.relayed_keep_alive.is_zero() {
+            return;
+        }
+        let now = Instant::now();
+        let behaviour = self.swarm.behaviour();
+        let mut idle = Vec::new();
+        for (peer, conns) in &mut self.connections {
+            for (id, c) in conns.iter_mut().filter(|(_, c)| c.relayed) {
+                let Some(used) = c.app_used.as_mut() else {
+                    continue;
+                };
+                if behaviour.unary.busy(*id) || behaviour.raw_stream.busy(*id) {
+                    *used = now;
+                } else if used.elapsed() >= self.relayed_keep_alive {
+                    c.app_used = None;
+                    idle.push((*peer, *id));
+                }
+            }
+        }
+        for (peer, id) in idle {
+            if self.swarm.close_connection(id) {
+                self.relayed_idled += 1;
+                debug!(%peer, ?id, "closing a relayed connection with no application traffic");
+            }
+        }
+    }
+
     fn hole_punch_stats(&self) -> HolePunchStats {
         let punch = self.swarm.behaviour().dcutr.stats();
         HolePunchStats {
@@ -2517,6 +2581,7 @@ impl NetworkService {
                 .filter(|c| c.relayed)
                 .count(),
             relayed_released: self.relayed_released,
+            relayed_idled: self.relayed_idled,
         }
     }
 

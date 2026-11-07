@@ -5,6 +5,9 @@
 //! connection to that peer reports keep-alive, so a pause between requests
 //! does not cost a fresh dial (and, for a NATed peer, a fresh relay circuit).
 //! The service renews the lease on every application request, in or out.
+//!
+//! A relay circuit is never held: it occupies one of the relay's few circuit
+//! slots, so the service closes it after a much shorter app-idle period instead.
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -24,6 +27,8 @@ use libp2p::swarm::{
     NetworkBehaviour, SubstreamProtocol, THandler, THandlerInEvent, THandlerOutEvent, ToSwarm,
 };
 use libp2p::PeerId;
+
+use crate::addresses::is_circuit;
 
 /// Above this many leases, expired ones for disconnected peers are dropped.
 const LEASE_PRUNE_AT: usize = 1024;
@@ -90,9 +95,10 @@ impl Behaviour {
             .is_some_and(|d| d.load(Ordering::Relaxed) > now)
     }
 
-    fn handler(&mut self, peer: PeerId) -> Handler {
+    fn handler(&mut self, peer: PeerId, relayed: bool) -> Handler {
         *self.connected.entry(peer).or_default() += 1;
         Handler {
+            relayed,
             epoch: self.epoch,
             deadline: Arc::clone(self.leases.entry(peer).or_default()),
             timer: None,
@@ -101,6 +107,8 @@ impl Behaviour {
 }
 
 pub struct Handler {
+    /// Over a relay circuit: the lease does not apply.
+    relayed: bool,
     epoch: Instant,
     deadline: Deadline,
     /// Wakes the connection when the lease runs out, so the idle timer starts then.
@@ -120,7 +128,8 @@ impl ConnectionHandler for Handler {
     }
 
     fn connection_keep_alive(&self) -> bool {
-        self.deadline.load(Ordering::Relaxed) > self.epoch.elapsed().as_millis() as u64
+        !self.relayed
+            && self.deadline.load(Ordering::Relaxed) > self.epoch.elapsed().as_millis() as u64
     }
 
     fn on_behaviour_event(&mut self, event: Self::FromBehaviour) {
@@ -159,21 +168,21 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         _connection_id: ConnectionId,
         peer: PeerId,
-        _local_addr: &Multiaddr,
+        local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(self.handler(peer))
+        Ok(self.handler(peer, is_circuit(local_addr)))
     }
 
     fn handle_established_outbound_connection(
         &mut self,
         _connection_id: ConnectionId,
         peer: PeerId,
-        _addr: &Multiaddr,
+        addr: &Multiaddr,
         _role_override: Endpoint,
         _port_use: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        Ok(self.handler(peer))
+        Ok(self.handler(peer, is_circuit(addr)))
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
@@ -231,11 +240,22 @@ mod tests {
     fn a_connection_shares_its_peers_lease() {
         let mut b = Behaviour::new(Duration::from_secs(60));
         let peer = PeerId::random();
-        let handler = b.handler(peer);
+        let handler = b.handler(peer, false);
         assert!(!handler.connection_keep_alive());
         b.lease(peer);
         assert!(handler.connection_keep_alive());
         b.release(&peer);
         assert!(!handler.connection_keep_alive());
+    }
+
+    #[test]
+    fn a_relayed_connection_is_never_held_by_the_lease() {
+        let mut b = Behaviour::new(Duration::from_secs(60));
+        let peer = PeerId::random();
+        let relayed = b.handler(peer, true);
+        let direct = b.handler(peer, false);
+        b.lease(peer);
+        assert!(!relayed.connection_keep_alive());
+        assert!(direct.connection_keep_alive());
     }
 }

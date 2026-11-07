@@ -805,6 +805,9 @@ message HolePunchStats {
     // Relayed connections closed because a confirmed direct one replaced
     // them, freeing the relay's circuit slot.
     uint64 relayed_released = 5;
+    // Relayed connections closed after the node's short app-idle hold, so a
+    // session that could not punch does not keep a relay slot.
+    uint64 relayed_idled = 6;
 }
 
 // `kwaainet vpk discover` — VPK storage nodes from the DHT.
