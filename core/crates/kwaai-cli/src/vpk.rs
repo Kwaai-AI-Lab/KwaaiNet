@@ -590,7 +590,8 @@ pub async fn discover_nodes(
                     }
                 }
             } else if rt == 2 {
-                parse_vpk_dictionary(&result.value, &mut found);
+                let now = kwaai_hivemind_dht::value::get_dht_time();
+                parse_vpk_dictionary(&result.value, now, &mut found);
             }
         }
     }
@@ -617,11 +618,11 @@ fn parse_vpk_regular(bytes: &[u8]) -> Option<VpkNodeEntry> {
     decode_vpk_map(bytes, "unknown".to_string())
 }
 
-/// Decode a FoundDictionary value into one VpkNodeEntry per subkey.
+/// Decode a FoundDictionary value into one VpkNodeEntry per unexpired subkey.
 ///
 /// Python Hivemind serialises DictionaryDHTValue as:
 ///   Ext(80, msgpack([global_expiry_f64, created_f64, [[subkey_str, value_bytes, entry_expiry_f64], …]]))
-fn parse_vpk_dictionary(bytes: &[u8], out: &mut Vec<VpkNodeEntry>) {
+fn parse_vpk_dictionary(bytes: &[u8], now: f64, out: &mut Vec<VpkNodeEntry>) {
     // Outer layer: Ext(80, inner_bytes)
     let outer = match rmpv::decode::read_value(&mut &bytes[..]) {
         Ok(v) => v,
@@ -651,6 +652,15 @@ fn parse_vpk_dictionary(bytes: &[u8], out: &mut Vec<VpkNodeEntry>) {
             Some(a) if a.len() >= 2 => a,
             _ => continue,
         };
+
+        // Storage keeps an expired subkey while any live one shares the key.
+        if arr
+            .get(2)
+            .and_then(|v| v.as_f64())
+            .is_some_and(|exp| exp < now)
+        {
+            continue;
+        }
 
         // subkey is a plain string — the peer_id base58
         let peer_id = match &arr[0] {
@@ -711,4 +721,51 @@ fn decode_vpk_map(bytes: &[u8], peer_id: String) -> Option<VpkNodeEntry> {
         vpk_version: get_str("vpk_version"),
         public_name: get_str("public_name"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vpk_value(mode: &str) -> Vec<u8> {
+        let map = rmpv::Value::Map(vec![(rmpv::Value::from("mode"), rmpv::Value::from(mode))]);
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &map).expect("encodes");
+        out
+    }
+
+    fn dictionary(entries: &[(&str, f64)]) -> Vec<u8> {
+        let entries = entries
+            .iter()
+            .map(|(peer, expiry)| {
+                rmpv::Value::Array(vec![
+                    rmpv::Value::from(*peer),
+                    rmpv::Value::Binary(vpk_value("eve")),
+                    rmpv::Value::from(*expiry),
+                ])
+            })
+            .collect();
+        let inner = rmpv::Value::Array(vec![
+            rmpv::Value::from(0.0),
+            rmpv::Value::from(0.0),
+            rmpv::Value::Array(entries),
+        ]);
+        let mut inner_bytes = Vec::new();
+        rmpv::encode::write_value(&mut inner_bytes, &inner).expect("encodes");
+        let mut out = Vec::new();
+        rmpv::encode::write_value(&mut out, &rmpv::Value::Ext(80, inner_bytes)).expect("encodes");
+        out
+    }
+
+    #[test]
+    fn expired_subkeys_are_not_listed() {
+        let mut found = Vec::new();
+        parse_vpk_dictionary(
+            &dictionary(&[("live", 1000.0), ("dead", 999.0)]),
+            999.5,
+            &mut found,
+        );
+        let ids: Vec<_> = found.iter().map(|e| e.peer_id.as_str()).collect();
+        assert_eq!(ids, ["live"]);
+    }
 }
