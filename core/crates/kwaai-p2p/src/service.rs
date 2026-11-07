@@ -25,7 +25,7 @@ use futures::StreamExt;
 use libp2p::{
     autonat,
     core::{transport::PortUse, ConnectedPoint},
-    dcutr, identify, identity, kad, noise, ping, relay,
+    dcutr, identify, identity, kad, mdns, noise, ping, relay,
     swarm::{ConnectionId, DialError, SwarmEvent},
     tcp, upnp, yamux, Multiaddr, PeerId, Swarm, SwarmBuilder,
 };
@@ -44,6 +44,7 @@ use crate::handle::{
     parse_protocols, Command, Direction, InboundStreamSender, InboundUnaryCall, InboundUnarySender,
     KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, RoutingEntry,
 };
+use crate::lan::{self, Evidence, LanPeers, LocalSubnets};
 use crate::learned_addrs::LearnedAddrs;
 use crate::raw_stream;
 use crate::reachability::{AnnounceState, Effect, Reachability, ReachabilityState, IDENTIFY_GRACE};
@@ -193,6 +194,13 @@ pub struct NetworkService {
     /// home, and the non-kad purge in `handle_identify_event` empties it.
     /// Consulted by [`Self::candidate_addresses`], which dedupes both stores.
     pinned_addrs: HashMap<PeerId, (Instant, Vec<Multiaddr>)>,
+    /// Private addresses of peers behind our own router, dialable for that peer
+    /// only; see [`crate::lan`]. Never read by kad or any announce path.
+    lan_peers: LanPeers,
+    /// Our interfaces' subnets, which bound what `lan_peers` may hold.
+    subnets: LocalSubnets,
+    /// Distinct observers needed before an observed IP counts as ours.
+    min_observers: usize,
     /// Addresses peers reported observing us at → the set of peers that said so.
     /// A set (not a counter) so repeated identifies from one peer count once.
     observed_addrs: HashMap<Multiaddr, HashSet<PeerId>>,
@@ -620,6 +628,9 @@ impl NetworkService {
             connections: HashMap::new(),
             autonat_dialbacks: PendingDialBacks::default(),
             learned_addrs: LearnedAddrs::new(local_peer_id),
+            lan_peers: LanPeers::new(local_peer_id),
+            subnets: LocalSubnets::default(),
+            min_observers: config.identify_min_confirmations,
             pinned_addrs: HashMap::new(),
             last_connected: HashMap::new(),
             observed_addrs: HashMap::new(),
@@ -849,6 +860,10 @@ impl NetworkService {
             Command::ExternalAddrs { reply } => {
                 let addrs = self.swarm.external_addresses().cloned().collect();
                 let _ = reply.send(addrs);
+            }
+
+            Command::DialCandidates { peer, reply } => {
+                let _ = reply.send(self.dial_candidates(&peer));
             }
 
             Command::PeerProtocols { peer, reply } => {
@@ -1407,9 +1422,24 @@ impl NetworkService {
 
     /// Every address we could try for `peer`; unlike [`Self::known_addresses`]
     /// it keeps loopback and LAN, which is how two nodes on one host reach each other.
+    /// A peer behind our own router is tried on its LAN addresses first.
     fn dial_candidates(&mut self, peer: &PeerId) -> Vec<Multiaddr> {
         let policy = self.policy;
-        self.candidate_addresses(peer, move |a| policy.dialable(a))
+        let rest = self.candidate_addresses(peer, move |a| policy.dialable(a));
+        let own = self.own_addrs();
+        let mut addrs: Vec<Multiaddr> = self
+            .lan_peers
+            .get(peer)
+            .iter()
+            .filter(|a| !own.is_ours(a) && uses_dialable_transport(a, self.dials_quic))
+            .cloned()
+            .collect();
+        for addr in rest {
+            if !addrs.contains(&addr) {
+                addrs.push(addr);
+            }
+        }
+        addrs
     }
 
     /// `table_filter` decides which routing-table entries qualify; a live
@@ -2232,6 +2262,7 @@ impl NetworkService {
                 if let Some(peer) = peer_id {
                     let failed = failed_addresses(&error);
                     if !failed.is_empty() {
+                        self.lan_peers.forget(&peer, &failed);
                         let dropped = self.learned_addrs.forget(&peer, &failed);
                         if dropped > 0 {
                             debug!(%peer, dropped, "dropping learned addresses that failed to dial");
@@ -2408,6 +2439,7 @@ impl NetworkService {
             },
 
             KwaaiBehaviourEvent::Upnp(event) => self.handle_upnp_event(event),
+            KwaaiBehaviourEvent::Mdns(event) => self.handle_mdns_event(event),
         }
     }
 
@@ -2650,9 +2682,144 @@ impl NetworkService {
         }
     }
 
+    /// Keep `listen_addrs` as LAN dial candidates for `peer` when the connection
+    /// identify arrived on, one we dialed, shows that it shares our router.
+    fn note_lan_addrs(
+        &mut self,
+        peer: PeerId,
+        connection_id: ConnectionId,
+        listen_addrs: &[Multiaddr],
+    ) {
+        let Some(conn) = self
+            .connections
+            .get(&peer)
+            .and_then(|c| c.get(&connection_id))
+        else {
+            return;
+        };
+        if conn.via.is_some() || conn.direction != Direction::Outbound {
+            return;
+        }
+        let remote = conn.addr.clone();
+        self.subnets.refresh(Instant::now());
+        let ours = self.our_public_ips(&peer);
+        let Some(evidence) = lan::same_nat(&remote, &ours, &self.subnets, &self.policy) else {
+            return;
+        };
+        let admitted: Vec<Multiaddr> = listen_addrs
+            .iter()
+            .filter(|a| lan::admit(a, evidence, &self.subnets, &self.policy))
+            .cloned()
+            .collect();
+        let added = self.lan_peers.insert(peer, admitted);
+        if added > 0 {
+            debug!(%peer, ?evidence, added, "peer shares our router; keeping its LAN addresses");
+            self.scrub_lan_from_table(peer);
+        }
+    }
+
+    /// Take private addresses back out of kad, which tables whatever an outbound
+    /// connection used and serves it in FIND_NODE. Lenient mode keeps loopback for local fixtures.
+    fn scrub_lan_from_table(&mut self, peer: PeerId) {
+        let policy = self.policy;
+        let tabled: Vec<Multiaddr> = self
+            .table_addrs(&peer)
+            .into_iter()
+            .filter(|a| {
+                let bare = strip_dest_p2p(a);
+                let loopback = lan::leading_ip(&bare).is_some_and(|ip| ip.is_loopback());
+                !is_circuit(&bare) && !policy.announceable(&bare) && (policy.strict || !loopback)
+            })
+            .collect();
+        for addr in tabled {
+            trace!(%peer, %addr, "keeping a private address out of the routing table");
+            self.swarm.behaviour_mut().kad.remove_address(&peer, &addr);
+        }
+    }
+
+    /// Our public IPs as peers other than `peer` observe them, plus any confirmed
+    /// external address.
+    fn our_public_ips(&self, peer: &PeerId) -> HashSet<std::net::IpAddr> {
+        let mut ips =
+            lan::observed_public_ips(&self.observed_addrs, peer, self.min_observers, &self.policy);
+        for addr in self.swarm.external_addresses() {
+            if !is_circuit(addr) && self.policy.announceable(addr) {
+                ips.extend(lan::leading_ip(addr));
+            }
+        }
+        ips
+    }
+
+    /// Whether `peer` has a connection that does not run through a relay.
+    fn has_direct_connection(&self, peer: &PeerId) -> bool {
+        self.connections.get(peer).is_some_and(|conns| {
+            conns
+                .values()
+                .any(|c| c.via.is_none() && !is_circuit(&c.addr))
+        })
+    }
+
+    /// mDNS found peers on our link: keep their LAN addresses and dial any we
+    /// reach only through a relay, or not at all.
+    fn handle_mdns_event(&mut self, event: mdns::Event) {
+        match event {
+            mdns::Event::Discovered(found) => {
+                self.subnets.refresh(Instant::now());
+                let mut by_peer: HashMap<PeerId, Vec<Multiaddr>> = HashMap::new();
+                for (peer, addr) in found {
+                    let bare = strip_p2p(&addr);
+                    if uses_dialable_transport(&bare, self.dials_quic)
+                        && lan::admit(&bare, Evidence::OnLink, &self.subnets, &self.policy)
+                    {
+                        by_peer.entry(peer).or_default().push(bare);
+                    } else {
+                        trace!(%peer, %addr, "mDNS address not on our LAN; ignoring it");
+                    }
+                }
+                for (peer, addrs) in by_peer {
+                    if self.lan_peers.insert(peer, addrs) > 0 {
+                        self.dial_lan(peer);
+                    }
+                }
+            }
+            mdns::Event::Expired(gone) => {
+                for (peer, addr) in gone {
+                    self.lan_peers.forget(&peer, &[strip_p2p(&addr)]);
+                }
+            }
+        }
+    }
+
+    /// Dial `peer` on its LAN addresses unless a direct connection already exists.
+    fn dial_lan(&mut self, peer: PeerId) {
+        use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
+        if self.has_direct_connection(&peer) || self.lan_peers.is_refused(&peer) {
+            return;
+        }
+        let addrs: Vec<Multiaddr> = self
+            .lan_peers
+            .get(&peer)
+            .iter()
+            .map(|a| a.clone().with(libp2p::multiaddr::Protocol::P2p(peer)))
+            .collect();
+        // `NotDialing`, not `Disconnected`: a relayed connection is what this replaces.
+        let opts = DialOpts::peer_id(peer)
+            .addresses(addrs)
+            .condition(PeerCondition::NotDialing)
+            .build();
+        match self.swarm.dial(opts) {
+            Ok(()) => debug!(%peer, "dialing a peer on our LAN directly"),
+            Err(e) => trace!(%peer, error = %e, "LAN dial not started"),
+        }
+    }
+
     fn handle_identify_event(&mut self, event: identify::Event) {
         match event {
-            identify::Event::Received { peer_id, info, .. } => {
+            identify::Event::Received {
+                peer_id,
+                info,
+                connection_id,
+            } => {
                 debug!(
                     peer = %peer_id,
                     protocol_version = %info.protocol_version,
@@ -2718,6 +2885,15 @@ impl NetworkService {
                     // FIND_NODE caller. Table membership only: an address the
                     // operator supplied survives in `pinned_addrs`.
                     debug!(peer = %peer_id, agent = %info.agent_version, "dropped non-kad peer from the routing table");
+                }
+
+                // (a') A peer behind our own router is also dialable on its LAN
+                // addresses, held apart from kad so nothing serves them on.
+                if speaks_kad {
+                    self.note_lan_addrs(peer_id, connection_id, &info.listen_addrs);
+                } else if !self.lan_peers.get(&peer_id).is_empty() {
+                    debug!(peer = %peer_id, agent = %info.agent_version, "LAN peer does not speak our kad; no longer dialing it");
+                    self.lan_peers.refuse(peer_id);
                 }
 
                 // (b) Record what this peer observed our address to be. Counting
@@ -2823,6 +2999,7 @@ impl NetworkService {
                 peer, addresses, ..
             } => {
                 trace!(%peer, addrs = addresses.len(), "kad routing table updated");
+                self.scrub_lan_from_table(peer);
             }
 
             kad::Event::ModeChanged { new_mode } => {
