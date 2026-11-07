@@ -39,6 +39,7 @@ pub mod addresses;
 pub mod behaviour;
 pub mod config;
 pub mod dht_service;
+pub mod dial_backoff;
 pub mod error;
 pub mod handle;
 pub mod identity;

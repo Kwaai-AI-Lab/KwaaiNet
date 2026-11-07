@@ -79,7 +79,10 @@ pub fn default_agent_version() -> String {
 /// The composed behaviour driven by [`crate::service::NetworkService`].
 #[derive(NetworkBehaviour)]
 pub struct KwaaiBehaviour {
-    /// First so a refusal happens before anything else allocates for the
+    /// Refuses dials to peers whose recent dials failed; first, so nothing
+    /// else allocates for a dial it refuses.
+    pub dial_backoff: crate::dial_backoff::Behaviour,
+    /// Before the rest so a refusal happens before they allocate for the
     /// connection.
     pub connection_limits: connection_limits::Behaviour,
     pub ping: ping::Behaviour,
@@ -257,6 +260,7 @@ impl KwaaiBehaviour {
         let upnp = Toggle::from(config.enable_upnp.then(upnp::tokio::Behaviour::default));
 
         Self {
+            dial_backoff: crate::dial_backoff::Behaviour::default(),
             connection_limits,
             ping,
             identify,
