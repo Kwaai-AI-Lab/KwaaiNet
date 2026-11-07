@@ -49,9 +49,9 @@ use kwaai_rpc::v1::{
     kwaai_net_server::{KwaaiNet, KwaaiNetServer},
     server_frame, BlockCoverageRequest, BlockCoverageUpdate, BlockPeer, Cancel, ChatMessage,
     ChatToken, ClientFrame, ConnectReply, ConnectRequest, ConnectedPeer, DhtRecordsReply,
-    DhtRecordsRequest, Done, Error as RpcError, GenerateRequest, HopFailure, InferenceEvent,
-    InferenceHop, InferencePhase, NetworkRequest, NetworkUpdate, PeerConnKind, PingReply,
-    PingRequest, RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply,
+    DhtRecordsRequest, Done, Error as RpcError, GenerateRequest, HolePunchStats, HopFailure,
+    InferenceEvent, InferenceHop, InferencePhase, NetworkRequest, NetworkUpdate, PeerConnKind,
+    PingReply, PingRequest, RoutingPeer, SelfStatus, ServerFrame, ShardRunRequest, StatusReply,
     StorageDiscoveryRequest, StoragePeer, StorageReachability, StorageUpdate, UpdateReason,
 };
 #[cfg(feature = "rag")]
@@ -3360,6 +3360,14 @@ fn build_network_update(
         routing,
         bootstrap_total,
         bootstrap_reachable,
+        hole_punch: Some(HolePunchStats {
+            attempted: snapshot.hole_punch.attempted,
+            succeeded: snapshot.hole_punch.succeeded,
+            failed: snapshot.hole_punch.failed,
+            relayed_connections: snapshot.hole_punch.relayed_connections as u32,
+            relayed_released: snapshot.hole_punch.relayed_released,
+            relayed_idled: snapshot.hole_punch.relayed_idled,
+        }),
     }
 }
 
@@ -6307,6 +6315,7 @@ mod tests {
             ipv6: kwaai_p2p::Ipv6Status::Off,
             local_protocols: vec![],
             last_contact: vec![],
+            hole_punch: kwaai_p2p::HolePunchStats::default(),
         };
         let none = std::collections::HashSet::new();
         let update = build_network_update(&snapshot, &none, &none, UpdateReason::Tick);
