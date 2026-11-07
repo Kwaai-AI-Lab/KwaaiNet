@@ -549,7 +549,9 @@ fn select_dial_addrs(
     strict: bool,
     quic: bool,
 ) -> Vec<libp2p::Multiaddr> {
-    use kwaai_p2p::addresses::{is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p};
+    use kwaai_p2p::addresses::{
+        is_announceable_with, is_dns_hosted, peer_id_from_multiaddr, strip_dest_p2p,
+    };
     use kwaai_p2p::{is_circuit, uses_dialable_transport};
 
     let mut sorted: Vec<libp2p::Multiaddr> = declared
@@ -558,9 +560,9 @@ fn select_dial_addrs(
         .chain(listeners)
         .filter(|a| is_announceable_with(a, strict) && uses_dialable_transport(a, quic))
         .collect();
-    // Direct before circuit (`false` sorts before `true`), stably, so the
-    // declared address stays ahead of the listeners it was chained onto.
-    sorted.sort_by_key(is_circuit);
+    // Direct before circuit, stably, so the declared address stays first; an
+    // IP-hosted circuit before a DNS one, so it is the form kept per relay.
+    sorted.sort_by_key(|a| (is_circuit(a), is_circuit(a) && is_dns_hosted(a)));
 
     let mut direct: Vec<libp2p::Multiaddr> = Vec::new();
     let mut circuits: Vec<libp2p::Multiaddr> = Vec::new();
@@ -1280,6 +1282,29 @@ mod tests {
             relay().to_base58()
         );
         assert_eq!(out, addrs(&[expected]), "one address per relay, first wins");
+    }
+
+    /// A reservation made through a `/dnsaddr` relay address must not crowd
+    /// out the IP form: the DNS one costs a lookup on every dial.
+    #[test]
+    fn select_dial_addrs_prefers_the_ip_form_of_a_relay() {
+        let dns = format!(
+            "/dnsaddr/bootstrap.kwaai.ai/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+        let ip = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit/p2p/{}",
+            relay().to_base58(),
+            peer().to_base58()
+        );
+
+        let out = select_dial_addrs(addrs(&[dns, ip]), None, false, true);
+        let expected = format!(
+            "/ip4/76.13.5.74/tcp/4001/p2p/{}/p2p-circuit",
+            relay().to_base58()
+        );
+        assert_eq!(out, addrs(&[expected]));
     }
 
     /// This build has no webtransport transport, and the certhash form is the
