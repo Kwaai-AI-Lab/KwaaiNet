@@ -18,12 +18,13 @@ metro-win. Reza was at the GUI over AnyDesk. His answers are quoted word for wor
 | 2. Get the build | **PASS, with a deviation**: CI run concluded `failure`, but only `Build (linux)` failed. Windows build and tests passed |
 | 3. Tray icon appears | **PASS**: icon appears (in the `^` overflow); `.ico` written and loadable |
 | 4. Right-click menu | **PASS** (partly confirmed): menu opens and shows Quit KwaaiNet. The other entries were not confirmed |
-| 5. Close with X, reopen from tray | **NOT CONFIRMED**: X hid the window to the tray as designed; left-click result unclear |
-| 6. Quit KwaaiNet | **FAIL**: GUI exited, but **Quit stopped the CLI-started node** (node, shard and storage) |
+| 5. Close with X, reopen from tray | **FAIL**: left-click on the tray icon **crashed the GUI** twice (access violation in `window_manager_plugin.dll`). Once it restored a minimized window correctly |
+| 6. Quit KwaaiNet | **FAIL**: **Quit stopped the CLI-started node** (node, shard and storage), and the GUI then crashed on exit (`flutter_windows.dll`) instead of quitting cleanly |
 
 The fix works: there is a tray icon on Windows now, and with it the menu and
-Quit. Being able to reach Quit exposed the next problem, which the earlier test
-could not reach: **Quit runs `kwaainet stop` on a node the GUI did not start.**
+Quit. Being able to use the tray exposed two problems that the earlier test could
+not reach. **Left-clicking the tray icon can crash the GUI** (step 5). **Quit runs
+`kwaainet stop` on a node the GUI did not start** (step 6).
 That is by design in the current code (see step 6), and contradicts what the
 GUI test plan expects ("The GUI did not start this node, so it must not stop
 it").
@@ -157,10 +158,83 @@ The X hid the window, as designed; both processes survived (step 3). Then:
 > I clicked one icon in the overflow and it disappeared. On the otherone I rightclicked and the click Quit KwaaiNet and it disappeared. No icons now.
 
 A left click should open the window (`tray.dart` → `onTrayIconMouseDown` →
-`openMainWindowAtChat`). Reza's account doesn't say whether a window came back.
-"It disappeared" may mean the icon left the overflow panel when it closed, or
-that the window opened. By the time of the next check both GUI processes had
-exited. **NOT CONFIRMED.**
+`openMainWindowAtChat`). The Windows Application log shows that the left-clicked
+GUI (PID 17552, `0x4490`) **crashed** at that moment:
+
+```
+11/8/2026 5:39:52 PM  1000 Application Error
+  Faulting application name: kwaainet_gui.exe, version: 0.5.0.1
+  Faulting module name: window_manager_plugin.dll
+  Exception code: 0xc0000005
+  Fault offset: 0x000000000000b2af
+  Faulting process id: 0x0x4490
+  Faulting application path: C:\Users\METRO_WIN11\kwaainet-gui-tray-test\app\kwaainet_gui.exe
+```
+
+The node log's last line (`17:39:53 ... grpc_server: Session: inbound recv
+error: ... h2 protocol error`) is this GUI's session dropping when it crashed.
+
+### Retest (one GUI, window state recorded)
+
+Reza asked for step 5 to be repeated:
+
+> can we repeat that test. I think that the left click simply cause the icon to disappear and no KwaaiNet winow appeared. Let's redo.
+
+One GUI was started (PID 11704, `0x2DB8`, 17:48:12) with stderr redirected to a
+file. A script polled its `FLUTTER_RUNNER_WIN32_WINDOW` every 0.5 s through
+`EnumWindows`, `IsWindowVisible`, `IsIconic` and `GetForegroundWindow`, and
+logged each change. The window was minimized from launch.
+
+Reza, after a first round:
+
+> Left click of the tray icon killed the KwaaiNet GUI window
+
+The process and node were both still up at that point, with the window still
+minimized. Second round:
+
+> left click bring the KwaaiNet window to the top.
+
+Third round (asked to close with the title-bar X, then left-click the overflow
+icon):
+
+> left click in overflow made the GUI window to disappear
+
+Recorded window states:
+
+```
+17:50:15.312 pid=11704 title='KwaaiNet' visible=True minimized=True  foreground=False
+17:50:46.244 pid=11704 title='KwaaiNet' visible=True minimized=False foreground=True    <- left-click restored it
+17:50:51.121 pid=11704 title='KwaaiNet' visible=True minimized=False foreground=False
+17:51:01.966 pid=11704 title='KwaaiNet' visible=True minimized=False foreground=True
+17:51:04.679 pid=11704 title='KwaaiNet' visible=True minimized=False foreground=False
+17:51:41.736 pid=11704 title='KwaaiNet' visible=True minimized=False foreground=False
+17:51:42.842 NO GUI WINDOW/PROCESS
+```
+
+Application log:
+
+```
+11/8/2026 5:51:42 PM  1000 Application Error
+  Faulting application name: kwaainet_gui.exe, version: 0.5.0.1
+  Faulting module name: window_manager_plugin.dll
+  Exception code: 0xc0000005
+  Fault offset: 0x000000000000b2af
+  Faulting process id: 0x0x2DB8
+```
+
+That is the same module and offset as at 17:39:52. The node (17964, shard
+13956, storage 17020) was unaffected. The window never shows as hidden
+(`visible=False`) in the recording. Either the X had not hidden it when the
+click came, or it hid and crashed within one 0.5 s poll, so this run does not
+show whether the crash needs a hidden window. The captured stderr holds none of
+the GUI's `[tray]` log lines, only `[status-watcher]`, `[rpc]` and `[session]`
+startup lines, so it does not show which window call faulted.
+
+**FAIL.** Left-clicking the tray icon restored a minimized window once
+(17:50:46). It crashed the GUI twice with the same access violation in
+`window_manager_plugin.dll`, both times when the window was not minimized.
+`openMainWindowAtChat` is the left-click path. It was unreachable on Windows
+until #16, so this crash is older than #16 rather than caused by it.
 
 ## 6. Quit KwaaiNet
 
@@ -195,6 +269,20 @@ shutdown line:
 **FAIL:** the GUI exited, but it stopped node 20744, which it did not start,
 together with its shard (17048) and storage (7300).
 
+The GUI also did not exit cleanly. After `kwaainet stop`, it crashed while
+tearing down the window:
+
+```
+11/8/2026 5:40:09 PM  1000 Application Error
+  Faulting module name: flutter_windows.dll   Exception code: 0xc0000005   Fault offset: 0x1e220
+  Faulting process id: 0x0x152C   (= 5420, the first GUI)
+11/8/2026 5:40:10 PM  1000 Application Error
+  Faulting module name: flutter_windows.dll   Exception code: 0xc000041d   Fault offset: 0x1e220
+  Faulting process id: 0x0x152C
+```
+
+The crash came after the stop, so it did not cause it.
+
 ### Cause
 
 This is the GUI's designed behaviour, not something introduced by #16. At
@@ -224,8 +312,9 @@ was no tray icon, so the GUI was ended from Task Manager. Quitting by closing
 the window with "keep running in tray" turned off takes the same path, so it
 also stops the node.
 
-It also explains how stopping one GUI left none: with two instances running,
-Quit in one stops the node that both were attached to.
+Neither GUI was left afterwards because the second GUI (17552) had already
+crashed on the left-click (step 5) before Quit was used on the first. With two
+instances, Quit in one would in any case stop the node both are attached to.
 
 ### Restore
 
@@ -260,4 +349,11 @@ under new PIDs. The backed-up `start-args.json` is the one from 2026-11-05
    loses the user's flags (here `--shard`).
 3. **Single instance** is still open, as the PR states. With the node-stopping
    Quit, a second instance's Quit takes the first instance's node with it.
-4. Step 5 (left-click reopens the window) remains to be confirmed.
+4. **Left-click on the tray icon crashes the GUI** in `window_manager_plugin.dll`
+   (`0xc0000005` at `+0xb2af`, seen twice). Path: `tray.dart` →
+   `onTrayIconMouseDown` → `openMainWindowAtChat`.
+5. **The GUI crashes on exit** in `flutter_windows.dll` (`+0x1e220`) after a
+   tray Quit.
+6. A Windows debug build, or a release build that logs to a file (stderr from
+   the release exe holds no `[tray]` lines), is needed to see which
+   `windowManager` call faults.
