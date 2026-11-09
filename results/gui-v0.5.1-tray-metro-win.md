@@ -18,7 +18,7 @@ metro-win. Reza was at the GUI over AnyDesk. His answers are quoted word for wor
 | 2. Get the build | **PASS, with a deviation**: CI run concluded `failure`, but only `Build (linux)` failed. Windows build and tests passed |
 | 3. Tray icon appears | **PASS**: icon appears (in the `^` overflow); `.ico` written and loadable |
 | 4. Right-click menu | **PASS** (partly confirmed): menu opens and shows Quit KwaaiNet. The other entries were not confirmed |
-| 5. Close with X, reopen from tray | **FAIL**: left-click on the tray icon **crashed the GUI** twice (access violation in `window_manager_plugin.dll`). Once it restored a minimized window correctly |
+| 5. Close with X, reopen from tray | **FAIL**: left-click on the tray icon, and **Open KwaaiNet…**, **crash the GUI** every time (4/4, access violation in `window_manager_plugin.dll`). Cause found; see "Verification" |
 | 6. Quit KwaaiNet | **FAIL**: **Quit stopped the CLI-started node** (node, shard and storage), and the GUI then crashed on exit (`flutter_windows.dll`) instead of quitting cleanly |
 
 The fix works: there is a tray icon on Windows now, and with it the menu and
@@ -230,9 +230,10 @@ show whether the crash needs a hidden window. The captured stderr holds none of
 the GUI's `[tray]` log lines, only `[status-watcher]`, `[rpc]` and `[session]`
 startup lines, so it does not show which window call faulted.
 
-**FAIL.** Left-clicking the tray icon restored a minimized window once
-(17:50:46). It crashed the GUI twice with the same access violation in
-`window_manager_plugin.dll`, both times when the window was not minimized.
+**FAIL.** Left-clicking the tray icon crashed the GUI twice with the same
+access violation in `window_manager_plugin.dll`. The 17:50:46 restore was most
+likely the taskbar button, not the tray; see "Verification" below, where the
+crash is reproduced on demand and its cause found.
 `openMainWindowAtChat` is the left-click path. It was unreachable on Windows
 until #16, so this crash is older than #16 rather than caused by it.
 
@@ -339,6 +340,126 @@ The node runs from `.cargo\bin` with shard and storage, as before the test, but
 under new PIDs. The backed-up `start-args.json` is the one from 2026-11-05
 (`shard: true`, all else default), the same flags the node had.
 
+## Verification against the latest source
+
+Reza: "first verify that we have the latest source. then we should verify the issues."
+
+### Source
+
+Kwaai-AI-Lab/KwaaiNetGUI was cloned to `C:\Users\METRO_WIN11\Source\KwaaiNetGUI`.
+
+- PR #16 head, re-checked: `ae1d5b6302b2da5ba8bebd9219b7c215ceef761c`. This is the
+  commit built by CI run `42542729432` and tested above.
+- GUI `main` is `b75bf4e0` (`release: v0.5.0`). The PR is 1 ahead and 2 behind.
+  The two commits it lacks are `369cd802 docs(changelog): 0.5.0` and
+  `b75bf4e0 release: v0.5.0`. They touch only `CHANGELOG.md` and the `version:`
+  line of `pubspec.yaml`. So the tested build is the latest code for
+  everything below.
+- `pubspec.lock`: `window_manager` 0.5.2, `tray_manager` 0.5.3.
+
+### Quit stops a node the GUI did not start: confirmed in source
+
+`lib/src/daemon/daemon_controller.dart` → `DaemonController.stop()`:
+
+```dart
+    if (_settings.mode == DaemonMode.external) {
+      _log('external mode — refusing to stop (managed by user)');
+      return false;
+    }
+    if (readPid() == null) {
+      _log('no pid file — nothing to stop');
+      return false;
+    }
+    ...
+      final r = await Process.run(res.path, ['stop'], environment: _childEnv());
+```
+
+Only External mode is exempt. In Built-in mode, the default, any node with a
+PID file is stopped with the bundled binary's `kwaainet stop`. Nothing records
+whether the GUI spawned the node or only attached to it. Both the tray Quit
+and the window close (with "keep running in tray" off) reach this through
+`performQuit`.
+
+### Tray left-click / Open KwaaiNet… crash: cause found and reproduced
+
+Both `tray.dart` → `onTrayIconMouseDown` and the `'show'` menu item
+(**Open KwaaiNet…**) call `lib/src/window/window_restore.dart` →
+`openMainWindowAtChat`, which does:
+
+```dart
+    await DockIcon.setVisible(true);
+    await windowManager.setSkipTaskbar(false);
+    await windowManager.show();
+    await windowManager.focus();
+```
+
+window_manager 0.5.2, `windows/window_manager.cpp` (from the pub.dev archive):
+
+```cpp
+  ITaskbarList3* taskbar_ = nullptr;
+...
+void WindowManager::WaitUntilReadyToShow() {
+  ::CoCreateInstance(CLSID_TaskbarList, NULL, CLSCTX_INPROC_SERVER,
+                     IID_PPV_ARGS(&taskbar_));
+}
+...
+void WindowManager::SetSkipTaskbar(const flutter::EncodableMap& args) {
+  ...
+  taskbar_->HrInit();
+```
+
+`taskbar_` is only ever created in `WaitUntilReadyToShow`, and the GUI never
+calls `windowManager.waitUntilReadyToShow` (`grep` over `lib/`; `main.dart`
+calls only `windowManager.ensureInitialized()`). So `setSkipTaskbar` calls a
+method through a null pointer. That is an access violation in
+`window_manager_plugin.dll`, on every call. It was not disassembled to tie
+`+0xb2af` to `SetSkipTaskbar`, because no disassembler is installed on
+metro-win. The two predicted repros below stand in for that.
+
+The prediction was "every left-click and every Open KwaaiNet… crashes". It was
+tested on fresh GUIs with the window recorder at 0.25 s:
+
+1. GUI PID 19852 (`0x4D8C`), window visible, left-click on the tray icon.
+   Reza: "After 1. the tray icon disappeared"
+
+   ```
+   17:56:24.390 pid=19852 title='KwaaiNet' visible=True minimized=False foreground=False
+   17:56:49.939 NO GUI WINDOW/PROCESS
+   11/08/2026 17:56:49 window_manager_plugin.dll  0xc0000005  offset 0xb2af  pid 0x4D8C
+   ```
+
+2. Right-click → **Open KwaaiNet…**. The first attempt went to the taskbar
+   button's jump list instead. Reza: "After 2 and 2nd GUI launched overlapping
+   the first." and "There was no Open KwaaiNet text just KwaaiNet". The jump
+   list's "KwaaiNet" item started a new copy, PID 20744, whose parent is
+   `explorer.exe` (PID 4292). That is a second sighting of the
+   missing single-instance guard. On the real tray menu, Reza: "the GUI crashed
+   after Open KwaaiNet… leaving one running"
+
+   ```
+   18:00:02.310 pid=9544 ... visible=True | pid=20744 ... visible=True
+   18:04:29.439 pid=9544 ... visible=True                (20744 gone)
+   11/08/2026 18:04:28 window_manager_plugin.dll  0xc0000005  offset 0xb2af  pid 0x5108 (= 20744)
+   ```
+
+That makes four crashes with one signature (17:39:52, 17:51:42, 17:56:49 and
+18:04:28), each on a tray left-click or Open KwaaiNet…, two of them predicted
+in advance. The 17:50:46 "restore" in the step 5 retest came at the point
+where Reza was asked to click the taskbar button. Given the above, that was
+the taskbar, not the tray. The node (17964) was unaffected throughout.
+
+The fix is one line in the GUI: call `await windowManager.waitUntilReadyToShow(...)`
+at start-up on Windows, which creates `taskbar_`. The same null pointer is
+reachable from `setProgressBar`. Raising it with window_manager upstream is
+worthwhile too, since `SetSkipTaskbar` should not depend on it.
+
+### Crash on exit after Quit: not re-verified
+
+This was seen once (17:40:09–10, `flutter_windows.dll` `+0x1e220`). It was not
+repeated, because reproducing it means using Quit, which stops the node
+(above). `window_manager` 0.5.2's `Destroy()` is just `PostQuitMessage(0)`. The
+fault is in Flutter's engine during teardown, so the cause is open.
+
 ## Follow-ups
 
 1. **#16 fixes the tray icon on Windows.** It's ready to merge on that count,
@@ -349,11 +470,11 @@ under new PIDs. The backed-up `start-args.json` is the one from 2026-11-05
    loses the user's flags (here `--shard`).
 3. **Single instance** is still open, as the PR states. With the node-stopping
    Quit, a second instance's Quit takes the first instance's node with it.
-4. **Left-click on the tray icon crashes the GUI** in `window_manager_plugin.dll`
-   (`0xc0000005` at `+0xb2af`, seen twice). Path: `tray.dart` →
-   `onTrayIconMouseDown` → `openMainWindowAtChat`.
-5. **The GUI crashes on exit** in `flutter_windows.dll` (`+0x1e220`) after a
-   tray Quit.
-6. A Windows debug build, or a release build that logs to a file (stderr from
-   the release exe holds no `[tray]` lines), is needed to see which
-   `windowManager` call faults.
+4. **Tray left-click and Open KwaaiNet… crash the GUI**, every time
+   (`window_manager_plugin.dll`, `0xc0000005` at `+0xb2af`, 4/4). The cause is
+   that `windowManager.waitUntilReadyToShow` is never called, so window_manager's
+   `taskbar_` is null in `setSkipTaskbar`. See "Verification".
+5. **The GUI crashed on exit** in `flutter_windows.dll` (`+0x1e220`) after a
+   tray Quit. Seen once; cause open.
+6. The release exe's stderr holds no `[tray]` or `[window-restore]` lines. A
+   log file would make the next Windows bug cheaper to find.
