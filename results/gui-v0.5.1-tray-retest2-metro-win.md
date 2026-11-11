@@ -193,20 +193,91 @@ arrives for a left-click.
 clicks arrive. The "visible" left-clicks before 10:15 and the 10:20:36 one
 came through the same session.
 
-**Possible cause, not verified:** `tray_manager` 0.5.3 on Windows maps the
-icon's mouse messages itself. The Windows 11 overflow flyout sends a click on
-a hidden-window app's icon differently, for example as `NIN_SELECT` or
-`WM_CONTEXTMENU` with `NOTIFYICON_VERSION_4`, or only on button-up. Reading
-`tray_manager_plugin.cpp` → `HandleWindowProc` for which `lParam` values it
-handles would settle this. An easy app-side mitigation: handle
-`onTrayIconMouseUp` as well as `onTrayIconMouseDown`.
+**What tray_manager does with clicks** (0.5.3, the locked version, from the
+pub.dev archive). In `windows/tray_manager_plugin.cpp` → `TrayManagerPlugin::HandleWindowProc`:
 
-### Menu stays open when focus moves
+```cpp
+  } else if (message == WM_MYMESSAGE) {
+    switch (lParam) {
+      case WM_LBUTTONUP:
+        channel->InvokeMethod("onTrayIconMouseDown", ...);
+        break;
+      case WM_RBUTTONUP:
+        channel->InvokeMethod("onTrayIconRightMouseDown", ...);
+        break;
+      default:
+        return DefWindowProc(hWnd, message, wParam, lParam);
+```
 
-Reza: "the menu popped up and stayed up even when focus moved elsewhere". This
-is the classic Win32 tray-menu bug: `TrackPopupMenu` without the owner window
-being made foreground first, or without the `WM_NULL` post afterwards.
-`tray_manager`'s `PopUpContextMenu` owns this, so the fix may belong upstream.
+Left button-up is the GUI's `onTrayIconMouseDown`, and right button-up is
+`onTrayIconRightMouseDown`. Nothing else is mapped, and no
+`NOTIFYICON_VERSION_4` is set, so `lParam` is the raw mouse message. A real
+left-click therefore cannot turn into `rightMouseDown` inside the plugin.
+Handling "mouse up" in the app would change nothing, because the plugin
+already fires on button-up.
+
+**Hypothesis, not verified:** the left-clicks that failed came while a tray
+menu was stuck open (next section). `TrackPopupMenu` runs a modal loop on the
+GUI's UI thread. A click on the icon during that loop goes to the menu loop,
+which dismisses or re-opens the menu, instead of arriving as
+`WM_LBUTTONUP`. That would explain both the clicks that were never delivered
+and the menu that "popped up" on a left-click. It would be tested by retrying
+4a once the menu fix below is in.
+
+### Menu stays open when focus moves: cause found
+
+Reza: "the menu popped up and stayed up even when focus moved elsewhere".
+
+`tray_manager` 0.5.3, `TrayManagerPlugin::PopUpContextMenu`:
+
+```cpp
+  if (bringAppToFront) {
+    SetForegroundWindow(hWnd);
+  }
+  TrackPopupMenu(hMenu, TPM_BOTTOMALIGN | TPM_LEFTALIGN, static_cast<int>(x),
+                 static_cast<int>(y), 0, hWnd, NULL);
+```
+
+`lib/src/tray_manager.dart` → `popUpContextMenu({bool bringAppToFront = false})`.
+The GUI calls it with no arguments (`tray.dart` → `onTrayIconRightMouseDown`:
+`trayManager.popUpContextMenu();`), so `SetForegroundWindow` is never called
+before `TrackPopupMenu`. Windows documents that, without it, a notification-icon
+menu does not close when the user clicks elsewhere. That is exactly what Reza saw.
+
+**Proposed fix, one line** in `tray.dart` → `onTrayIconRightMouseDown`:
+
+```dart
+    trayManager.popUpContextMenu(bringAppToFront: Platform.isWindows);
+```
+
+The parameter is marked `@Deprecated` ("only supported on Windows") but works
+in 0.5.3. The canonical pattern also posts `WM_NULL` after `TrackPopupMenu`,
+which 0.5.3 does not do. The foreground call is the part that makes the menu
+close.
+
+## Source check: is this the latest?
+
+Done after the run, on Reza's question "are we testing the latest source?".
+
+- **GUI code: yes.** PR #16 is still at `27773e0`, the commit CI built and this
+  run tested. GUI `main` (`b75bf4e0`) is ahead of it only by `369cd802
+  docs(changelog): 0.5.0` and `b75bf4e0 release: v0.5.0` (`CHANGELOG.md` and
+  `pubspec.yaml`'s `version:`). No newer CI run exists for the branch.
+- **Plugins: no.**
+
+  | Package | Locked (`pubspec.lock`) | Constraint | Latest on pub.dev |
+  | --- | --- | --- | --- |
+  | tray_manager | 0.5.3 | `^0.5.0` | 0.8.3 (2026-11-05) |
+  | window_manager | 0.5.2 | `^0.5.1` | 0.6.0 (2026-11-01) |
+
+  Neither newer version is reachable under the current constraints. Both are
+  rewrites on `nativeapi` that require Flutter 3.47, with the 0.5.x API kept
+  only as a deprecated `legacy.dart` bridge, so moving to them is a migration.
+  Their changelogs since 0.5.x mention neither the left-click nor the
+  menu-dismiss behaviour. They do fix clicks on an *elevated* app's tray icon,
+  which does not apply here.
+
+### 4b. Open KwaaiNet… after X: PASS
 
 ### 4b. Open KwaaiNet… after X: PASS
 
@@ -287,10 +358,14 @@ start-args.json:  "shard": true,
 
 1. **#16 at 27773e0 fixes both crashes from #17 item 1 and item 3, and the
    icon.** From this run it is mergeable for those.
-2. **Tray left-click on a hidden window is unreliable** (4a). It needs a look
-   at `tray_manager`'s Windows event mapping. Handling the button-up event too
-   may be enough.
-3. **The tray menu does not close when focus moves.** This is
-   `tray_manager`'s `PopUpContextMenu`, the foreground/`WM_NULL` pattern.
-4. Unchanged from before: Quit stops a node the GUI did not start (#17 item 2).
+2. **The tray menu does not close when focus moves.** The cause is found:
+   `popUpContextMenu()` without `bringAppToFront`. The fix is
+   `popUpContextMenu(bringAppToFront: Platform.isWindows)`.
+3. **Tray left-click on a hidden window is unreliable** (4a). The plugin maps
+   left/right button-up correctly. The leading hypothesis is that a stuck-open
+   menu swallows the clicks, so retest after 2.
+4. The plugins are three minor versions (tray_manager) and one (window_manager)
+   behind, and an upgrade is a migration to the `nativeapi` rewrites. It is not
+   needed for 1–3.
+5. Unchanged from before: Quit stops a node the GUI did not start (#17 item 2).
    There is still no single-instance guard.
