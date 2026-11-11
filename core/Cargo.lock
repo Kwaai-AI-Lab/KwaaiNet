@@ -3135,6 +3135,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kwaai-provenance"
+version = "0.7.3"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "kwaai-rag"
 version = "0.7.3"
 dependencies = [

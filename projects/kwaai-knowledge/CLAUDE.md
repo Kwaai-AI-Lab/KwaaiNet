@@ -17,6 +17,7 @@ It does **not** own storage encryption (kwaai-storage) or inference serving (kwa
 | Crate | Path | Description |
 |-------|------|-------------|
 | `kwaai-rag` | `core/crates/kwaai-rag/` | Full RAG pipeline |
+| `kwaai-provenance` | `core/crates/kwaai-provenance/` | Claim/evidence identity, lineage log, provenance gate (standalone; see `plans/NativeProvenance-plan.md`) |
 
 CLI entry points in `core/crates/kwaai-cli/src/`:
 - `rag_cmd.rs` — all `kwaainet rag` subcommands (ingest, query, graph build/score/seed, rebuild, dream, eval)
@@ -158,7 +159,7 @@ kwaainet rag dream --kb D6 --query "Tell me about Walied Rassool"
 
 ## Vocabulary
 
-`projects/kwaai-knowledge/GLOSSARY.md` — the DreamRAG lexicon. 63 terms grouped
+`projects/kwaai-knowledge/GLOSSARY.md` — the DreamRAG lexicon. 66 terms grouped
 by pipeline stage (storage → ingestion → graph → extraction → ontology → dream →
 retrieval → evaluation). Read it before the plans; it carries the traps too —
 entity type is part of the entity ID hash, ghost entities must not be pruned,
