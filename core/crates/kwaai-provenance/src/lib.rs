@@ -2,8 +2,9 @@
 //!
 //! This crate is independent of kwaai-rag. It defines versioned
 //! claim/evidence records and deterministic identifiers, an append-only
-//! lineage log ([`lineage`]), and a policy gate ([`gate`]) that keeps
-//! verification status separate from the decision applied to a mutation.
+//! lineage log ([`lineage`]), a policy gate ([`gate`]) that keeps
+//! verification status separate from the decision applied to a mutation, and
+//! JSONL persistence ([`persist`]) that re-validates everything it reads.
 //!
 //! Nothing here verifies meaning: evidence *association* is not *support*.
 //! The only bundled verifier, [`gate::UnresolvedVerifier`], never reports
@@ -45,6 +46,7 @@
 pub mod gate;
 pub mod identity;
 pub mod lineage;
+pub mod persist;
 pub mod schema;
 
 pub use identity::{claim_id, evidence_id};

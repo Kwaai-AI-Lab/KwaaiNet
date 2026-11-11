@@ -21,8 +21,9 @@ Evidence *association* is not *support*. The only verifier shipped,
 
 ## Status
 
-Experimental, standalone, not published (`publish = false`). In-memory only. Nothing in
-the workspace calls it yet. See
+Experimental, standalone, not published (`publish = false`). Lineage and gate outcomes
+can be persisted as JSONL and replayed with full validation. Nothing in the workspace
+calls it yet. See
 [`projects/kwaai-knowledge/plans/NativeProvenance-plan.md`](../../../projects/kwaai-knowledge/plans/NativeProvenance-plan.md)
 for requirements, design diagrams, decisions, limitations and the rollout plan.
 
@@ -58,6 +59,28 @@ The same example runs as the crate-level doctest in `src/lib.rs`.
 | `identity` | Deterministic SHA-256 IDs for claims and evidence |
 | `lineage` | Lineage events, the append-only log, ancestry and traceability queries |
 | `gate` | Modes, policy, decisions, the `Verifier` trait |
+| `persist` | JSONL records, writer, strict reader, replay, torn-tail repair, digest, atomic snapshot |
+
+## Persisting a run
+
+```rust
+use kwaai_provenance::persist::{read_file, JsonlWriter, TailPolicy};
+
+let mut out = JsonlWriter::append_to(path, 0)?;
+// after each propose / commit / fail:
+out.sync_lineage(&log)?;
+// after each gate check:
+out.write_gate(&outcome)?;
+out.sync_all()?;
+
+// later, or from another process:
+let read = read_file(path, TailPolicy::Strict)?;
+let log = read.replay()?;          // re-validates every entry
+let outcomes = read.gate_outcomes();
+```
+
+A file that ends in a torn line (interrupted write) is refused for appending. Read it
+with `TailPolicy::DropTornTail` to see what was lost, then call `truncate_torn_tail`.
 
 ## Build and test
 

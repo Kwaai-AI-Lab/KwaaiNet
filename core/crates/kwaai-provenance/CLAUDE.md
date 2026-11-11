@@ -15,6 +15,7 @@ Standalone — nothing in the workspace depends on it yet.
 | `src/identity.rs` | Domain-separated, length-prefixed SHA-256 IDs: `claim_id`, `evidence_id` |
 | `src/lineage.rs` | `LineageEvent`, `LogEntry`, `LineageLog` — proposed/committed/failed, cycle rejection, ancestry, `traceability_rate` |
 | `src/gate.rs` | `Gate`, `GateMode`, `Policy`, `Decision`, the `Verifier` trait, `UnresolvedVerifier` |
+| `src/persist.rs` | JSONL `Record`, `JsonlWriter`, `read_file` / `replay`, `TailPolicy`, `truncate_torn_tail`, `lineage_digest`, `write_snapshot` |
 
 ## Build
 
@@ -26,8 +27,8 @@ cargo clippy -p kwaai-provenance --all-targets -- -D warnings
 
 ## Current state
 
-Phase 1 of the plan: in-memory primitives only. No persistence, no semantic verifier,
-no quarantine store, no integration with `kwaai-rag`.
+Phases 1–2 of the plan: in-memory primitives plus JSONL persistence. No semantic
+verifier, no quarantine store, no integration with `kwaai-rag`.
 
 ## Do not
 
@@ -40,4 +41,8 @@ no quarantine store, no integration with `kwaai-rag`.
 - Do not count proposed or failed events as lineage.
 - Do not change an ID scheme without bumping its domain string (`...:v1` → `...:v2`).
   Existing IDs would otherwise silently change meaning.
+- Do not load a lineage file any way other than `replay()`. Deserializing into the log's
+  internals skips validation, transition rules and cycle checks.
+- Do not make reads skip bad lines silently. The only tolerated defect is a torn final
+  line, and only under `TailPolicy::DropTornTail`.
 - Do not commit JSONL logs produced from a private KB (D6).

@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 publish = false
-description = "Native provenance primitives for KwaaiNet knowledge: claim/evidence identity, lineage log, and policy gate"
+description = "Native provenance primitives for KwaaiNet knowledge: claim/evidence identity, lineage log, policy gate, and JSONL persistence"
 
 [dependencies]
 serde = { workspace = true }
@@ -13,3 +13,6 @@ serde_json = { workspace = true }
 # Same major as kwaai-rag, so the workspace builds one sha2.
 sha2 = "0.10"
 hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

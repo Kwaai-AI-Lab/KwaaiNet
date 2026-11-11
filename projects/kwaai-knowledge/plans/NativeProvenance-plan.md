@@ -2,8 +2,8 @@
 
 **Author:** Jourdane Hamilton
 **Crate:** `kwaai-provenance` (`core/crates/kwaai-provenance/`)
-**Status:** Phase 1 (standalone primitives) is implemented and tested in this branch.
-Phases 2–6 below are proposals and are not implemented.
+**Status:** Phases 1 (standalone primitives) and 2 (JSONL persistence) are implemented
+and tested in this branch. Phases 3–6 below are proposals and are not implemented.
 **Related:** the DreamRAG second-cohort provenance claim — after N dream cycles, what
 fraction of graph facts still trace to a source passage, and does gating before vs. after
 consolidation leave fewer unsupported facts?
@@ -37,14 +37,16 @@ prunes, the path from a current fact back to its source passage is lost.
 4. Separate *verification status* (supported / unsupported / unresolved) from the
    *policy decision* (allow / reject / quarantine), with Disabled, Observe and Enforce
    modes that share one verification path.
-5. Preserve baseline KwaaiNet behaviour exactly until a later, separately reviewed PR
+5. Persist lineage and gate outcomes as JSONL that is re-validated on every read, so
+   experiment artifacts are reproducible and a corrupted or edited file is caught.
+6. Preserve baseline KwaaiNet behaviour exactly until a later, separately reviewed PR
    opts in.
 
 **Non-goals for this PR**
 
 - Any change to `kwaai-rag`, `kwaai-cli`, or the dream loop.
 - Semantic verification (NLI, LLM judge). Only a stub verifier ships.
-- Persistence, snapshots, or a durable quarantine store.
+- A durable quarantine store, file locking, or multi-writer logs.
 - Replacing the Python provenance harness used for research; it stays a separate control.
 
 ## 3. Requirements
@@ -72,12 +74,20 @@ Functional requirements are numbered so the test plan (§8) can trace them.
 | FR-17 | Observe and Enforce produce the same status and recommendation for the same input. |
 | FR-18 | A verifier result for a different claim is an error, not a decision. |
 | FR-19 | No bundled verifier reports Supported; evidence association alone never yields Supported. |
+| FR-20 | Lineage entries and gate outcomes persist as JSONL, one record per line, each tagged with its kind and schema version. |
+| FR-21 | Reading rebuilds the log by replaying entries through `propose` / `commit` / `fail`; the result has the same entries, ancestry and digest as the log that was written. |
+| FR-22 | A tampered event, an invalid transition, a cycle, an unknown schema version or a malformed line is an error naming its line number. |
+| FR-23 | A torn final line is an error by default and is dropped only on explicit request (`TailPolicy::DropTornTail`), which reports that it did so. A malformed line anywhere else is always an error. |
+| FR-24 | Appending to a file that does not end in a newline is refused; `truncate_torn_tail` repairs it explicitly. |
+| FR-25 | Incremental writes add only entries not yet written, so persisting after every mutation never duplicates. |
+| FR-26 | `lineage_digest` is a deterministic, order-sensitive SHA-256 fingerprint of a log's entries. |
+| FR-27 | `write_snapshot` writes the full log atomically (temporary file, sync, rename) and returns its digest. |
 
 | ID | Non-functional requirement |
 |----|----------------------------|
 | NFR-1 | The crate does not depend on `kwaai-rag` or any other KwaaiNet crate. |
 | NFR-2 | Deterministic: ordered collections throughout; no clocks, randomness or I/O. |
-| NFR-3 | No `unsafe`, no network, no filesystem access. |
+| NFR-3 | No `unsafe` and no network. Filesystem access only in `persist`, only at paths the caller passes. |
 | NFR-4 | Every public item is documented; the crate-level example compiles as a doctest. |
 | NFR-5 | Passes the repository CI gates: fmt, clippy `-D warnings`, tests on all platforms, Windows `cargo check`, memory integrity, orphaned docs. |
 | NFR-6 | Not published to crates.io (`publish = false`) while experimental. |
@@ -216,6 +226,38 @@ sequenceDiagram
 In Observe mode the adapter only records. The dream loop's mutations, order and results
 are unchanged, which is what makes a baseline-vs-observe comparison valid.
 
+### 4.6 Persistence (Phase 2)
+
+```mermaid
+flowchart LR
+    subgraph write["write"]
+        L1["LineageLog"] -- "sync_lineage (new entries only)" --> W["JsonlWriter"]
+        G1["GateOutcome"] -- "write_gate" --> W
+        W --> F[("lineage.jsonl<br/>one record per line")]
+        L1 -- "write_snapshot (atomic)" --> S[("snapshot.jsonl")]
+    end
+    subgraph read["read"]
+        F --> R["read_records / read_file<br/>parse, version check, validate events"]
+        S --> R
+        R -- "replay(): propose / commit / fail" --> L2["LineageLog"]
+        R -- "gate_outcomes()" --> G2["GateOutcome list"]
+        L2 -- "lineage_digest" --> D["digest for experiment records"]
+    end
+```
+
+Each line is a tagged record:
+
+```text
+{"record":"lineage","schema_version":1,"entry":{"entry":"committed","event_id":"…"}}
+{"record":"gate","schema_version":1,"outcome":{"mode":"observe","claim_id":"…",…}}
+```
+
+A run appends as it goes (`JsonlWriter::append_to`, then `sync_lineage` after each
+mutation). A later run or an analysis script reads the file back with `read_file` and
+`replay()`, which applies every entry through the same API the run used. After a crash,
+`read_file` with `TailPolicy::DropTornTail` reports a torn final line, and
+`truncate_torn_tail` removes it before appending resumes.
+
 ## 5. Decisions
 
 **D0 — A new crate, not a module in `kwaai-rag`.** The point of provenance is to
@@ -258,6 +300,22 @@ to `identity::hash_parts`, so either can change without silently changing the ot
 
 **D8 — `sha2` 0.10.** Same major as `kwaai-rag`, so the workspace compiles one `sha2`.
 
+**D9 — Replay through the public API, not deserialization into internal state.** A file
+is trusted exactly as much as a caller: every entry goes through `propose` / `commit` /
+`fail`, so validation, transition rules and cycle checks are enforced in one place.
+*Rejected:* serializing the log's internal maps — faster to load, but a hand-edited or
+corrupted file could load into a state the API can never produce.
+
+**D10 — Strict reading; data loss only on explicit request.** An analysis that silently
+skipped bad lines would report numbers from a different history than the run produced.
+The one recoverable case, a torn final line, is dropped only when the caller asks and is
+reported when it happens; repairing the file is a separate, explicit call.
+
+**D11 — JSONL with a digest, no hash chain.** JSONL is diffable, greppable, appendable and
+readable from Python, which matters for Rust/Python parity. `lineage_digest` pins which
+history a result came from. A per-line hash chain would add tamper evidence but not
+authenticity (anyone can recompute it), so it waits for signed lineage (§7).
+
 **Vocabulary.** *Lineage event*, *traceability* and *provenance gate* are defined in
 `GLOSSARY.md` §6. The provenance gate decides whether a proposed graph mutation is
 applied; it is distinct from the glossary's *consolidation gate (proposed)*, which decides
@@ -287,13 +345,19 @@ traceability queries as one input.
 - **Private corpora.** Claim text and JSONL observation logs contain knowledge-base
   content. Logs produced from a private KB (D6) must follow the same rule as D6 itself:
   never committed to this repository.
-- No `unsafe`, network, filesystem, or deserialization of untrusted input in a
+- **Files.** `persist` reads and writes only the paths it is given; it does not create
+  directories. There is no locking: one writer per file is the caller's responsibility.
+  Reads load the whole file into memory.
+- **Tamper evidence.** Replay catches edited events (ID mismatch), impossible histories
+  (bad transitions, cycles) and malformed lines. It does not catch a consistent rewrite
+  of the whole file, or edits to gate-outcome records, which carry no ID.
+- No `unsafe`, network access, or deserialization of untrusted input in a
   network-facing path.
 
 ## 8. Test plan
 
-Run from `core/`: `cargo test -p kwaai-provenance`. 28 tests: 6 identity, 13 lineage,
-8 gate, 1 doctest.
+Run from `core/`: `cargo test -p kwaai-provenance`. 44 tests: 6 identity, 13 lineage,
+8 gate, 16 persist, 1 doctest.
 
 | Requirement | Test(s) |
 |-------------|---------|
@@ -316,6 +380,15 @@ Run from `core/`: `cargo test -p kwaai-provenance`. 28 tests: 6 identity, 13 lin
 | FR-17 | `gate::tests::observe_and_enforce_agree_on_recommendation` |
 | FR-18 | `gate::tests::verifier_claim_mismatch_is_an_error` |
 | FR-19 | `gate::tests::stub_verifier_never_reports_support` |
+| FR-20 | `persist::tests::records_carry_kind_and_schema_version`, `gate_outcomes_round_trip_alongside_lineage`, `newline_in_a_reason_stays_on_one_line` |
+| FR-21 | `persist::tests::lineage_round_trips_and_replays_to_same_history`, `file_append_reopen_and_snapshot` |
+| FR-22 | `persist::tests::tampered_event_is_rejected_with_line_number`, `invalid_transition_on_disk_is_rejected_at_replay`, `cycle_on_disk_is_rejected_at_replay`, `unsupported_schema_version_is_rejected`, `malformed_middle_line_is_an_error_even_when_lenient` |
+| FR-23 | `persist::tests::torn_tail_is_strict_error_or_dropped_on_request`, `blank_lines_and_crlf_are_tolerated` |
+| FR-24 | `persist::tests::append_refuses_torn_file_until_repaired` |
+| FR-25 | `persist::tests::sync_lineage_writes_only_new_entries` |
+| FR-26 | `persist::tests::digest_is_deterministic_and_order_sensitive` |
+| FR-27 | `persist::tests::file_append_reopen_and_snapshot` |
+| — | `persist::tests::missing_file_is_an_io_error` |
 | NFR-1 | `cargo tree -p kwaai-provenance` shows no KwaaiNet crate |
 | NFR-4 | crate doctest; `RUSTDOCFLAGS="-D warnings" cargo doc -p kwaai-provenance --no-deps` |
 | NFR-5 | CI on the PR |
@@ -326,7 +399,9 @@ Phases 3–6.
 
 ## 9. Limitations
 
-1. No persistence or snapshots; the log lives only in memory.
+1. Persistence is single-writer with no locking; reads load the whole file; a snapshot
+   is a full rewrite, not an incremental checkpoint; gate-outcome records are not
+   cross-checked against lineage.
 2. No semantic verifier. Enforce mode with the stub quarantines every claim.
 3. Quarantine is a decision value only; there is no quarantine store or review flow.
 4. Claim IDs carry no tenant / knowledge-base namespace.
@@ -337,19 +412,22 @@ Phases 3–6.
 7. Artifact IDs in lineage events are opaque strings; the log does not know whether an ID
    is a claim, evidence or entity. Callers supply `is_original`.
 8. Unbounded memory and unbounded graph walks (§7).
+9. `schema_version` is checked for exact equality; there is no migration path yet for
+   reading files written by a future schema.
 
 ## 10. Rollout
 
 | Phase | Scope | State |
 |-------|-------|-------|
 | 1 | Standalone primitives: identity, lineage log, gate, docs | **This PR** |
-| 2 | Persistence: append-only JSONL writer/reader for `LogEntry` and `GateOutcome`, validating every event on read; snapshots | Proposed |
+| 2 | Persistence: append-only JSONL writer/reader for `LogEntry` and `GateOutcome`, replay-validated on read; torn-tail handling; atomic snapshots; digest | **This PR** |
 | 3 | Observe-only adapter in `kwaai-rag` behind a cargo feature, default off; separate PR; no change to mutations | Proposed |
 | 4 | Real verifier(s) behind the `Verifier` trait; calibration against labelled data | Proposed |
 | 5 | Enforce mode and a durable quarantine store | Proposed |
 | 6 | Evaluation: traceability after N cycles, unsupported-fact rate, false-rejection rate, recall@k cost of gating, gate-before vs. gate-after consolidation, Rust/Python parity, reproducible JSONL artifacts | Proposed |
 
-Each phase is its own PR. Enforcement (Phase 5) is not proposed until Observe data from
+Phases 1 and 2 ship together because both stay inside the crate. Each later phase is
+its own PR. Enforcement (Phase 5) is not proposed until Observe data from
 Phase 3 shows the false-rejection rate.
 
 ## 11. Open questions
