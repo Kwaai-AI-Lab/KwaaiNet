@@ -17,6 +17,7 @@ It does **not** own storage encryption (kwaai-storage) or inference serving (kwa
 | Crate | Path | Description |
 |-------|------|-------------|
 | `kwaai-rag` | `core/crates/kwaai-rag/` | Full RAG pipeline |
+| `kwaai-provenance` | `core/crates/kwaai-provenance/` | Claim/evidence identity, lineage log, provenance gate (standalone; see `plans/NativeProvenance-plan.md`) |
 
 CLI entry points in `core/crates/kwaai-cli/src/`:
 - `rag_cmd.rs` — all `kwaainet rag` subcommands (ingest, query, graph build/score/seed, rebuild, dream, eval)
