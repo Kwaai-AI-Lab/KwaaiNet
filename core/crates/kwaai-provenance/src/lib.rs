@@ -40,6 +40,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+#![warn(missing_docs)]
+
 pub mod gate;
 pub mod identity;
 pub mod lineage;

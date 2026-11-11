@@ -218,6 +218,16 @@ are unchanged, which is what makes a baseline-vs-observe comparison valid.
 
 ## 5. Decisions
 
+**D0 — A new crate, not a module in `kwaai-rag`.** The point of provenance is to
+judge what the pipeline produced, so it should not live inside the pipeline. A
+separate crate keeps the evaluation baseline clean (nothing in `kwaai-rag` changes
+until the Phase 3 adapter), can be reviewed and tested on its own, and keeps the
+dependency one-way: `kwaai-rag` may depend on it later, never the reverse. The cost
+is one more workspace member and an adapter to write.
+*Rejected:* a `provenance` module inside `kwaai-rag` — smaller today, but it puts
+the measuring code inside the system being measured, and the Phase 3 diff becomes
+harder to separate from baseline behaviour.
+
 **D1 — Lineage identity is separate from artifact identity.** Evidence and claim IDs
 identify *what* an artifact is; lineage events record *how* it was derived. The same
 artifact can be reached by several derivations without changing its ID.
@@ -248,8 +258,9 @@ to `identity::hash_parts`, so either can change without silently changing the ot
 
 **D8 — `sha2` 0.10.** Same major as `kwaai-rag`, so the workspace compiles one `sha2`.
 
-**Vocabulary.** The *provenance gate* here decides whether a proposed graph mutation is
-applied. It is distinct from the glossary's *consolidation gate (proposed)*, which decides
+**Vocabulary.** *Lineage event*, *traceability* and *provenance gate* are defined in
+`GLOSSARY.md` §6. The provenance gate decides whether a proposed graph mutation is
+applied; it is distinct from the glossary's *consolidation gate (proposed)*, which decides
 when a chunk becomes evictable. A future consolidation gate could use this crate's
 traceability queries as one input.
 

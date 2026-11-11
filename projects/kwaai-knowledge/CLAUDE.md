@@ -159,7 +159,7 @@ kwaainet rag dream --kb D6 --query "Tell me about Walied Rassool"
 
 ## Vocabulary
 
-`projects/kwaai-knowledge/GLOSSARY.md` — the DreamRAG lexicon. 63 terms grouped
+`projects/kwaai-knowledge/GLOSSARY.md` — the DreamRAG lexicon. 66 terms grouped
 by pipeline stage (storage → ingestion → graph → extraction → ontology → dream →
 retrieval → evaluation). Read it before the plans; it carries the traps too —
 entity type is part of the entity ID hash, ghost entities must not be pruned,

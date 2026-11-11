@@ -212,6 +212,23 @@ its evidence chunks in one call. *(`enrich.rs`)*
 once its claims are in the graph and corroborated. Not implemented; see the
 DreamRAG framing doc.
 
+**Lineage event** — an immutable record that some artifacts (chunks, claims,
+entities) were derived from others: extract, derive, entity merge, claim rewrite
+or prune. Proposed, committed and failed are separate log entries, and only
+committed events count as history.
+*(`core/crates/kwaai-provenance/src/lineage.rs`)*
+
+**Traceability** — whether a fact's committed lineage reaches original source
+text. A dream-added relation whose only evidence is inherited from its entity, or
+the placeholder chunk `0`, is not traceable. The provenance study's main metric is
+the traceable share of facts after N dream cycles.
+
+**Provenance gate** — decides what happens to a proposed graph mutation from a
+verifier's verdict: allow, reject or quarantine, in Disabled, Observe (record
+only) or Enforce mode. Distinct from the consolidation gate, which decides when a
+chunk may be evicted. Built but not wired into the pipeline; see
+`plans/NativeProvenance-plan.md`. *(`core/crates/kwaai-provenance/src/gate.rs`)*
+
 ---
 
 ## 7. Retrieval

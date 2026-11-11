@@ -1,7 +1,12 @@
+//! Deterministic, domain-separated identifiers for claims and evidence.
+
 use sha2::{Digest, Sha256};
 
 use crate::schema::{Claim, ClaimKind, EvidenceKind, EvidenceRef};
 
+/// SHA-256 over `domain` followed by each part as an 8-byte big-endian length and
+/// its UTF-8 bytes, so part boundaries cannot be shifted to forge a collision.
+/// Returns lowercase hex.
 fn hash_parts(domain: &str, parts: &[&str]) -> String {
     let mut hasher = Sha256::new();
 
@@ -16,6 +21,8 @@ fn hash_parts(domain: &str, parts: &[&str]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Deterministic claim ID over (kind, subject, predicate, object), domain
+/// `kwaai-provenance:claim:v1`. Byte-exact: no case or whitespace normalization.
 pub fn claim_id(kind: ClaimKind, subject: &str, predicate: &str, object: &str) -> String {
     let kind_label = match kind {
         ClaimKind::EntityField => "entity_field",
@@ -28,6 +35,8 @@ pub fn claim_id(kind: ClaimKind, subject: &str, predicate: &str, object: &str) -
     )
 }
 
+/// Deterministic evidence ID over (kind, source, content hash, chunk), domain
+/// `kwaai-provenance:evidence:v1`. `None` chunk is encoded as `"none"`.
 pub fn evidence_id(
     kind: EvidenceKind,
     source_id: &str,
@@ -50,6 +59,7 @@ pub fn evidence_id(
 }
 
 impl Claim {
+    /// Build a claim and compute its ID.
     pub fn new(
         kind: ClaimKind,
         subject: impl Into<String>,
@@ -73,6 +83,8 @@ impl Claim {
 }
 
 impl EvidenceRef {
+    /// Build an evidence reference and compute its ID from everything except
+    /// `parent_ids`. `content_hash` is taken as given.
     pub fn new(
         kind: EvidenceKind,
         source_id: impl Into<String>,
