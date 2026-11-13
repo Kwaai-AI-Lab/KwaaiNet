@@ -311,6 +311,12 @@ async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServe
     Ok(ShardServeExit::UserStop)
 }
 
+/// Whether the operator asked for a block range. Config `blocks` always has a
+/// default, so only the flags and an operator-pinned `start_block` count.
+fn range_is_pinned(start_block: Option<u32>, blocks: Option<u32>, cfg: &KwaaiNetConfig) -> bool {
+    start_block.is_some() || blocks.is_some() || cfg.start_block_user_pinned()
+}
+
 async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     crate::supervisor::watch_parent_from_start();
     let cfg = KwaaiNetConfig::load_or_create()?;
@@ -347,6 +353,10 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     let backend = args.backend(&cfg);
     let mlx = backend == crate::config::ShardBackend::Mlx;
     if cfg!(target_os = "macos") && backend == crate::config::ShardBackend::Auto {
+        if range_is_pinned(args.start_block, args.blocks, &cfg) {
+            print_warning("A block range is set, but this node serves the whole model — it is ignored (#117).");
+            print_info("To serve that range: --mlx (Apple Silicon) or --force-blocks");
+        }
         return serve_whole_model_via_ollama(&cfg).await;
     }
     if mlx && !cfg!(feature = "mlx") {
@@ -4654,6 +4664,29 @@ mod assigned_range_is_persisted_whole {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn range_is_pinned_only_by_the_operator() {
+        use super::range_is_pinned;
+        let cfg = KwaaiNetConfig::default();
+        assert!(!range_is_pinned(None, None, &cfg), "defaults pin nothing");
+        assert!(range_is_pinned(Some(8), None, &cfg));
+        assert!(range_is_pinned(None, Some(8), &cfg));
+        let auto = KwaaiNetConfig {
+            start_block: Some(8),
+            start_block_auto: true,
+            ..Default::default()
+        };
+        assert!(
+            !range_is_pinned(None, None, &auto),
+            "auto-assigned is not a pin"
+        );
+        let user = KwaaiNetConfig {
+            start_block: Some(8),
+            ..Default::default()
+        };
+        assert!(range_is_pinned(None, None, &user));
+    }
+
     use super::*;
     use crate::announce::DHTServerInfo;
     use libp2p::Multiaddr;
