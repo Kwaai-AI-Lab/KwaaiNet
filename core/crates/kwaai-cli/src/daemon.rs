@@ -650,6 +650,13 @@ mod whole_model_readiness_tests {
             "a live shard process with no ready sentinel is loading"
         );
 
+        ShardManager::mark_whole_model_ready();
+        assert!(
+            !KwaaiNetConfig::announce_shard_loading(),
+            "a whole-model server is serving, not loading (#287)"
+        );
+        ShardManager::clear_whole_model_ready();
+
         std::fs::write(ShardManager::ready_file(), "").unwrap();
         assert!(
             !KwaaiNetConfig::announce_shard_loading(),
