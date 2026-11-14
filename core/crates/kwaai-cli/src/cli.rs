@@ -254,10 +254,6 @@ pub struct StartArgs {
     /// Run in background (daemon mode)
     #[arg(long)]
     pub daemon: bool,
-
-    /// Allow concurrent instances (don't stop existing processes)
-    #[arg(long)]
-    pub concurrent: bool,
 }
 
 impl StartOverrides {

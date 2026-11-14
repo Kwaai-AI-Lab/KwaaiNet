@@ -98,11 +98,14 @@ impl DaemonManager {
     }
 
     // -----------------------------------------------------------------------
-    // Lock helpers (Unix only)
+    // Instance lock
     // -----------------------------------------------------------------------
 
+    /// Take `run/kwaainet.lock` for as long as the returned file lives, or
+    /// `None` if another node holds it. Everything under a `KWAAINET_HOME` is
+    /// shared — identity, PID, gRPC token and socket — so it runs one node.
     #[cfg(unix)]
-    pub fn try_acquire_lock(&self) -> Result<bool> {
+    pub fn acquire_instance_lock(&self) -> Result<Option<std::fs::File>> {
         use nix::fcntl::{flock, FlockArg};
         use std::os::unix::io::AsRawFd;
 
@@ -114,20 +117,31 @@ impl DaemonManager {
             .with_context(|| format!("opening lock file {}", self.lock_file.display()))?;
 
         match flock(file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
-            Ok(()) => {
-                // Keep the file open to hold the lock (leak fd intentionally for the process lifetime)
-                std::mem::forget(file);
-                Ok(true)
-            }
-            Err(nix::errno::Errno::EWOULDBLOCK) => Ok(false),
+            Ok(()) => Ok(Some(file)),
+            Err(nix::errno::Errno::EWOULDBLOCK) => Ok(None),
             Err(e) => bail!("flock: {}", e),
         }
     }
 
-    #[cfg(not(unix))]
-    pub fn try_acquire_lock(&self) -> Result<bool> {
-        // On non-Unix, skip locking
-        Ok(true)
+    /// No sharing: a second open fails until this handle closes.
+    #[cfg(windows)]
+    pub fn acquire_instance_lock(&self) -> Result<Option<std::fs::File>> {
+        use std::os::windows::fs::OpenOptionsExt;
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .share_mode(0)
+            .open(&self.lock_file)
+        {
+            Ok(file) => Ok(Some(file)),
+            Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => Ok(None),
+            Err(e) => {
+                Err(e).with_context(|| format!("opening lock file {}", self.lock_file.display()))
+            }
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -565,6 +579,34 @@ mod own_pid_file_tests {
             &dir.path().join("missing.pid"),
             4242
         ));
+    }
+}
+
+#[cfg(test)]
+mod instance_lock_tests {
+    use super::*;
+
+    /// One node per home: a second taker is refused until the first lets go.
+    #[test]
+    fn instance_lock_admits_one_holder_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mgr = || DaemonManager {
+            pid_file: tmp.path().join("kwaainet.pid"),
+            lock_file: tmp.path().join("kwaainet.lock"),
+            status_file: tmp.path().join("kwaainet.status"),
+        };
+
+        let first = mgr().acquire_instance_lock().unwrap();
+        assert!(first.is_some(), "a free lock is taken");
+        assert!(
+            mgr().acquire_instance_lock().unwrap().is_none(),
+            "a held lock refuses a second node"
+        );
+        drop(first);
+        assert!(
+            mgr().acquire_instance_lock().unwrap().is_some(),
+            "dropping the holder frees it"
+        );
     }
 }
 

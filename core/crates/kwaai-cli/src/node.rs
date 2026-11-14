@@ -27,8 +27,14 @@ pub async fn run_node(
     // [`SigHup::register`] for why the ordering is load-bearing.
     let mut sighup = SigHup::register();
 
-    // PID tracking
+    // PID tracking, behind the lock so a refused second node leaves the PID alone.
     let daemon_mgr = DaemonManager::new();
+    let Some(instance_lock) = daemon_mgr.acquire_instance_lock()? else {
+        anyhow::bail!(
+            "another KwaaiNet node is running on {} — stop it, or give this one its own KWAAINET_HOME",
+            crate::config::kwaainet_dir().display()
+        );
+    };
     daemon_mgr
         .write_pid(std::process::id())
         .context("writing PID")?;
@@ -157,6 +163,9 @@ pub async fn run_node(
     let pending_update_version = node_result?;
 
     daemon_mgr.remove_pid();
+    // The successor needs the lock, and our run/ files must go before it writes its own.
+    drop(grpc_handle);
+    drop(instance_lock);
     respawn_after_update(pending_update_version, overrides);
     info!("KwaaiNet node stopped");
     Ok(())
