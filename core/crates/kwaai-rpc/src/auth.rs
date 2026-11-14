@@ -41,20 +41,28 @@ pub fn write_token_file(path: &Path, token: &str) -> io::Result<()> {
     }
     let tmp = path.with_extension("token.tmp");
     let _ = std::fs::remove_file(&tmp);
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
     {
         use std::io::Write as _;
-        let mut f = opts.open(&tmp)?;
-        // Before the secret goes in, so the file is never readable by others.
-        #[cfg(windows)]
-        windows_acl::restrict_to_current_user(&tmp)?;
+        let mut f = create_owner_only(&tmp)?;
         f.write_all(token.as_bytes())?;
         f.sync_all()?;
     }
     replace(&tmp, path)
+}
+
+/// Owner-only from creation: access is checked at open, so a file that ever
+/// carried a wider ACL may already be held open by someone else.
+fn create_owner_only(path: &Path) -> io::Result<std::fs::File> {
+    #[cfg(windows)]
+    return windows_acl::create_new_owner_only(path);
+    #[cfg(not(windows))]
+    {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        opts.open(path)
+    }
 }
 
 /// Windows refuses to replace a file another process has open without
@@ -159,20 +167,26 @@ impl Interceptor for BearerAuth {
 #[cfg(windows)]
 pub(crate) mod windows_acl {
     use std::ffi::OsStr;
+    use std::fs::File;
     use std::io;
+    use std::mem::size_of;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
     use std::path::Path;
     use std::ptr::null_mut;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, LocalFree, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE,
+    };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
-        SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
+        SDDL_REVISION_1,
     };
     use windows_sys::Win32::Security::{
-        GetSecurityDescriptorDacl, GetTokenInformation, TokenUser, ACL, DACL_SECURITY_INFORMATION,
-        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER,
+        GetTokenInformation, TokenUser, PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES, TOKEN_QUERY,
+        TOKEN_USER,
     };
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     fn wide(s: &OsStr) -> Vec<u16> {
@@ -207,7 +221,9 @@ pub(crate) mod windows_acl {
         }
     }
 
-    pub(crate) fn restrict_to_current_user(path: &Path) -> io::Result<()> {
+    /// `CreateFileW` with `CREATE_NEW`, the DACL in place before the file
+    /// exists, and no sharing while this handle is open.
+    pub(crate) fn create_new_owner_only(path: &Path) -> io::Result<File> {
         let sddl = wide(OsStr::new(&format!("D:P(A;;FA;;;{})", current_user_sid()?)));
         let path = wide(path.as_os_str());
         unsafe {
@@ -221,28 +237,27 @@ pub(crate) mod windows_acl {
             {
                 return Err(io::Error::last_os_error());
             }
-            let (mut present, mut defaulted) = (0, 0);
-            let mut dacl: *mut ACL = null_mut();
-            let got = GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted);
-            let rc = if got == 0 {
-                io::Error::last_os_error().raw_os_error().unwrap_or(1) as u32
-            } else {
-                SetNamedSecurityInfoW(
-                    path.as_ptr(),
-                    SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                    null_mut(),
-                    null_mut(),
-                    dacl,
-                    null_mut(),
-                )
+            let sa = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: sd,
+                bInheritHandle: 0,
             };
+            let h = CreateFileW(
+                path.as_ptr(),
+                GENERIC_WRITE,
+                0,
+                &sa,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL,
+                null_mut(),
+            );
+            let err = io::Error::last_os_error();
             LocalFree(sd);
-            if rc != ERROR_SUCCESS {
-                return Err(io::Error::from_raw_os_error(rc as i32));
+            if h == INVALID_HANDLE_VALUE {
+                return Err(err);
             }
+            Ok(File::from_raw_handle(h))
         }
-        Ok(())
     }
 }
 
@@ -311,10 +326,9 @@ mod tests {
         }
     }
 
-    /// The DACL is exactly "this user, full control", with nothing inherited.
+    /// The file's DACL as SDDL.
     #[cfg(windows)]
-    #[test]
-    fn token_file_dacl_is_current_user_only() {
+    fn dacl_sddl(path: &Path) -> String {
         use std::os::windows::ffi::OsStrExt;
         use std::ptr::null_mut;
         use windows_sys::Win32::Foundation::LocalFree;
@@ -324,11 +338,8 @@ mod tests {
         };
         use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
 
-        let dir = tempfile::tempdir().unwrap();
-        let path = token_path(dir.path());
-        write_token_file(&path, "secret").unwrap();
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let sddl = unsafe {
+        unsafe {
             let mut sd: PSECURITY_DESCRIPTOR = null_mut();
             let rc = GetNamedSecurityInfoW(
                 wide.as_ptr(),
@@ -358,7 +369,13 @@ mod tests {
             LocalFree(out.cast());
             LocalFree(sd);
             s
-        };
+        }
+    }
+
+    /// Exactly "this user, full control", with nothing inherited.
+    #[cfg(windows)]
+    fn assert_owner_only(path: &Path) {
+        let sddl = dacl_sddl(path);
         // Flags: P (protected) is what matters; Windows adds AI on every write.
         let (flags, aces) = sddl.split_at(sddl.find('(').expect("one ACE"));
         assert!(flags.starts_with("D:P"), "DACL not protected: {sddl}");
@@ -399,6 +416,30 @@ mod tests {
             LocalFree(b.cast());
             equal
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn token_file_dacl_is_current_user_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = token_path(dir.path());
+        write_token_file(&path, "secret").unwrap();
+        assert_owner_only(&path);
+    }
+
+    /// Owner-only while still empty and open: no window under the inherited ACL.
+    #[cfg(windows)]
+    #[test]
+    fn temp_file_is_owner_only_from_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kwaainet.token.tmp");
+        let f = create_owner_only(&path).unwrap();
+        assert_owner_only(&path);
+        assert!(
+            create_owner_only(&path).is_err(),
+            "CREATE_NEW must not reuse"
+        );
+        drop(f);
     }
 
     #[test]
