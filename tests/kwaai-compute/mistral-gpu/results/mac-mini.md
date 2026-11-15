@@ -41,3 +41,13 @@ This was started early, since the Mac was idle. It was the first load of real Mi
 - the tokenizer has vocab 131072, BOS 1, EOS 2.
 
 **mac-mini READY (Small 24B, MLX 0–8).**
+
+## Phase 5: restore
+
+1. `$K stop`: the daemon stopped and no `kwaainet` process remained.
+2. Restored `~/.kwaainet/config.yaml` and `run/start-args.json` from the pre-test backups (`cmp` matches). Model `unsloth/Llama-3.1-8B-Instruct`, blocks 0–32.
+3. Started with the **installed** binary, `~/.cargo/bin/kwaainet` 0.7.3, `kwaainet start --daemon --shard`: daemon PID 94220, shard PID 94304, storage PID 94261, all from `~/.cargo/bin/kwaainet`.
+4. Launched Ollama 0.40.6. The shard's first readiness check ran before Ollama was up (`Ollama is not ready — refusing to advertise`), then retried and reported `Ollama ready` and `Serving whole-model inference over /kwaai/ollama-proxy/1.0.0`. This is the pre-test mode: whole model through Ollama.
+5. Deleted `~/.kwaainet-mistral-dl` and `~/.kwaainet-70b-dl`.
+
+**PASS:** the Mac is back to its pre-test state. Left in place: the Nemo and Small 24B weights in `~/.cache/huggingface` (9.8 GB + 14.3 GB, 19 GiB disk free) and the `KwaaiNet-mlx` build worktree.
