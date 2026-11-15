@@ -101,7 +101,7 @@ use crate::protocol::p2pd::{
 };
 
 /// Inbound frame cap, matching the Go daemon's `persistentConnMsgMaxSize`.
-const MAX_MESSAGE_SIZE: usize = 10 * 1024 * 1024;
+const MAX_MESSAGE_SIZE: usize = crate::persistent::MAX_FRAME_SIZE;
 
 /// Error text for verbs this server does not implement.
 ///
@@ -1646,6 +1646,14 @@ async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>> {
         .map_err(|e| Error::Protocol(format!("Invalid varint: {e}")))?;
 
     if len > MAX_MESSAGE_SIZE {
+        // This ends the client's connection and releases every handler it
+        // registered (see `serve_connection`), which is otherwise logged only at
+        // debug. Say so where an operator will see it.
+        warn!(
+            bytes = len,
+            limit = MAX_MESSAGE_SIZE,
+            "control frame exceeds the size limit — closing the client's connection"
+        );
         return Err(Error::Protocol(format!("Message too large: {len} bytes")));
     }
 

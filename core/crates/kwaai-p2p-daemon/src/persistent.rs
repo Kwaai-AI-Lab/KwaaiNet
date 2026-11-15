@@ -18,11 +18,18 @@ use prost::Message as ProstMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, trace, warn};
 use unsigned_varint::encode as varint_encode;
 use uuid::Uuid;
+
+/// Largest frame either daemon reads on a control connection: the Go daemon's
+/// `persistentConnMsgMaxSize`, and the native server's inbound cap. A larger
+/// frame is not an error the daemon reports per call — it closes the whole
+/// connection, and with it every handler registered on it — so nothing larger
+/// may be written.
+pub const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024;
 
 /// Type alias for unary handler functions (use Arc for cloning)
 pub type UnaryHandlerFn = Arc<
@@ -44,6 +51,8 @@ pub struct PersistentConnection {
     pending_calls: Arc<Mutex<HashMap<Uuid, ResponseFuture>>>,
     /// Registered unary handlers
     unary_handlers: Arc<Mutex<HashMap<String, UnaryHandlerFn>>>,
+    /// Flips to `true` when the reader task exits, i.e. the connection is gone.
+    closed: watch::Receiver<bool>,
 }
 
 impl PersistentConnection {
@@ -58,6 +67,7 @@ impl PersistentConnection {
         ));
         let pending_calls = Arc::new(Mutex::new(HashMap::new()));
         let unary_handlers = Arc::new(Mutex::new(HashMap::new()));
+        let (closed_tx, closed) = watch::channel(false);
 
         // Spawn background task to read responses
         let reader_task = Some(Self::spawn_reader(
@@ -65,6 +75,7 @@ impl PersistentConnection {
             pending_calls.clone(),
             unary_handlers.clone(),
             writer.clone(),
+            closed_tx,
         ));
 
         Self {
@@ -72,6 +83,7 @@ impl PersistentConnection {
             reader_task,
             pending_calls,
             unary_handlers,
+            closed,
         }
     }
 
@@ -81,6 +93,7 @@ impl PersistentConnection {
         pending_calls: Arc<Mutex<HashMap<Uuid, ResponseFuture>>>,
         unary_handlers: Arc<Mutex<HashMap<String, UnaryHandlerFn>>>,
         writer: Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>,
+        closed_tx: watch::Sender<bool>,
     ) -> JoinHandle<()>
     where
         R: AsyncReadExt + Unpin + Send + 'static,
@@ -188,14 +201,11 @@ impl PersistentConnection {
                                     },
                                 };
 
-                                let msg = PersistentConnectionRequest {
-                                    call_id: call_id_bytes,
-                                    message: Some(
-                                        persistent_connection_request::Message::UnaryResponse(
-                                            response,
-                                        ),
-                                    ),
-                                };
+                                let msg = Self::unary_response_within_limit(
+                                    call_id_bytes,
+                                    response,
+                                    &proto,
+                                );
 
                                 let mut w = writer.lock().await;
                                 if let Err(e) = Self::write_varint_message(&mut *w, &msg).await {
@@ -246,7 +256,53 @@ impl PersistentConnection {
             }
 
             debug!("Persistent connection reader task exiting");
+            let _ = closed_tx.send(true);
         })
+    }
+
+    /// Wrap a handler's result for sending, replacing it with an error if the
+    /// frame would exceed [`MAX_FRAME_SIZE`]. Writing it anyway would make the
+    /// daemon close this connection and drop every handler on it; refusing
+    /// fails only this call, and tells the caller why.
+    fn unary_response_within_limit(
+        call_id: Vec<u8>,
+        response: CallUnaryResponse,
+        proto: &str,
+    ) -> PersistentConnectionRequest {
+        let wrap = |response| PersistentConnectionRequest {
+            call_id: call_id.clone(),
+            message: Some(persistent_connection_request::Message::UnaryResponse(
+                response,
+            )),
+        };
+        let msg = wrap(response);
+        let len = msg.encoded_len();
+        if len <= MAX_FRAME_SIZE {
+            return msg;
+        }
+        warn!(
+            proto,
+            bytes = len,
+            limit = MAX_FRAME_SIZE,
+            "unary response exceeds the control-socket frame limit — answering with an error instead"
+        );
+        wrap(CallUnaryResponse {
+            result: Some(crate::protocol::p2pd::call_unary_response::Result::Error(
+                format!(
+                    "response too large: {len} bytes exceeds the {MAX_FRAME_SIZE}-byte \
+                     control-socket limit ({proto})"
+                )
+                .into_bytes(),
+            )),
+        })
+    }
+
+    /// Resolves once the connection has closed: the daemon went away or hung
+    /// up, and every handler registered on this connection went with it.
+    pub async fn closed(&self) {
+        let mut rx = self.closed.clone();
+        // A dropped sender (reader task aborted) also means closed.
+        let _ = rx.wait_for(|closed| *closed).await;
     }
 
     /// Call a unary handler on a remote peer
@@ -278,10 +334,14 @@ impl PersistentConnection {
             )),
         };
 
-        // Send request
+        // Send request. An oversize frame is refused before it is written
+        // (see `write_varint_message`); drop the pending entry with it.
         {
             let mut writer = self.writer.lock().await;
-            Self::write_varint_message(&mut *writer, &request).await?;
+            if let Err(e) = Self::write_varint_message(&mut *writer, &request).await {
+                self.pending_calls.lock().await.remove(&call_id);
+                return Err(e);
+            }
         }
 
         // Wait for response
@@ -487,6 +547,14 @@ impl PersistentConnection {
         writer: &mut W,
         msg: &M,
     ) -> Result<()> {
+        // Refuse a frame the daemon would answer by closing the connection.
+        let len = msg.encoded_len();
+        if len > MAX_FRAME_SIZE {
+            return Err(Error::Protocol(format!(
+                "Message too large: {len} bytes exceeds the {MAX_FRAME_SIZE}-byte control-socket limit"
+            )));
+        }
+
         // Encode message
         let mut msg_buf = Vec::new();
         msg.encode(&mut msg_buf)
@@ -518,5 +586,109 @@ impl Drop for PersistentConnection {
         if let Some(task) = self.reader_task.take() {
             task.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::p2pd::call_unary_response::Result as UnaryResult;
+    use std::time::Duration;
+
+    fn reply(data: Vec<u8>) -> CallUnaryResponse {
+        CallUnaryResponse {
+            result: Some(UnaryResult::Response(data)),
+        }
+    }
+
+    fn unwrap_reply(msg: PersistentConnectionRequest) -> UnaryResult {
+        match msg.message {
+            Some(persistent_connection_request::Message::UnaryResponse(r)) => {
+                r.result.expect("a result")
+            }
+            other => panic!("expected a unary response, got {other:?}"),
+        }
+    }
+
+    /// #296: a reply the daemon would refuse is turned into an error for that
+    /// one call. Written as is, it made the daemon close the connection and
+    /// release every handler the shard had registered.
+    #[test]
+    fn an_oversize_reply_becomes_an_error_for_that_call() {
+        // The payload alone fits; the framing around it does not.
+        let msg = PersistentConnection::unary_response_within_limit(
+            vec![7; 16],
+            reply(vec![0; MAX_FRAME_SIZE]),
+            "/kwaai/inference/1.0.0",
+        );
+        assert!(msg.encoded_len() <= MAX_FRAME_SIZE);
+        assert_eq!(msg.call_id, vec![7; 16], "the error answers the same call");
+        match unwrap_reply(msg) {
+            UnaryResult::Error(e) => {
+                let e = String::from_utf8(e).unwrap();
+                assert!(e.contains("response too large"), "got: {e}");
+                assert!(
+                    e.contains("/kwaai/inference/1.0.0"),
+                    "names the protocol: {e}"
+                );
+            }
+            UnaryResult::Response(_) => panic!("an oversize reply must not be sent"),
+        }
+    }
+
+    #[test]
+    fn a_reply_within_the_limit_is_sent_unchanged() {
+        let msg = PersistentConnection::unary_response_within_limit(
+            vec![1; 16],
+            reply(b"hidden states".to_vec()),
+            "/kwaai/inference/1.0.0",
+        );
+        match unwrap_reply(msg) {
+            UnaryResult::Response(d) => assert_eq!(d, b"hidden states"),
+            UnaryResult::Error(e) => panic!("unexpected error: {}", String::from_utf8_lossy(&e)),
+        }
+    }
+
+    /// Nothing over the limit reaches the socket, whichever path writes it.
+    #[tokio::test]
+    async fn an_oversize_frame_is_refused_before_anything_is_written() {
+        let msg = PersistentConnectionRequest {
+            call_id: vec![0; 16],
+            message: Some(persistent_connection_request::Message::CallUnary(
+                CallUnaryRequest {
+                    peer: vec![],
+                    proto: "p".into(),
+                    data: vec![0; MAX_FRAME_SIZE],
+                },
+            )),
+        };
+        let mut sink: Vec<u8> = Vec::new();
+        let err = PersistentConnection::write_varint_message(&mut sink, &msg)
+            .await
+            .expect_err("an oversize frame must be refused");
+        assert!(err.to_string().contains("Message too large"), "got: {err}");
+        assert!(sink.is_empty(), "no partial frame may be written");
+    }
+
+    /// `closed()` is what lets a handler-serving process notice that the
+    /// daemon dropped it (#296).
+    #[tokio::test]
+    async fn closed_resolves_when_the_daemon_hangs_up() {
+        let (ours, theirs) = tokio::io::duplex(1024);
+        let (reader, writer) = tokio::io::split(ours);
+        let conn = PersistentConnection::new(reader, writer);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), conn.closed())
+                .await
+                .is_err(),
+            "an open connection must not read as closed"
+        );
+
+        drop(theirs);
+        tokio::time::timeout(Duration::from_secs(5), conn.closed())
+            .await
+            .expect("closed() must resolve once the daemon end goes away");
+        assert!(!conn.is_alive());
     }
 }

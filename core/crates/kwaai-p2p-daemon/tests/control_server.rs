@@ -582,6 +582,51 @@ async fn handler_errors_propagate_to_the_remote_caller() {
     b.shutdown().await;
 }
 
+/// #296: a handler whose reply exceeds the control-socket frame limit must fail
+/// that one call — and keep serving. Before the fix the oversize frame reached
+/// the server, which closed the client's connection and released all its
+/// handlers, so every later call was refused while the client looked healthy.
+#[tokio::test]
+async fn an_oversize_reply_fails_the_call_and_the_handler_keeps_serving() {
+    let a = TestNode::spawn().await;
+    let b = TestNode::spawn().await;
+
+    let client = a.client().await;
+    client
+        .add_unary_handler(
+            PROTO,
+            |req: Vec<u8>| async move {
+                if req == b"big" {
+                    Ok(vec![0u8; kwaai_p2p_daemon::persistent::MAX_FRAME_SIZE])
+                } else {
+                    Ok(req)
+                }
+            },
+            false,
+        )
+        .await
+        .expect("register a handler");
+
+    let err = tokio::time::timeout(TIMEOUT, call_from(&b, a.peer_id, &a.addr, PROTO, b"big"))
+        .await
+        .expect("the oversize call must resolve, not hang")
+        .expect_err("an oversize reply must surface as an error");
+    assert!(
+        err.to_string().contains("response too large"),
+        "the caller must be told why, got: {err}"
+    );
+
+    let response =
+        tokio::time::timeout(TIMEOUT, call_from(&b, a.peer_id, &a.addr, PROTO, b"small"))
+            .await
+            .expect("the next call must resolve")
+            .expect("the handler must still be registered after an oversize reply");
+    assert_eq!(response, b"small");
+
+    a.shutdown().await;
+    b.shutdown().await;
+}
+
 /// `remove_unary_handler` over the socket must take the protocol off the swarm,
 /// observable to a remote caller as a clean refusal.
 #[tokio::test]

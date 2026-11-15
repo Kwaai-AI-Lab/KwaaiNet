@@ -907,12 +907,136 @@ impl P2PClient {
         let conn = self.get_persistent_connection().await?;
         conn.remove_unary_handler(proto).await
     }
+
+    /// Resolves when the persistent connection closes — and with it every
+    /// unary handler registered through this client, since the daemon releases
+    /// a connection's handlers when it goes.
+    ///
+    /// The next call opens a fresh connection (see `get_persistent_connection`)
+    /// but does not carry the handlers over, so a process that serves handlers
+    /// must react to this itself. Never resolves if no connection was opened.
+    pub async fn persistent_closed(&self) {
+        let conn = self.persistent.lock().await.clone();
+        match conn {
+            Some(conn) => conn.closed().await,
+            None => std::future::pending().await,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Buf;
+
+    async fn read_frame(sock: &mut tokio::net::TcpStream) -> Vec<u8> {
+        let mut len_bytes = Vec::new();
+        let mut b = [0u8; 1];
+        loop {
+            sock.read_exact(&mut b).await.expect("frame length");
+            len_bytes.push(b[0]);
+            if b[0] & 0x80 == 0 {
+                break;
+            }
+        }
+        let (len, _) = unsigned_varint::decode::usize(&len_bytes).expect("varint");
+        let mut buf = vec![0u8; len];
+        sock.read_exact(&mut buf).await.expect("frame body");
+        buf
+    }
+
+    async fn write_frame<M: Message>(sock: &mut tokio::net::TcpStream, msg: &M) {
+        let body = msg.encode_to_vec();
+        let mut len_buf = varint_encode::usize_buffer();
+        sock.write_all(varint_encode::usize(body.len(), &mut len_buf))
+            .await
+            .unwrap();
+        sock.write_all(&body).await.unwrap();
+    }
+
+    /// #296: a process serving handlers learns that the daemon dropped its
+    /// connection. The fake daemon accepts the upgrade, acknowledges one
+    /// handler registration, then hangs up — what the real one does after an
+    /// oversize frame.
+    #[tokio::test]
+    async fn persistent_closed_resolves_when_the_daemon_drops_the_handler_connection() {
+        use crate::protocol::p2pd::{
+            response, PersistentConnectionRequest, PersistentConnectionResponse,
+        };
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (hang_up_tx, hang_up_rx) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            // First connection: `connect`'s control stream. Keep it open.
+            let (_control, _) = listener.accept().await.unwrap();
+            // Second: the persistent connection.
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let _upgrade = read_frame(&mut sock).await;
+            write_frame(
+                &mut sock,
+                &Response {
+                    r#type: response::Type::Ok as i32,
+                    ..Default::default()
+                },
+            )
+            .await;
+            let add = PersistentConnectionRequest::decode(&read_frame(&mut sock).await[..])
+                .expect("an AddUnaryHandler request");
+            write_frame(
+                &mut sock,
+                &PersistentConnectionResponse {
+                    call_id: add.call_id,
+                    message: None,
+                },
+            )
+            .await;
+            let _ = hang_up_rx.await;
+            drop(sock);
+            // Hold the control stream until the test ends.
+            std::future::pending::<()>().await;
+        });
+
+        let client = P2PClient::connect(&format!("/ip4/127.0.0.1/tcp/{port}"))
+            .await
+            .expect("connect");
+        client
+            .add_unary_handler("p", |d: Vec<u8>| async move { Ok(d) }, false)
+            .await
+            .expect("register");
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), client.persistent_closed())
+                .await
+                .is_err(),
+            "must not resolve while the connection is up"
+        );
+        hang_up_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), client.persistent_closed())
+            .await
+            .expect("must resolve once the daemon hangs up");
+    }
+
+    /// A client that never registered anything has nothing to lose.
+    #[tokio::test]
+    async fn persistent_closed_never_resolves_without_a_connection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (_s, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = P2PClient::connect(&format!("/ip4/127.0.0.1/tcp/{port}"))
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            client.persistent_closed()
+        )
+        .await
+        .is_err());
+    }
 
     #[test]
     fn test_frame_encoding() {
