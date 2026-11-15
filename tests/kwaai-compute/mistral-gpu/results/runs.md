@@ -72,3 +72,24 @@ Civilizations collapse for a variety of reasons, often a combination of factors.
  - **Deforestation**: The loss of
 ```
 
+### The same prompts from KwaaiNet GUI on metro-win
+
+Reza ran the same three prompts from the GUI on metro-win (screenshot, 2026-11-14):
+
+- **Standard model:** a good answer (incompleteness, dark matter and dark energy, the hierarchy problem), with different wording from the CLI runs.
+- **"How do civiliations collapse?":** the GUI repeated "What are the causes of the collapse of civilizations?" until the token limit.
+- **"Is that your real hair?":** the GUI rambled in the first person ("I mean, it's not a wig, is it? … I mean, I don't even know who I am …").
+
+**Cause: the prompt template, not the model or the network.** The GUI's chat goes through gRPC `ShardRun` (`grpc_server.rs` → `shard_cmd::run_streaming`). `run_streaming` chooses a template from the tokenizer: Llama 3 if it has `<|start_header_id|>`, ChatML if it has `<|im_start|>`, and **otherwise the raw prompt**. Mistral's tokenizer has neither token, so the model gets plain text without `[INST]…[/INST]`, treats it as a document to continue, and with greedy decoding falls into a loop. The CLI runs above passed because the prompts were wrapped in `[INST]` by hand.
+
+Sampling is not the difference. `run_streaming` hard-codes temperature 1.0, top_k 0 and top_p 1.0, the same as the CLI's defaults, and `sample_token` treats that combination as greedy.
+
+**Reproduced from the Mac CLI on the same three-node chain, 64 tokens:**
+
+| Prompt as sent | Output |
+|---|---|
+| `How do civiliations collapse?` (raw) | "What are the causes of the collapse of civilizations?" ×6, the same as the GUI |
+| `Is that your real hair?` (raw) | "I mean, it's not a wig, is it? I'm just curious. I mean, …", the same as the GUI, word for word |
+| `[INST]How do civiliations collapse?[/INST]` | "Civilizations collapse due to a complex interplay of various factors … 1. **Environmental Degradation** …", a good answer |
+
+**Fix needed, outside this test:** add a Mistral branch, such as `[INST]` present in the vocab → `[INST]{prompt}[/INST]`. It must go in all three copies of the template-selection code in `shard_cmd.rs` (`cmd_shard_run`, the second CLI path, and `run_streaming`). Note that `shard_api.rs`, `api.rs` and `grpc_server.rs → build_prompt` hard-code Llama 3 for every model. A single shared template function would remove the duplication.
