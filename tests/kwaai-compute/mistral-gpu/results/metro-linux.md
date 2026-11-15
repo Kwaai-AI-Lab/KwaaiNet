@@ -636,3 +636,156 @@ The `GC evicted 1 stale sessions` lines came at 05:50:12, 05:52:42, 05:55:12 and
 - No swapping.
 - GPU memory peaked at 12.3 GB on the card and 11.8 GB for the shard process.
 - Every hop served from CUDA in about 17–18 ms, apart from the first.
+
+## Phase 3b: the same prompts run from metro-linux as the client
+
+Reza asked for a sharded run from this machine with three prompts: "Summarize the critique of the standard model of physics", "is that your reals hair?" and "How do civilizations collapse?". They are the Mac's Phase 3 prompts, so I used the Mac's flags, `[INST]…[/INST]` wrapping and `--max-tokens 128 --stats`, so the runs are comparable. Each prompt is used exactly as Reza wrote it, so prompt 2 says "reals" where the Mac's said "real", and prompt 3 ends with "?".
+
+The client is `$K shard run` on metro-linux, at 2026-11-15 06:05 UTC, with the same three serving nodes as the Mac's runs.
+
+**Gate: PASS.**
+
+```
+$ $K shard chain --total-blocks 40
+  Model prefix: Mistral-Nemo-Instruct-2407
+  Querying 40 blocks from DHT…
+    3 server(s) — 40/40 blocks covered
+  START  END    PEER ID (prefix)   TRUST      NAME
+  ─────────────────────────────────────────────────────────────────
+      0      8  12D3KooWAourfFox…  UNKNOWN    professor_reza/v0.7.3
+      8     24  12D3KooWLMizEbVi…  UNKNOWN    metro-win-rtx-a5000/v0.…
+     24     40  12D3KooWA33TMz7s…  UNKNOWN    metro-linux/v0.7.3
+  Blocks: [████████████████████████████████████████]
+  ✅ Full model coverage — distributed inference ready
+─────────────────────────────────────────────────────────────────────
+```
+
+### Summary
+
+| Run | Prompt | Tokens in / out | Prefill | Decode avg (min–max) | Mac hop | metro-win hop | metro-linux hop | Total |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Summarize the critique of the standard model of physics | 14 / 128 | 1102 ms | 119 ms (101–133) | 50 ms | 43 ms | 25 ms | 16.3 s |
+| 2 | is that your reals hair? | 10 / 40 (EOS) | 469 ms | 114 ms (107–122) | 49 ms | 38 ms | 25 ms | 4.9 s |
+| 3 | How do civilizations collapse? | 9 / 128 | 553 ms | 118 ms (106–128) | 50 ms | 42 ms | 24 ms | 15.6 s |
+
+**Result: PASS.**
+- All three runs completed over the three GPUs, with no timeout or error.
+- The output is coherent English and on topic.
+- Run 2 stopped on EOS at 40 tokens; runs 1 and 3 hit the 128-token cap.
+
+The metro-linux shard's own `shard.log` for the same runs, as forward time per hop:
+
+| Run | Hops logged | fwd ms min / median / max |
+|---|---|---|
+| 1 | 128 | 17.6 / 17.8 / 33.9 (the max is prefill) |
+| 2 | 40 | 17.6 / 17.8 / 18.9 |
+| 3 | 128 | 17.6 / 17.8 / 19.6 |
+
+The log has no errors or warnings for any run. The client's per-hop figures for this node, about 25 ms, are about 18 ms of compute plus about 7 ms of local RPC overhead.
+
+### Compared with the Mac's Phase 3 (`runs.md`)
+
+| | Mac as client (runs 1–4) | metro-linux as client |
+|---|---|---|
+| Decode avg | 242–330 ms/tok | **114–119 ms/tok** |
+| Throughput | about 3–4 tok/s | **about 8 tok/s** |
+| Mac hop (blocks 0–8) | about 21 ms | 49–50 ms |
+| metro-win hop (8–24) | 83–93 ms | 38–43 ms |
+| metro-linux hop (24–40) | 136–217 ms | 24–25 ms |
+
+The same three servers ran 2.0–2.8× faster per token with the client here. Each node's hop got cheaper when the client was local to it and dearer when it was remote:
+- The Mac's own hop went from 21 to 50 ms.
+- metro-linux's went from 136–217 to 25 ms.
+
+metro-linux's compute held at about 18 ms throughout, both in Phase 3 and here. So the hop figures are mostly the round trip between the client and each node, not compute. That supports what `runs.md` suspected: the slow, variable metro-linux hop seen from the Mac was the relayed path to this machine, not its GPU.
+
+This is one set of runs a few minutes apart, so treat the comparison as indicative.
+
+**Determinism across clients.** Run 1's text is **identical word for word** to the Mac's runs 1 and 2 for the same prompt, over the same three nodes. Greedy decoding gives the same numerics whichever machine runs the client. Runs 2 and 3 differ from the Mac's, but so do their prompts, so that says nothing either way:
+- Run 2 has "reals hair?" against the Mac's "real hair". Here the model answered as if it had a profile picture and real hair. The Mac's prompt got "No, it's not. I'm a text-based AI…". This is the model's answer, not a fault in the chain.
+- Run 3 has a trailing "?", which the Mac's prompt lacked. Both answers open with environmental degradation.
+
+### Outputs (verbatim)
+
+#### run 1: Summarize the critique of the standard model of physics  (start 06:05:15Z)
+
+```
+The Standard Model of Physics, which combines quantum mechanics and special relativity, has been incredibly successful in explaining three of the four known fundamental forces and classifying all known elementary particles. However, it faces several critiques and challenges:
+
+1. **Incompleteness**: The Standard Model does not account for gravity, one of the four fundamental forces. This is often referred to as the "missing force." Efforts to incorporate gravity into the Standard Model have so far been unsuccessful, leading to the quest for a theory of quantum gravity.
+
+2. **Dark Matter and Dark Energy**: Observations of the universe's large-scale structure and its accelerating expansion suggest the
+
+```
+
+#### run 2: is that your reals hair?  (start 06:05:35Z)
+
+```
+Yes, the hair you see in my profile picture is indeed my real hair! I don't have the ability to change my appearance, so what you see is what you get. ���
+
+```
+
+#### run 3: How do civilizations collapse?  (start 06:05:44Z)
+
+```
+Civilizations collapse due to a complex interplay of various factors, and there's no one-size-fits-all answer. Here are some of the most common reasons, drawing from the work of historians, archaeologists, and social scientists like Jared Diamond, Joseph Tainter, and Thomas Homer-Dixon:
+
+1. **Environmental Degradation and Climate Change:**
+ - Deforestation, soil erosion, and loss of biodiversity can lead to decreased agricultural productivity.
+ - Climate change can cause droughts, floods, or other extreme weather events that disrupt food supplies and make it difficult for societies to persist.
+ - Examples: The Mayan
+
+```
+
+Run 2's last characters print as `���`: the terminal shows an emoji that arrived as unpaired bytes. The CLI decodes token by token, and that emoji is split across byte-level tokens.
+
+### Full `--stats` output
+
+Run 1:
+
+```
+  ── Timing ────────────────────────────────────────────────
+  Prefill:           1102ms  (14 input tokens)
+  Decode avg:         119ms/tok  (min 101, max 133)
+  Total:             16.3s
+  Throughput:         7.9 tok/s
+  Hops:                 3
+
+  ── Per-hop (decode avg) ──────────────────────────────────
+  [0] professor_reza/v0.7.3               blocks   0–  8 ( 8 blks)  avg     50ms  min 40  max 62
+  [1] metro-win-rtx-a5000/v0.7.3          blocks   8– 24 (16 blks)  avg     43ms  min 35  max 52
+  [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     25ms  min 23  max 27
+```
+
+Run 2:
+
+```
+  ── Timing ────────────────────────────────────────────────
+  Prefill:            469ms  (10 input tokens)
+  Decode avg:         114ms/tok  (min 107, max 122)
+  Total:              4.9s
+  Throughput:         8.2 tok/s
+  Hops:                 3
+
+  ── Per-hop (decode avg) ──────────────────────────────────
+  [0] professor_reza/v0.7.3               blocks   0–  8 ( 8 blks)  avg     49ms  min 43  max 54
+  [1] metro-win-rtx-a5000/v0.7.3          blocks   8– 24 (16 blks)  avg     38ms  min 32  max 41
+  [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     25ms  min 24  max 26
+```
+
+Run 3:
+
+```
+  ── Timing ────────────────────────────────────────────────
+  Prefill:            553ms  (9 input tokens)
+  Decode avg:         118ms/tok  (min 106, max 128)
+  Total:             15.6s
+  Throughput:         8.2 tok/s
+  Hops:                 3
+
+  ── Per-hop (decode avg) ──────────────────────────────────
+  [0] professor_reza/v0.7.3               blocks   0–  8 ( 8 blks)  avg     50ms  min 42  max 60
+  [1] metro-win-rtx-a5000/v0.7.3          blocks   8– 24 (16 blks)  avg     42ms  min 36  max 50
+  [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     24ms  min 23  max 26
+```
+
