@@ -1014,3 +1014,153 @@ Measurements:
 - If several sessions or long prompts run at once, the KV cache could fill the remaining ~2.8 GiB. The Phase 3 sampler is still running, so Phase 4's runs will show whether it grows.
 
 **metro-linux READY (Small 24B).**
+
+## Phase 4b: the same three prompts on Small 24B, metro-linux as the client
+
+Reza asked for Phase 3b's three prompts on Small 24B. The flags are the same: `[INST]…[/INST]` wrapping and `--max-tokens 128 --stats`, prompts exactly as Reza wrote them. The client is `$K shard run` on metro-linux, at 2026-11-15 19:51–19:54 UTC.
+
+**Gate: PASS.** `$K shard chain --total-blocks 40` found 3 servers covering 40/40 blocks: professor_reza 0–8, metro-win-rtx-a5000 8–24, metro-linux 24–40.
+
+### Summary
+
+| Run | Prompt | Tokens in / out | Prefill | Decode avg (min–max) | Mac hop | metro-win hop | metro-linux hop | Total |
+|---|---|---|---|---|---|---|---|---|
+| 1 | Summarize the critique of the standard model of physics | 14 / — | **failed** | — | timed out | — | — | — |
+| 2 | is that your reals hair? | 10 / 70 (EOS) | 21,879 ms | 399 ms (287–1443) | 290 ms | 69 ms | 38 ms | 49.4 s |
+| 3 | How do civilizations collapse? | 9 / 128 | 1407 ms | 322 ms (276–372) | 202 ms | 81 ms | 38 ms | 42.3 s |
+| 1, retry | Summarize the critique of the standard model of physics | 14 / 128 | 1016 ms | 321 ms (275–404) | 201 ms | 82 ms | 37 ms | 41.8 s |
+
+**Result: PASS on retry, with one failure recorded.**
+
+**Run 1 failed during prefill** because the Mac's hop for block 0 timed out after 30 s. The client had no other server for block 0, so it gave up:
+
+```
+  Prefilling 14 input token(s)…
+2026-11-15T19:51:45.995393Z  WARN kwaai_p2p_daemon::persistent: Daemon error for call a7f0d771-beab-4b4f-833e-fc363e9e9aa8: Request timed out after 30000ms
+  ⚠️  Peer 12D3KooWAour (professor_reza/v0.7.3) failed: call_unary_handler: Protocol error: Daemon error: Request timed out after 30000ms
+  ⚠️  All 1 candidate(s) for block 0 failed — rebuilding path (KV-cache lost, output may degrade)
+Error: No server covers block 0 — chain has a gap (or all candidates blacklisted)
+[exit 1]
+```
+
+The metro-linux `shard.log` has no lines for run 1, so the request never got past the Mac. I ran run 2 and run 3 straight after, as planned, and then ran run 1 once more with the identical command. That retry passed. Run 2's prefill also took 21.9 s, against about 1 s for the others, so the Mac was slow to answer for about a minute and then recovered. I can't see the Mac's side from here, so the cause is unknown. Reza, the Mac's `shard.log` around 19:51:15–19:52:10 UTC (11:51–11:52 PST) would show it.
+
+All three answers are coherent and on topic. Run 2 stopped on EOS at 70 tokens. Runs 3 and 1-retry hit the 128-token cap.
+
+### This node during the runs
+
+- **Forward time per hop** from `shard.log`:
+
+| Run | Hops logged | fwd ms min / median / max |
+|---|---|---|
+| 2 | 84 | 30.6 / 31.5 / 47.1 (the max is prefill) |
+| 3 | 128 | 30.6 / 31.6 / 33.1 |
+| 1, retry | 128 | 30.5 / 30.7 / 33.0 |
+
+  That is about 31 ms per token for 16 Small 24B blocks plus `lm_head`, against Nemo's 17.8 ms: 1.75× for about 1.9× the weights. The client's ~38 ms per hop is that plus ~7 ms of local RPC, as with Nemo.
+- **The hop count for run 2 is unexplained.** There are 84 hop lines for a 10-token prefill and 70 generated tokens, where I'd expect about 70. The first ~50 gaps between hops are irregular, with several pairs only 0.03–0.05 s apart; the last ~30 are a steady 0.29–0.33 s. The log also has `GC evicted 1 stale sessions (1 remaining)` at 19:52:11. That pattern is consistent with a second session using this node at the same time, which could also account for the Mac's slow hops, but the hop log carries no session ID, so I haven't verified it. Runs 3 and 1-retry logged exactly 128 hops each.
+- **No warnings or errors** in `shard.log` for any run.
+- **GPU memory did not grow.** The shard process held 19,998 MiB before, during and after the runs, and the card held 20,455–20,467 MiB. GPU utilisation peaked at 28 % in the 30 s samples. RAM available stayed at about 86.5 GB, and swap didn't move.
+- **Correction to Phase 4's figure:** the shard process dropped from 21,246 MiB to **19,998 MiB** between the 06:55 and 06:56 UTC samples, after the READY report and before any runs. It has stayed there since, which leaves about 4 GiB free on the card, not 2.8. I don't know what released the 1.2 GiB.
+
+### Compared with Phase 3b (Nemo) and the Mac's Phase 4 runs (`runs.md`)
+
+| | Nemo, metro-linux client (3b) | Small 24B, Mac client (`runs.md`) | Small 24B, metro-linux client |
+|---|---|---|---|
+| Decode avg | 114–119 ms/tok | 305–387 ms/tok | 321–399 ms/tok |
+| Throughput | ~8 tok/s | 2.5–3.3 tok/s | 1.4–3.1 tok/s |
+| Mac hop (0–8) | 49–50 ms | 39–40 ms | **201–290 ms** |
+| metro-win hop (8–24) | 38–43 ms | 114–121 ms | 69–82 ms |
+| metro-linux hop (24–40) | 24–25 ms | 143–229 ms | 37–38 ms |
+
+- metro-linux's own hop rose from 25 to 38 ms, which matches its compute (18 → 31 ms).
+- metro-win's hop is lower here than from the Mac, as with Nemo.
+- **The Mac hop is the bottleneck in these runs:** 200 ms, against 50 ms for Nemo from this client and 40 ms for Small 24B from the Mac itself. Doubling the weights explains at most about 20 ms of that. So unlike Phase 3b, metro-linux as client was *not* faster than the Mac this time. Whether the Mac was loaded by another session, or the path from here to it had degraded, I can't tell from this side.
+
+**Determinism across clients.** Run 1-retry's text is **identical word for word** to the Mac's Small 24B run 1 in `runs.md`. Runs 2 and 3 differ from the Mac's, but so do their prompts ("reals", and the trailing "?"). Both run 3 and the Mac's run 4 open with environmental changes (climate change, resource depletion) and then economic factors (economic inequality); only run 3 adds natural disasters.
+
+### Outputs (verbatim)
+
+#### run 1-retry: Summarize the critique of the standard model of physics
+
+```
+The Standard Model of particle physics is a highly successful theory that describes three of the four known fundamental forces (electromagnetic, weak, and strong interactions) and classifies all known elementary particles. However, it is not without its critiques and limitations. Here are some of the main critiques:
+
+1. **Incomplete**: The Standard Model does not include gravity, one of the four fundamental forces. Incorporating gravity into a consistent quantum framework remains a major challenge.
+
+2. **Fine-Tuning Problem**: The model requires precise tuning of parameters (such as the Higgs boson mass) to match experimental observations. This fine-tuning is seen
+
+```
+
+#### run 2: is that your reals hair?
+
+```
+I don't have a physical body or hair. I exist purely in the digital world as a text-based AI model. I don't have personal experiences, a physical appearance, or any biological attributes. I'm here to provide information and answer questions to the best of my ability. How about you? Would you like to share something about yourself?
+
+```
+
+#### run 3: How do civilizations collapse?
+
+```
+Civilizations can collapse due to a variety of factors, often involving a combination of internal and external pressures. Here are some of the most commonly cited reasons:
+
+1. **Environmental Changes**:
+ - **Climate Change**: Shifts in climate can make agriculture difficult, leading to famine and social unrest.
+ - **Natural Disasters**: Events like earthquakes, floods, and volcanic eruptions can devastate infrastructure and populations.
+ - **Resource Depletion**: Overuse of natural resources can lead to scarcity and conflict.
+
+2. **Economic Factors**:
+ - **Economic Inequality**: Extreme wealth disparities can lead to social unrest
+
+```
+
+### Full `--stats` output
+
+Run 2:
+
+```
+  ── Timing ────────────────────────────────────────────────
+  Prefill:          21879ms  (10 input tokens)
+  Decode avg:         399ms/tok  (min 287, max 1443)
+  Total:             49.4s
+  Throughput:         1.4 tok/s
+  Hops:                 3
+
+  ── Per-hop (decode avg) ──────────────────────────────────
+  [0] professor_reza/v0.7.3               blocks   0–  8 ( 8 blks)  avg    290ms  min 187  max 1340
+  [1] metro-win-rtx-a5000/v0.7.3          blocks   8– 24 (16 blks)  avg     69ms  min 43  max 120
+  [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     38ms  min 36  max 41
+```
+
+Run 3:
+
+```
+  ── Timing ────────────────────────────────────────────────
+  Prefill:           1407ms  (9 input tokens)
+  Decode avg:         322ms/tok  (min 276, max 372)
+  Total:             42.3s
+  Throughput:         3.0 tok/s
+  Hops:                 3
+
+  ── Per-hop (decode avg) ──────────────────────────────────
+  [0] professor_reza/v0.7.3               blocks   0–  8 ( 8 blks)  avg    202ms  min 192  max 248
+  [1] metro-win-rtx-a5000/v0.7.3          blocks   8– 24 (16 blks)  avg     81ms  min 41  max 100
+  [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     38ms  min 35  max 40
+```
+
+Run 1, retry:
+
+```
+  ── Timing ────────────────────────────────────────────────
+  Prefill:           1016ms  (14 input tokens)
+  Decode avg:         321ms/tok  (min 275, max 404)
+  Total:             41.8s
+  Throughput:         3.1 tok/s
+  Hops:                 3
+
+  ── Per-hop (decode avg) ──────────────────────────────────
+  [0] professor_reza/v0.7.3               blocks   0–  8 ( 8 blks)  avg    201ms  min 190  max 279
+  [1] metro-win-rtx-a5000/v0.7.3          blocks   8– 24 (16 blks)  avg     82ms  min 41  max 99
+  [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     37ms  min 36  max 40
+```
+
