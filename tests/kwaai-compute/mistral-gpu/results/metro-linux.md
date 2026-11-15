@@ -789,3 +789,216 @@ Run 3:
   [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     24ms  min 23  max 26
 ```
 
+
+## Phase 4: Mistral Small 24B
+
+### 1. Download, blocks 24–40, under `KWAAINET_HOME=~/.kwaainet-mistral-dl`
+
+This time the download ran with `$K` itself. The Nemo node kept serving while it ran.
+
+```
+KWAAINET_HOME=/home/rezarassool/.kwaainet-mistral-dl
+$ $K config set model unsloth/Mistral-Small-24B-Instruct-2501  [start 06:07:39Z]
+[exit 0 in 0s, end 06:07:39Z]
+$ $K shard download --start-block 24 --blocks 8  [start 06:07:39Z]
+  Blocks: [24, 32) of 32 (selective download)
+  Files:  10 (selective for blocks [24, 32))
+  Dest:   /home/rezarassool/.cache/huggingface/hub/models--unsloth--Mistral-Small-24B-Instruct-2501/snapshots/2eddef095b2d91c22c59cc3ede00ec595e530d16
+  [ 1/10] config.json  ✓  734 B
+  [ 2/10] generation_config.json  ✓  205 B
+  [ 3/10] model-00006-of-00010.safetensors  ✓  4.5 GB
+  [ 4/10] model-00007-of-00010.safetensors  ✓  4.6 GB
+  [ 5/10] model-00008-of-00010.safetensors  ✓  4.5 GB
+  [ 6/10] model-00010-of-00010.safetensors  ✓  3.6 GB
+  [ 7/10] model.safetensors.index.json  — already cached (29 KB)
+  [ 8/10] special_tokens_map.json  ✓  21 KB
+  [ 9/10] tokenizer.json  ✓  16 MB
+  [10/10] tokenizer_config.json  ✓  195 KB
+[exit 0 in 1946s, end 06:40:05Z]
+$ $K shard download --start-block 24 --blocks 16  [start 06:40:05Z]
+  Blocks: [24, 40) of 40 (selective download)
+  Files:  11 (selective for blocks [24, 40))
+  Dest:   /home/rezarassool/.cache/huggingface/hub/models--unsloth--Mistral-Small-24B-Instruct-2501/snapshots/2eddef095b2d91c22c59cc3ede00ec595e530d16
+  [ 1/11] config.json  — already cached (734 B)
+  [ 2/11] generation_config.json  — already cached (205 B)
+  [ 3/11] model-00006-of-00010.safetensors  — already cached (4.5 GB)
+  [ 4/11] model-00007-of-00010.safetensors  — already cached (4.6 GB)
+  [ 5/11] model-00008-of-00010.safetensors  — already cached (4.5 GB)
+  [ 6/11] model-00009-of-00010.safetensors  ✓  4.5 GB
+  [ 7/11] model-00010-of-00010.safetensors  — already cached (3.6 GB)
+  [ 8/11] model.safetensors.index.json  — already cached (29 KB)
+  [ 9/11] special_tokens_map.json  — already cached (21 KB)
+  [10/11] tokenizer.json  — already cached (16 MB)
+  [11/11] tokenizer_config.json  — already cached (195 KB)
+[exit 0 in 622s, end 06:50:27Z]
+overall exit 0
+```
+
+Timings:
+- **Step 1** took 1946 s (32.4 min) and fetched files 6, 7, 8 and 10.
+- **Step 2** took 622 s (10.4 min) and fetched only `model-00009`.
+- **Total:** 43 min.
+
+The rate varied between about 7 and 19 MB/s, against about 16 MB/s for Nemo. Step 1 guessed 32 blocks, as the instructions predicted. It still fetched `model-00010` with `lm_head`, because file 10 also holds layers that step 1's guessed range mapped to. File 9 came only in step 2.
+
+I checked the index's `weight_map` against each file's safetensors header:
+
+```
+734 config.json
+205 generation_config.json
+4781592816 model-00006-of-00010.safetensors
+4886471600 model-00007-of-00010.safetensors
+4781592824 model-00008-of-00010.safetensors
+4781592816 model-00009-of-00010.safetensors
+3900777072 model-00010-of-00010.safetensors
+29894 model.safetensors.index.json
+21449 special_tokens_map.json
+199745 tokenizer_config.json
+17078037 tokenizer.json
+22G	/home/rezarassool/.cache/huggingface/hub/models--unsloth--Mistral-Small-24B-Instruct-2501/snapshots/2eddef095b2d91c22c59cc3ede00ec595e530d16/
+config: layers 40 hidden 5120 heads 32 kv 8 head_dim 128 inter 32768 vocab 131072 tied False
+needed tensors 146 files ['model-00006-of-00010.safetensors', 'model-00007-of-00010.safetensors', 'model-00008-of-00010.safetensors', 'model-00009-of-00010.safetensors', 'model-00010-of-00010.safetensors']
+lm_head.weight -> model-00010-of-00010.safetensors | model.norm.weight -> model-00010-of-00010.safetensors
+absent from headers 0
+layers 24 - 39 count 16
+est bf16 GB: 16 blocks 17.78 + lm_head 1.34
+```
+
+The last line is my estimate of the bf16 weight sizes from `config.json`'s shapes, not something the tool printed.
+
+**PASS:**
+- The second step says `Blocks: [24, 40) of 40`.
+- `model-00006` through `model-00010-of-00010.safetensors` total **23.13 GB**.
+- All 146 tensors for layers 24–39 are present, and `lm_head.weight` and `model.norm.weight` are in `model-00010`.
+
+### 2. Switch
+
+```
+env: 0 KWAAINET_* vars set
+$ $K stop  [06:50:52Z]
+│                      🛑 Stopping KwaaiNet Node                      │
+2026-11-15T06:50:52.843835Z  INFO kwaainet::daemon: Stopping daemon PID 1113257
+  ✅ KwaaiNet daemon stopped
+[exit 0]
+kwaainet processes: 0; gpu: 469 MiB
+$ $K config set model unsloth/Mistral-Small-24B-Instruct-2501
+  ✅ Set model = unsloth/Mistral-Small-24B-Instruct-2501
+[exit 0]
+$ $K start --daemon --shard  [06:50:56Z]
+│                       🗺  Reading Network Map                        │
+  Local models (1):
+    • llama3.1:8b
+  Network map (3 model(s)):
+    Llama-3.1-8B-Instruct                       13 server(s)  ✓ have locally
+    Mistral-Nemo-Instruct-2407                   2 server(s)  ✗ not installed
+    Mistral-Small-24B-Instruct-2501              1 server(s)  ✗ not installed
+  ✅ Confirmed model: unsloth/Mistral-Small-24B-Instruct-2501
+    Map entry:  Llama-3.1-8B-Instruct  (13 server(s))
+─────────────────────────────────────────────────────────────────────
+│                      🚀 Starting KwaaiNet Node                      │
+  Model:   unsloth/Mistral-Small-24B-Instruct-2501
+  Blocks:  16
+  Port:    8080
+  Peers:   2
+  Name:    metro-linux
+─────────────────────────────────────────────────────────────────────
+  ✅ KwaaiNet daemon started (PID 1123512)
+  ✅ Shard serving: the daemon starts and supervises it
+  💡 Shard logs:   kwaainet logs --shard
+  💡 Storage not initialised — skipping. Run: kwaainet storage init
+  💡 Check status: kwaainet status
+  💡 View logs:    kwaainet logs
+  💡 Stop daemon:  kwaainet stop
+─────────────────────────────────────────────────────────────────────
+[exit 0]
+```
+
+`shard.log` (blocks 25–38 and the usual inference-mux warnings omitted):
+
+```
+2026-11-15T06:50:57.774691Z  INFO kwaai_inference: CUDA device detected
+│                      🧩 KwaaiNet Shard Server                       │
+  Blocks:      [24, 40)
+  Device:      CUDA (GPU 0)
+  Model:       unsloth/Mistral-Small-24B-Instruct-2501
+  ✅ Node registered on protocol /kwaai/inference/1.0.0 — appearing on map.
+  💡 Loading model in background. Requests return 'warming up' until ready.
+─────────────────────────────────────────────────────────────────────
+  💡 Local bypass server on 127.0.0.1:39565
+  💡 Rebalancing disabled — this node pins blocks [24, 40). Unset start_block to allow moves.
+  💡 Loading shard (5 file(s), blocks [24, 40))…
+2026-11-15T06:51:05.522839Z  INFO kwaai_inference::shard: Loading shard [24..40) of 40: hidden=5120 heads=32 (8 kv)
+2026-11-15T06:51:05.523189Z  INFO kwaai_inference::shard:   Loading block 24
+2026-11-15T06:51:09.275901Z  INFO kwaai_inference::shard:   Loading block 39
+2026-11-15T06:51:09.523415Z  INFO kwaai_inference::shard:   Loading norm + lm_head
+2026-11-15T06:51:10.526755Z  INFO kwaai_inference::tokenizer: Loaded tokenizer.json: vocab=131072, bos=Some(1), eos=Some(2)
+2026-11-15T06:51:10.571772Z  INFO kwaai_inference::shard: Shard [24..40) ready — embedding=false final_head=true
+  ✅ Shard ready  (16 blocks, is_first=false, is_last=true)
+2026-11-15T06:51:11.031864Z  INFO kwaainet::daemon: Sent SIGHUP to daemon PID 1123512 — re-announce will follow
+```
+
+GPU memory sampled every 2 s during the load:
+
+```
+06:50:57 gpu_total=473 MiB procs=[]
+06:50:59 gpu_total=694 MiB procs=[1123615, 216 MiB;]
+06:51:01 gpu_total=694 MiB procs=[1123615, 216 MiB;]
+06:51:03 gpu_total=675 MiB procs=[1123615, 216 MiB;]
+06:51:05 gpu_total=675 MiB procs=[1123615, 216 MiB;]
+06:51:07 gpu_total=9889 MiB procs=[1123615, 9432 MiB;]
+06:51:09 gpu_total=20705 MiB procs=[1123615, 20248 MiB;]
+06:51:11 gpu_total=21697 MiB procs=[1123615, 21240 MiB;]
+```
+
+Checks after load:
+
+```
+$ ps -o pid,args -p $(cat ~/.kwaainet/run/shard.pid)
+    PID COMMAND
+1123615 $K shard serve --auto-rebalance
+[exit 0]
+
+$ /nix/store/460frpdijpwl6fcz89wg49hsp9jbdjlf-kwaainet-0.7.3/bin/kwaainet status | grep -E 'Status|PID|Shard'
+│                       📊 KwaaiNet Node Status                       │
+  🟢 Status:  Running
+  🔢 PID:     1123512
+  🟢 Shard:   Running (PID 1123615)
+[exit 0]
+
+$ nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+memory.used [MiB], memory.total [MiB]
+21697 MiB, 24564 MiB
+[exit 0]
+
+$ nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv
+pid, process_name, used_gpu_memory [MiB]
+1123615, $K, 21240 MiB
+[exit 0]
+
+$ free -g
+               total        used        free      shared  buff/cache   available
+Mem:              93           7          12           0          73          85
+Swap:              3           3           0
+[exit 0]
+
+$ grep -c -i -E 'shape mismatch|panicked|ERROR|out of memory' /tmp/claude-1000/-home-rezarassool-Documents-KwaaiNet/2b13942b-285f-4b6a-8d0f-c2eeeae4aeeb/scratchpad/mistral/p4-shardlog.txt
+0
+[exit 1]
+
+```
+
+The `grep -c` found 0 matches: no shape mismatch, no out-of-memory error and no panic.
+
+Measurements:
+- **Load time:** 5.0 s from `Loading shard` (06:51:05.5) to `Shard ready` (06:51:10.6), and 14 s from `start`.
+- **The shard process on the GPU:** **21,240 MiB**, out of **21,697 MiB** used on the card of 24,564 MiB.
+  - The weights are about 19.1 GB. The remaining ~2 GB is the CUDA context and cuBLAS working memory, as with Nemo, where it was about 1.7 GB.
+  - That leaves about **2.8 GiB free on the card** for the KV cache during runs.
+
+**PASS, with a margin to watch:**
+- The log has `Device: CUDA (GPU 0)`, then `Shard ready  (16 blocks, is_first=false, is_last=true)`.
+- The shard child runs `$K`.
+- The card's 21,697 MiB is 22.75 GB in decimal units: under the 23 GB limit, but above the 19–20 GB the instructions expected. In binary units it is 21.2 GiB.
+- If several sessions or long prompts run at once, the KV cache could fill the remaining ~2.8 GiB. The Phase 3 sampler is still running, so Phase 4's runs will show whether it grows.
+
+**metro-linux READY (Small 24B).**
