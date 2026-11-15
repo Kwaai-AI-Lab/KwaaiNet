@@ -93,3 +93,77 @@ Sampling is not the difference. `run_streaming` hard-codes temperature 1.0, top_
 | `[INST]How do civiliations collapse?[/INST]` | "Civilizations collapse due to a complex interplay of various factors … 1. **Environmental Degradation** …", a good answer |
 
 **Fix needed, outside this test:** add a Mistral branch, such as `[INST]` present in the vocab → `[INST]{prompt}[/INST]`. It must go in all three copies of the template-selection code in `shard_cmd.rs` (`cmd_shard_run`, the second CLI path, and `run_streaming`). Note that `shard_api.rs`, `api.rs` and `grpc_server.rs → build_prompt` hard-code Llama 3 for every model. A single shared template function would remove the duplication.
+
+## Phase 4: Mistral Small 24B — 2026-11-14 (22:59–23:02 PST)
+
+**Gate: PASS.** `shard chain --total-blocks 40` (prefix `Mistral-Small-24B-Instruct-2501`) returned 3 servers, 40/40 blocks: professor_reza 0–8 (MLX), metro-win-rtx-a5000 8–24 (CUDA), metro-linux 24–40 (CUDA). All three had pushed READY (Small 24B): the Mac's shard footprint is 9.9 GB; the metros' figures are in their files.
+
+The same prompts and flags as Phase 3: `[INST]…[/INST]` by hand, `--max-tokens 128 --stats`, prompt 1 twice.
+
+### Summary
+
+| Run | Prompt | Tokens | Prefill | Decode avg (min–max) | Mac hop | metro-win hop | metro-linux hop | Total |
+|---|---|---|---|---|---|---|---|---|
+| 1 (cold) | Summarize the critique of the standard model of physics | 14 in / 128 out | 2767 ms | 328 ms (263–688) | 40 ms | 116 ms | 169 ms | 44.4 s |
+| 2 (warm) | same | 14 / 128 | 935 ms | 331 ms (239–537) | 40 ms | 114 ms | 174 ms | 42.9 s |
+| 3 | is that your real hair | 8 / 64 (EOS) | 817 ms | 387 ms (268–641) | 39 ms | 117 ms | 229 ms | 25.2 s |
+| 4 | How do civilizations collapse | 8 / 128 | 633 ms | 305 ms (272–464) | 39 ms | 121 ms | 143 ms | 39.3 s |
+
+**Result: PASS.** All four runs completed over the three GPUs with no timeout or error. The answers are coherent and noticeably more precise than Nemo's: it names the forces, and adds fine-tuning to the critique and economic factors to the collapse list.
+
+### Compared with Nemo 12B (Phase 3)
+
+| | Nemo 12B | Small 24B |
+|---|---|---|
+| Decode avg | 242–330 ms/tok | 305–387 ms/tok |
+| Mac hop, 8 blocks | ~21 ms | ~40 ms |
+| metro-win hop, 16 blocks | ~90 ms | ~117 ms |
+| metro-linux hop, 16 blocks + `lm_head` | 136–217 ms | 143–229 ms |
+| Throughput | 3.0–3.9 tok/s | 2.5–3.3 tok/s |
+
+- **Twice the weights cost only about 15–20% more time per token.** The Mac hop doubled (21 → 40 ms) in line with its weights, and metro-win rose about 30%, but metro-linux barely moved. That fits metro-linux's hop being mostly network/relay rather than compute, as #293's metro-win profile also suggested (metro-win's GPU is about 43 ms of each ~500 ms token on Nemo).
+- **Cold start cost was again small:** about 1.8 s of extra prefill on run 1, for 10 GB of MLX weights.
+- **Runs 1 and 2 are identical text again** (greedy decoding; see #293).
+
+### Outputs (verbatim)
+
+#### run 1: Summarize the critique of the standard model of physics  (22:59:21)
+
+```
+The Standard Model of particle physics is a highly successful theory that describes three of the four known fundamental forces (electromagnetic, weak, and strong interactions) and classifies all known elementary particles. However, it is not without its critiques and limitations. Here are some of the main critiques:
+
+1. **Incomplete**: The Standard Model does not include gravity, one of the four fundamental forces. Incorporating gravity into a consistent quantum framework remains a major challenge.
+
+2. **Fine-Tuning Problem**: The model requires precise tuning of parameters (such as the Higgs boson mass) to match experimental observations. This fine-tuning is seen
+```
+
+#### run 2: Summarize the critique of the standard model of physics  (23:00:07)
+
+```
+The Standard Model of particle physics is a highly successful theory that describes three of the four known fundamental forces (electromagnetic, weak, and strong interactions) and classifies all known elementary particles. However, it is not without its critiques and limitations. Here are some of the main critiques:
+
+1. **Incomplete**: The Standard Model does not include gravity, one of the four fundamental forces. Incorporating gravity into a consistent quantum framework remains a major challenge.
+
+2. **Fine-Tuning Problem**: The model requires precise tuning of parameters (such as the Higgs boson mass) to match experimental observations. This fine-tuning is seen
+```
+
+#### run 3: is that your real hair  (23:00:52)
+
+```
+I don't have a physical body or hair. I exist purely in the digital world as a text-based AI model. I don't have senses, a physical presence, or personal experiences. I'm here to process and generate text based on the data I've been trained on. How can I assist you today?
+```
+
+#### run 4: How do civilizations collapse  (23:01:18)
+
+```
+Civilizations collapse due to a combination of internal and external factors. While each collapse is unique, historians and researchers have identified several common themes and processes. Here are some of the key factors:
+
+1. **Environmental Changes**:
+ - **Climate Change**: Shifts in climate can lead to droughts, floods, or other environmental changes that make agriculture difficult.
+ - **Resource Depletion**: Overuse of natural resources can lead to scarcity and conflict.
+
+2. **Economic Factors**:
+ - **Economic Inequality**: Extreme wealth disparities can lead to social unrest and political instability.
+ - **Economic Collapse**:
+```
+
