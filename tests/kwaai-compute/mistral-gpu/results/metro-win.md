@@ -227,3 +227,27 @@ Between 06:40 and 06:47Z, the Nemo node was stopped, `fix/windows-graceful-stop`
 **Seen during the interlude: three starts failed their first announce.** Three node starts on this machine between 06:41 and 06:47 each logged `STORE RPC failed … Failed to negotiate transport protocol(s)` on both bootstraps, then `Announcement failed — node will not appear on map`. Each recovered on its own once a relay reservation was confirmed, 2–5 minutes later. It happened after a forced kill and after a clean stop alike. The 02:58 and 03:14 restarts announced at once, so it may be the bootstraps limiting rapid reconnects from one address. This was not investigated further.
 
 The test home `~\.kwaainet-stoptest`, which held a copy of the identity key, was deleted afterwards.
+
+### 2. Switch to Small 24B: PASS
+
+`$K stop` (`Stopping daemon PID 3972`), then `$K config set model unsloth/Mistral-Small-24B-Instruct-2501`, then `$K start --daemon --shard` at 06:51:08Z.
+
+```
+  Device:      CUDA (GPU 0)
+  Model:       unsloth/Mistral-Small-24B-Instruct-2501
+  💡 Loading shard (4 file(s), blocks [8, 24))…
+06:51:17.985Z INFO kwaai_inference::shard: Loading shard [8..24) of 40: hidden=5120 heads=32 (8 kv)
+06:51:31.307Z INFO kwaai_inference::tokenizer: Loaded tokenizer.json: vocab=131072, bos=Some(1), eos=Some(2)
+06:51:31.339Z INFO kwaai_inference::shard: Shard [8..24) ready — embedding=false final_head=false
+  ✅ Shard ready  (16 blocks, is_first=false, is_last=false)
+```
+
+- **Load:** 13.4 s (`Loading shard` → `ready`), 23 s from `start`. No `shape mismatch` and no load error.
+- **One ERROR line**, `kwaai_p2p_daemon::persistent: … forcibly closed by the remote host (os error 10054)` at 06:51:07.3Z. It is the old Nemo shard losing its daemon when `$K stop` hard-killed it. It is not from this load.
+- **GPU:** **19,795 MiB / 24,564 MiB** in total, under 23 GB. The shard is ≈ 19.1 GB over the 687 MiB baseline, a little above the "about 18 GB" in the instructions. `nvidia-smi` lists PID 12044 (`…KwaaiNet-headdim\…\kwaainet.exe`).
+- **Processes:** node 19408, shard 12044 and storage 20280, all running from `$K`.
+- **Announce:** a relay reservation was confirmed at 06:51:24Z, then `Announced 16 blocks` to 2 of 2 bootstraps at 06:51:35Z. This start had no delayed announce.
+
+Note: the stopped daemon was `$K`, which lacks the Windows stop fix, so this stop wrote no tombstone. metro-win's Nemo record stays "online" in the DHT (#294) and may compete with Small 24B for metro-win's peer row on the map.
+
+**metro-win READY (Small 24B).**
