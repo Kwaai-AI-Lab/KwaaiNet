@@ -181,3 +181,49 @@ Runs 1–3 are the three prompts in the KwaaiNet GUI on this machine, each cut a
 Cause: `run_streaming` sends Mistral prompts with no chat template, samples at temperature 1.0 with no top-k, top-p or repetition penalty, and stops silently at a default of 200 tokens. Filed as **#293**.
 
 Filed alongside: **#294**. The map shows metro-win on the 8B because the bootstraps serve expired dictionary subkeys, and a Windows stop writes no tombstone.
+
+## Phase 4
+
+### 1. Download Small 24B: PASS
+
+Run with `$env:KWAAINET_HOME = "$env:USERPROFILE\.kwaainet-mistral-dl"`, from 06:11:19Z to 06:36:08Z: **1,488 s**, about 12 MB/s, half the Nemo rate.
+
+```
+  Model: unsloth/Mistral-Small-24B-Instruct-2501
+  Blocks: [8, 24) of 32 (selective download)
+  Commit: 2eddef095b2d
+  Files:  10 (selective for blocks [8, 24))
+  [ 3/10] model-00003-of-00010.safetensors  ✓  4.5 GB
+  [ 4/10] model-00004-of-00010.safetensors  ✓  4.6 GB
+  [ 5/10] model-00005-of-00010.safetensors  ✓  4.5 GB
+  [ 6/10] model-00006-of-00010.safetensors  ✓  4.5 GB
+  [ 7/10] model.safetensors.index.json  — already cached (29 KB)
+EXIT 0
+```
+
+**Snapshot:** `…\models--unsloth--Mistral-Small-24B-Instruct-2501\snapshots\2eddef095b2d91c22c59cc3ede00ec595e530d16`, 19,248,580,104 bytes (19.25 GB).
+
+- **Layers:** from the index, `model-00003` holds 8–11, `00004` holds 11–16, `00005` holds 16–20 and `00006` holds 20–23. Every layer from 8 to 23 is covered.
+- **Model shape:** `config.json` gives 40 layers, `head_dim` 128 and hidden 5120. This is the non-square attention case `fix/config-head-dim` handles.
+
+### Interlude: the Nemo node was stopped and restarted to test the Windows stop fix (Reza's request)
+
+Between 06:40 and 06:47Z, the Nemo node was stopped, `fix/windows-graceful-stop` was tested end to end, and Nemo was restarted. The chain lost 8–24 for about 9 minutes; no prompts were running. The fix makes `kwaainet stop` on Windows ask the node to shut down and wait for it, so the node writes its `state = -1` tombstone. Before, it ran `taskkill /F` straight away. The binary is a release build of that branch, not `$K`.
+
+1. **Stop the old-code Nemo daemon (`$K`) with the fix binary.** `Daemon PID 23972 did not exit within 10s of the stop request — forcing it`. It was forced through the process handle at 10.0 s, the children went with it, and no `stop.request` was left. **PASS**: the upgrade path against daemons that predate the request.
+2. **A fresh home, a new identity (`…YkQT`), the 8B on blocks 0–32.** `stop` took 0.4 s: `Received a stop request` → `Unannouncing from DHT...` → `32/32 stored` on both bootstraps → `shut down cleanly`. A raw `rpc_find` turned the record from `state=1` to **`state=-1`**, with a fresh 358 s expiry on both bootstraps. **PASS**.
+3. **The same home with metro-win's own identity.** A leftover `stop.request` naming another PID was planted before `start`; it was cleared at start-up and the node kept running (**PASS**). The node replaced the stale 8B record, then expired 13,411 s ago and still `state=2`, with a fresh one. `stop` took 0.7 s, and the record became **`state=-1`** on both bootstraps. **PASS**.
+4. **Negative cases.**
+   - No PID file: `Error: No daemon is running`, exit 1.
+   - A stale PID file (no such process): `The PID file named a node that is not running — removed it`, then `No daemon is running`, exit 1, nothing killed.
+   - **PASS**.
+5. **Nemo restarted** with `$K start --daemon --shard` on the live home (config unchanged): `Device: CUDA (GPU 0)`, `Shard ready (16 blocks…)`.
+
+**Result on the map**, crawl of 06:50:18Z:
+- metro-win's `peers` row is now **`Mistral-Nemo-Instruct-2407`, blocks 8–24, online**, instead of the stale `Llama-3.1-8B-Instruct` 0–32.
+- The 8B report lists metro-win as **offline**.
+- The Nemo report read `broken` at that moment: professor_reza 0–8 was absent, with only metro-win 8–24 and metro-linux 24–40 listed.
+
+**Seen during the interlude: three starts failed their first announce.** Three node starts on this machine between 06:41 and 06:47 each logged `STORE RPC failed … Failed to negotiate transport protocol(s)` on both bootstraps, then `Announcement failed — node will not appear on map`. Each recovered on its own once a relay reservation was confirmed, 2–5 minutes later. It happened after a forced kill and after a clean stop alike. The 02:58 and 03:14 restarts announced at once, so it may be the bootstraps limiting rapid reconnects from one address. This was not investigated further.
+
+The test home `~\.kwaainet-stoptest`, which held a copy of the identity key, was deleted afterwards.
