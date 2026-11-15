@@ -1,6 +1,6 @@
 # Mistral Small 24B across three GPUs on three platforms
 
-**Status:** plan, 2026-11-14. It replaces the [Llama 3.3 70B plan](Llama70B-Heterogeneous-plan.md), which failed (see "Why the 70B run was dropped").
+**Status:** done 2026-11-15, PASS for both models; see [findings](../../../tests/kwaai-compute/mistral-gpu/results/findings.md). Planned 2026-11-14. It replaces the [Llama 3.3 70B plan](Llama70B-Heterogeneous-plan.md), which failed (see "Why the 70B run was dropped").
 
 ## Goal
 
