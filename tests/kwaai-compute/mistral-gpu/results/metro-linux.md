@@ -510,3 +510,129 @@ Measurements:
 - Both the daemon and the shard child run the `$K` path.
 
 **metro-linux READY (Nemo, GPU 24–40).**
+
+## Phase 3: Nemo runs
+
+A sampler recorded `free`, `nvidia-smi` (the whole card and per process) and `vmstat` swap activity every 30 s, from 05:29:19 to 06:02:43. Reza reported the runs done at about 06:02.
+
+### Memory and GPU
+
+```
+05:29:19 avail=87249M swap_used=3353M gpu=[12266 MiB, 4 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:29:50 avail=87338M swap_used=3353M gpu=[12253 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:30:21 avail=87379M swap_used=3353M gpu=[12245 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:30:52 avail=87388M swap_used=3353M gpu=[12245 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:31:23 avail=87407M swap_used=3353M gpu=[12245 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:31:54 avail=87452M swap_used=3353M gpu=[12245 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:32:25 avail=87478M swap_used=3353M gpu=[12245 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:32:56 avail=87488M swap_used=3353M gpu=[12245 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:33:28 avail=87503M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:33:59 avail=87524M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:34:30 avail=87551M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:35:01 avail=87556M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:35:32 avail=87569M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:36:03 avail=87579M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:36:34 avail=87590M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:37:05 avail=87594M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:37:36 avail=87595M swap_used=3353M gpu=[12275 MiB, 0 %] procs=[1113360, 11800 MiB;] si=0 so=0
+05:38:07 avail=87386M swap_used=3353M gpu=[12281 MiB, 0 %] procs=[1113360, 11806 MiB;] si=0 so=0
+05:38:38 avail=87411M swap_used=3352M gpu=[12281 MiB, 0 %] procs=[1113360, 11806 MiB;] si=0 so=0
+05:39:09 avail=87429M swap_used=3352M gpu=[12281 MiB, 5 %] procs=[1113360, 11806 MiB;] si=0 so=0
+05:39:40 avail=87433M swap_used=3352M gpu=[12281 MiB, 0 %] procs=[1113360, 11806 MiB;] si=0 so=0
+05:40:11 avail=87436M swap_used=3352M gpu=[11097 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:40:42 avail=87449M swap_used=3352M gpu=[11097 MiB, 16 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:41:13 avail=87449M swap_used=3352M gpu=[11097 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:41:44 avail=87460M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=4 so=0
+05:42:16 avail=87474M swap_used=3352M gpu=[11094 MiB, 17 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:42:47 avail=87475M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:43:18 avail=87477M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:43:49 avail=87485M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:44:20 avail=87491M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:44:51 avail=87498M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:45:22 avail=87504M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:45:53 avail=87505M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:46:24 avail=87507M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:46:55 avail=87508M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:47:26 avail=87510M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:47:57 avail=87508M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:48:28 avail=87507M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:48:59 avail=87508M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:49:30 avail=87513M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:50:01 avail=87503M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:50:32 avail=87501M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:51:04 avail=87499M swap_used=3352M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:51:35 avail=87488M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:52:06 avail=87479M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:52:37 avail=87488M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:53:08 avail=87465M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:53:39 avail=87475M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:54:10 avail=87474M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:54:41 avail=87464M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:55:12 avail=87443M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:55:43 avail=87443M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:56:14 avail=87448M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:56:45 avail=87451M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:57:16 avail=87452M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=16 so=0
+05:57:47 avail=87457M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:58:18 avail=87455M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:58:49 avail=87456M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:59:20 avail=87451M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+05:59:52 avail=87447M swap_used=3342M gpu=[11094 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+06:00:23 avail=87441M swap_used=3342M gpu=[11096 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+06:00:54 avail=87429M swap_used=3342M gpu=[11096 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+06:01:25 avail=87426M swap_used=3342M gpu=[11096 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+06:01:56 avail=87422M swap_used=3342M gpu=[11096 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+06:02:27 avail=87450M swap_used=3337M gpu=[11074 MiB, 0 %] procs=[1113360, 10622 MiB;] si=0 so=0
+06:02:58 avail=87399M swap_used=3337M gpu=[11082 MiB, 15 %] procs=[1113360, 10622 MiB;] si=0 so=0
+```
+
+Over the 65 samples:
+- **RAM:** at least 87,249 MiB (85 GiB) available throughout.
+- **Swap:** flat at about 3.35 GiB used. That is left over from the 70B test; `so` was 0 in every sample and `si` totalled 20 pages, so **nothing swapped**.
+- **GPU memory:** at most **12,281 MiB** on the card. The shard process itself held 11,800–11,806 MiB until 05:40, then **10,622 MiB** for the rest of the runs. It released about 1.2 GB between 05:39:09 and 05:40:42, during the second burst, and did not grow again.
+- **GPU utilisation:** at most 17% in any sample. The 30 s samples mostly fall between forward passes, which last about 18 ms each.
+
+### `shard.log` during the runs
+
+The log has 1,219 new lines from Phase 2's ready line to 06:02:43:
+- 1,215 `hop timing` lines;
+- 4 `GC evicted 1 stale sessions` lines.
+
+There are **no errors or warnings**: `grep -i -E 'error|warn|too large|panick'` matched 0 lines, so there is no `Message too large` and no `shape mismatch`.
+
+Forward time per hop for this node's blocks `[24..40)`, with `payload="HiddenStates"`:
+
+```
+hops 1215  min 17.0  median 17.6  p99 18.1  max 346.1  mean 17.8 (ms)
+```
+
+The six hops slower than 20 ms are each the first or second hop of a burst, which is the prefill over the whole prompt:
+
+```
+05:37:58.541  346.1 ms   (very first forward pass on this node: CUDA kernel load/JIT)
+05:38:00.620   22.6 ms
+05:40:34.242   39.3 ms
+05:43:27.891   38.4 ms
+05:51:39.132   40.5 ms
+06:00:39.366   38.3 ms
+```
+
+Grouped by gaps longer than 5 s, the hops fall into five bursts:
+
+```
+burst at 05:37:58  200 hops, 105.2 s
+burst at 05:40:34  200 hops, 100.8 s
+burst at 05:43:27  200 hops, 100.4 s
+burst at 05:51:39  423 hops, 134.2 s
+burst at 06:00:39  192 hops,  55.6 s
+```
+
+In each burst this node's 16 blocks took about 18 ms per token, but tokens arrived about every 0.5 s. So almost all of each run's time was spent outside metro-linux. The 423-hop burst at 05:51 is probably two runs back to back. Reza's `runs.md` has the actual prompts.
+
+The `GC evicted 1 stale sessions` lines came at 05:50:12, 05:52:42, 05:55:12 and 06:02:42. They are routine cleanup of finished sessions, and 6 sessions were still held at the last one.
+
+**PASS:**
+- No errors in `shard.log`.
+- No swapping.
+- GPU memory peaked at 12.3 GB on the card and 11.8 GB for the shard process.
+- Every hop served from CUDA in about 17–18 ms, apart from the first.
