@@ -125,7 +125,8 @@ The exact steps to repeat it:
 git fetch origin
 git worktree add ../KwaaiNet-headdim origin/fix/config-head-dim
 cd ../KwaaiNet-headdim
-# core/patches/{cudarc,libp2p-kad,multistream-select} are not needed for the Nix build (the flake vendors its own)
+# The core/patches/ symlinks were in place but untracked, and a flake built from a git tree sees only tracked files,
+# so this build did not use them. crane.nix supplies the patched crates itself.
 systemd-run --user --scope -q -p MemoryMax=48G -p MemorySwapMax=0 \
   nix build .#kwaainet-cuda --cores 16 --max-jobs 1 -L -o result-cuda
 K=$(readlink -f result-cuda)/bin/kwaainet
