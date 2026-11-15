@@ -32,7 +32,8 @@ pub struct ShardConfig {
     pub hidden_dim: usize,
     pub num_heads: usize,
     pub num_kv_heads: usize,
-    /// `hidden_dim / num_heads`
+    /// Width of one attention head. `config.json`'s `head_dim` when it has one,
+    /// else `hidden_dim / num_heads` — see [`config_head_dim`].
     pub head_dim: usize,
     pub intermediate_dim: usize,
     pub vocab_size: usize,
@@ -42,7 +43,31 @@ pub struct ShardConfig {
     pub dtype: DType,
 }
 
+/// Width of one attention head, from a HuggingFace `config.json`.
+///
+/// Llama configs leave `head_dim` out, and it is `hidden_size /
+/// num_attention_heads`. Mistral Nemo and Mistral Small 3 state it: 128, with
+/// `hidden_size` 5120 and 32 heads, so the quotient (160) is wrong and `q_proj`
+/// is `[4096, 5120]`, not square. An absent or null `head_dim` falls back to
+/// the quotient.
+pub fn config_head_dim(config_json: &str, hidden: usize, heads: usize) -> InferenceResult<usize> {
+    #[derive(serde::Deserialize)]
+    struct HeadDim {
+        #[serde(default)]
+        head_dim: Option<usize>,
+    }
+    let parsed: HeadDim = serde_json::from_str(config_json)
+        .map_err(|e| InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}")))?;
+    Ok(parsed.head_dim.unwrap_or(hidden / heads))
+}
+
 impl ShardConfig {
+    /// Width of the concatenated query heads: `q_proj`'s output and `o_proj`'s
+    /// input. Equal to `hidden_dim` only when `head_dim` is the quotient.
+    pub fn q_dim(&self) -> usize {
+        self.num_heads * self.head_dim
+    }
+
     /// Number of query heads per KV head (GQA repeat factor).
     pub fn n_rep(&self) -> usize {
         self.num_heads / self.num_kv_heads
@@ -193,6 +218,7 @@ impl ShardBlock {
     /// `model.layers.{global_idx}`.
     pub(crate) fn load(vb: VarBuilder, cfg: &ShardConfig) -> InferenceResult<Self> {
         let h = cfg.hidden_dim;
+        let q_dim = cfg.q_dim();
         let kv_dim = cfg.num_kv_heads * cfg.head_dim;
         let inter = cfg.intermediate_dim;
         let eps = cfg.rms_norm_eps;
@@ -202,13 +228,13 @@ impl ShardBlock {
         let post_attn_layernorm = candle_nn::rms_norm(h, eps, vb.pp("post_attention_layernorm"))
             .map_err(|e| InferenceError::ModelLoadError(format!("post_attn_layernorm: {e}")))?;
 
-        let q_proj = candle_nn::linear_no_bias(h, h, vb.pp("self_attn.q_proj"))
+        let q_proj = candle_nn::linear_no_bias(h, q_dim, vb.pp("self_attn.q_proj"))
             .map_err(|e| InferenceError::ModelLoadError(format!("q_proj: {e}")))?;
         let k_proj = candle_nn::linear_no_bias(h, kv_dim, vb.pp("self_attn.k_proj"))
             .map_err(|e| InferenceError::ModelLoadError(format!("k_proj: {e}")))?;
         let v_proj = candle_nn::linear_no_bias(h, kv_dim, vb.pp("self_attn.v_proj"))
             .map_err(|e| InferenceError::ModelLoadError(format!("v_proj: {e}")))?;
-        let o_proj = candle_nn::linear_no_bias(h, h, vb.pp("self_attn.o_proj"))
+        let o_proj = candle_nn::linear_no_bias(q_dim, h, vb.pp("self_attn.o_proj"))
             .map_err(|e| InferenceError::ModelLoadError(format!("o_proj: {e}")))?;
 
         let gate_proj = candle_nn::linear_no_bias(h, inter, vb.pp("mlp.gate_proj"))
@@ -260,7 +286,7 @@ impl ShardBlock {
             .map_err(InferenceError::from)?;
 
         // Project to Q, K, V
-        let q = self.q_proj.forward(&normed).map_err(InferenceError::from)?; // [b, s, h]
+        let q = self.q_proj.forward(&normed).map_err(InferenceError::from)?; // [b, s, q_dim]
         let k = self.k_proj.forward(&normed).map_err(InferenceError::from)?; // [b, s, kv_dim]
         let v = self.v_proj.forward(&normed).map_err(InferenceError::from)?;
 
@@ -351,12 +377,11 @@ impl ShardBlock {
             attn_w.matmul(&v_full).map_err(InferenceError::from)?
         };
 
-        // Merge heads: [b, s, h]
-        let h = self.cfg.hidden_dim;
+        // Merge heads: [b, s, q_dim]; o_proj maps back to hidden_dim
         let attn_out = attn_out
             .transpose(1, 2)
             .map_err(InferenceError::from)?
-            .reshape((b, s, h))
+            .reshape((b, s, n_h * hd))
             .map_err(InferenceError::from)?;
         let attn_out = self
             .o_proj
@@ -476,7 +501,7 @@ impl TransformerShard {
         let hidden_dim = hf_config.hidden_size;
         let num_heads = hf_config.num_attention_heads;
         let num_kv_heads = hf_config.num_key_value_heads();
-        let head_dim = hidden_dim / num_heads;
+        let head_dim = config_head_dim(&config_str, hidden_dim, num_heads)?;
         let intermediate_dim = hf_config.intermediate_size;
         let vocab_size = hf_config.vocab_size;
         let rope_theta = hf_config.rope_theta as f64;
@@ -944,5 +969,76 @@ mod tests {
             v1.iter().zip(v2.iter()).any(|(a, b)| (a - b).abs() > 1e-4),
             "RoPE caches with different theta should differ"
         );
+    }
+
+    #[test]
+    fn config_head_dim_reads_an_explicit_value_and_falls_back_to_the_quotient() {
+        // Mistral Nemo / Mistral Small 3: 5120 / 32 = 160, but heads are 128 wide.
+        let nemo = r#"{"hidden_size": 5120, "num_attention_heads": 32, "head_dim": 128}"#;
+        assert_eq!(config_head_dim(nemo, 5120, 32).unwrap(), 128);
+        // Llama: no head_dim key.
+        let llama = r#"{"hidden_size": 4096, "num_attention_heads": 32}"#;
+        assert_eq!(config_head_dim(llama, 4096, 32).unwrap(), 128);
+        // Some exports write it as null.
+        let null = r#"{"hidden_size": 4096, "num_attention_heads": 32, "head_dim": null}"#;
+        assert_eq!(config_head_dim(null, 4096, 32).unwrap(), 128);
+    }
+
+    /// A block whose heads are narrower than `hidden_dim / num_heads` loads and
+    /// runs. Before `config_head_dim`, `q_proj` and `o_proj` were built square
+    /// (`hidden_dim` x `hidden_dim`), so loading Mistral Nemo's `[4096, 5120]`
+    /// `q_proj` failed on shape.
+    ///
+    /// Not built with `flash-attn`: that path needs CUDA and f16, and this
+    /// test runs on CPU in f32 (#291).
+    #[cfg(not(feature = "flash-attn"))]
+    #[test]
+    fn block_with_explicit_head_dim_loads_and_runs() {
+        let device = Device::Cpu;
+        // hidden 40, 4 heads of 8 (not 10), 2 KV heads: q_dim 32, kv_dim 16.
+        let cfg = ShardConfig {
+            num_total_blocks: 1,
+            hidden_dim: 40,
+            num_heads: 4,
+            num_kv_heads: 2,
+            head_dim: 8,
+            intermediate_dim: 64,
+            vocab_size: 16,
+            rope_theta: 10000.0,
+            max_seq_len: 16,
+            rms_norm_eps: 1e-5,
+            dtype: DType::F32,
+        };
+        let (h, q, kv, inter) = (40, 32, 16, 64);
+        let w =
+            |rows: usize, cols: usize| Tensor::randn(0f32, 0.02, (rows, cols), &device).unwrap();
+        let mut t = std::collections::HashMap::new();
+        t.insert(
+            "input_layernorm.weight".to_string(),
+            Tensor::ones(h, DType::F32, &device).unwrap(),
+        );
+        t.insert(
+            "post_attention_layernorm.weight".to_string(),
+            Tensor::ones(h, DType::F32, &device).unwrap(),
+        );
+        t.insert("self_attn.q_proj.weight".to_string(), w(q, h));
+        t.insert("self_attn.k_proj.weight".to_string(), w(kv, h));
+        t.insert("self_attn.v_proj.weight".to_string(), w(kv, h));
+        t.insert("self_attn.o_proj.weight".to_string(), w(h, q));
+        t.insert("mlp.gate_proj.weight".to_string(), w(inter, h));
+        t.insert("mlp.up_proj.weight".to_string(), w(inter, h));
+        t.insert("mlp.down_proj.weight".to_string(), w(h, inter));
+        let vb = VarBuilder::from_tensors(t, DType::F32, &device);
+
+        let block = ShardBlock::load(vb, &cfg).expect("block with head_dim 8 must load");
+        let rope = RopeCache::new(&cfg, &device).unwrap();
+        let x = Tensor::randn(0f32, 1.0, (1, 3, h), &device).unwrap();
+        let mut kv_cache = None;
+        let y = block.forward(&x, 0, &mut kv_cache, &rope).unwrap();
+        assert_eq!(y.dims(), &[1, 3, h]);
+        // Decode one more token against the cache.
+        let x1 = Tensor::randn(0f32, 1.0, (1, 1, h), &device).unwrap();
+        let y1 = block.forward(&x1, 3, &mut kv_cache, &rope).unwrap();
+        assert_eq!(y1.dims(), &[1, 1, h]);
     }
 }
