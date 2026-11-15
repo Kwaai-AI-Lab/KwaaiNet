@@ -239,3 +239,36 @@ compute apps: none is a kwaainet PID (only desktop processes, used memory N/A)
 ```
 
 Note: the shard process's command line includes `--auto-rebalance`, but the shard log says rebalancing is disabled because `start_block` is pinned. The pin takes effect.
+
+## Between Phase 2 and Phase 3: not on the map, and a restart
+
+Reza reported at about 19:12 that metro-win did not show on map.kwaai.ai.
+
+### What the map had (`https://map.kwaai.ai/api/v1/state`, crawl of 03:11:00Z)
+
+- The `model_reports` entry for `unsloth/Llama-3.3-70B-Instruct` listed metro-win correctly: `metro-win-rtx-a5000/v0.7.3`, online, blocks 8–40. All four servers 0–8, 8–40, 40–72 and 72–80 were online.
+- The `peers` row for metro-win was stale and had no addresses: `model: Llama-3.1-8B-Instruct`, `span 0–32`, `kad: false`, `multiaddrs: []`, location `fail`.
+- `reachability_issues` for metro-win: `Dial failed: 12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE: peer not found in DHT (no addresses)`.
+- For comparison, both metro-linux nodes had `kad: true` and one multiaddr.
+
+### What the node had
+
+- The announces succeeded: `32/32 stored` plus three `1/1 stored` at both bootstraps, every ~5 min.
+- It held relay reservations on both bootstraps.
+- `kwaainet p2p peers find <metro-win>`: `not found in DHT (timeout: 10s)`. The same lookup of metro-linux-cpu (`12D3KooWJH5F…RQS3`) returned 7 relay addresses.
+- `kwaainet p2p probe --peer 12D3KooWAourfFoxBjBiXWHdZjxPAuenuyYLFjxHa1C9zknjYA7A` (Mac, 0–8): 7 of 7 answered, median 28.3 ms.
+- At 02:59:11Z the log had `WARN kad bootstrap failed error=Timeout { peer: <self>, num_remaining: None }`. The 8B node on this machine logged the same warning four times on 2026-11-13.
+
+### Restart (Reza: "restart it")
+
+`kwaainet restart` at 03:14:31Z, with `start-args.json` unchanged (`shard: true`, everything else null/false).
+
+- Relay reservations were confirmed on both bootstraps at 03:14:46Z.
+- `kad bootstrap step complete` at 03:16:02Z, so the Kademlia bootstrap succeeded this time.
+- `Shard [8..40) ready` at 03:17:07.6Z, about 2 min 36 s after the restart. New PIDs: node 15720, shard 17664, storage 15680.
+
+**Not fixed by the restart.** After the restart:
+- `p2p peers find <metro-win> --timeout 20`: `not found in DHT`.
+- In the map crawl of 03:17:17Z, the `peers` row was unchanged (8B, 0–32, `kad: false`, no addresses), with the same `peer not found in DHT (no addresses)` error.
+
+So the start-up Kademlia timeout was not the cause, or not the only one. The node publishes a signed address record in its `_kwaai.inference.nodes` announcement (`signed_dial_addrs` in `announce.rs`), but the map's crawler resolves a peer's addresses only through Kademlia. `announce.rs` (the doc comment on `DHTServerInfo::signed_addrs`) explains why that is unreliable on rust-libp2p: a peer can be found only while it holds a slot in the right k-bucket on a peer the walk reaches. Why metro-win misses and metro-linux does not is still open.
