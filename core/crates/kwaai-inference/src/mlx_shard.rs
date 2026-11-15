@@ -124,12 +124,14 @@ struct MlxAttention {
 }
 impl MlxAttention {
     fn new(c: &MlxShardConfig) -> InferenceResult<Self> {
-        let (h, kv) = (c.hidden_dim as i32, (c.num_kv_heads * c.head_dim) as i32);
+        let h = c.hidden_dim as i32;
+        let q = (c.num_heads * c.head_dim) as i32;
+        let kv = (c.num_kv_heads * c.head_dim) as i32;
         Ok(Self {
-            q_proj: nn::Linear::new(h, h).map_err(load_err)?,
+            q_proj: nn::Linear::new(h, q).map_err(load_err)?,
             k_proj: nn::Linear::new(h, kv).map_err(load_err)?,
             v_proj: nn::Linear::new(h, kv).map_err(load_err)?,
-            o_proj: nn::Linear::new(h, h).map_err(load_err)?,
+            o_proj: nn::Linear::new(q, h).map_err(load_err)?,
             rope: {
                 let mut r = nn::Rope::new(c.head_dim as i32);
                 r.base = c.rope_theta as f32;
@@ -472,14 +474,18 @@ impl MlxTransformerShard {
         fn dtheta() -> f64 {
             10000.0
         }
-        let hf: Hf = serde_json::from_str(&std::fs::read_to_string(cfg_path).map_err(load_err)?)
-            .map_err(load_err)?;
+        let cfg_json = std::fs::read_to_string(cfg_path).map_err(load_err)?;
+        let hf: Hf = serde_json::from_str(&cfg_json).map_err(load_err)?;
         let c = MlxShardConfig {
             num_total_blocks: hf.num_hidden_layers,
             hidden_dim: hf.hidden_size,
             num_heads: hf.num_attention_heads,
             num_kv_heads: hf.num_key_value_heads.unwrap_or(hf.num_attention_heads),
-            head_dim: hf.hidden_size / hf.num_attention_heads,
+            head_dim: crate::shard::config_head_dim(
+                &cfg_json,
+                hf.hidden_size,
+                hf.num_attention_heads,
+            )?,
             intermediate_dim: hf.intermediate_size,
             vocab_size: hf.vocab_size,
             rope_theta: hf.rope_theta,
