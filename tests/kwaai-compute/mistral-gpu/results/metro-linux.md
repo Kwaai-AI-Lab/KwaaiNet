@@ -322,3 +322,191 @@ The snapshot is `/home/rezarassool/.cache/huggingface/hub/models--unsloth--Mistr
 - Download, blocks 24–40: **PASS**. It took 15.3 min and is 14.72 GB.
 
 **metro-linux BUILT+DOWNLOADED.**
+
+## Phase 2: serve Nemo
+
+Run with `K=/nix/store/460frpdijpwl6fcz89wg49hsp9jbdjlf-kwaainet-0.7.3/bin/kwaainet` in the default home `~/.kwaainet`, with no `KWAAINET_*` variables set and no kwaainet process running beforehand.
+
+```
+env: 0 KWAAINET_* vars set
+$ $K config set contribute.auto_update false
+  ✅ Set contribute.auto_update = false
+[exit 0]
+$ $K config set model unsloth/Mistral-Nemo-Instruct-2407
+  ✅ Set model = unsloth/Mistral-Nemo-Instruct-2407
+[exit 0]
+$ $K config set use_gpu true
+  ✅ Set use_gpu = true
+[exit 0]
+$ $K config set start_block 24
+  ✅ Set start_block = 24
+[exit 0]
+$ $K config set blocks 16
+  ✅ Set blocks = 16
+[exit 0]
+
+$ diff ~/config.70b-backup.yaml ~/.kwaainet/config.yaml
+1,2c1,2
+< model: unsloth/Llama-3.1-8B-Instruct
+< blocks: 8
+---
+> model: unsloth/Mistral-Nemo-Instruct-2407
+> blocks: 16
+54a55,57
+> contribute:
+>   storage: true
+>   auto_update: false
+```
+
+The diff is against the 8B backup, which Phase 5 restores. `start_block: 24` and `use_gpu: true` match the 8B's own values, so they do not show. The `contribute:` section is the one first added in the 70B test.
+
+```
+$ $K start --daemon --shard  [05:28:29Z]
+│                       🗺  Reading Network Map                        │
+  Local models (1):
+    • llama3.1:8b
+  Network map (2 model(s)):
+    Llama-3.1-8B-Instruct                       12 server(s)  ✓ have locally
+    Mistral-Nemo-Instruct-2407                   1 server(s)  ✗ not installed
+  ✅ Confirmed model: unsloth/Mistral-Nemo-Instruct-2407
+    Map entry:  Llama-3.1-8B-Instruct  (12 server(s))
+─────────────────────────────────────────────────────────────────────
+│                      🚀 Starting KwaaiNet Node                      │
+  Model:   unsloth/Mistral-Nemo-Instruct-2407
+  Blocks:  16
+  Port:    8080
+  Peers:   2
+  Name:    metro-linux
+─────────────────────────────────────────────────────────────────────
+  ✅ KwaaiNet daemon started (PID 1113257)
+  ✅ Shard serving: the daemon starts and supervises it
+  💡 Shard logs:   kwaainet logs --shard
+  💡 Storage not initialised — skipping. Run: kwaainet storage init
+  💡 Check status: kwaainet status
+  💡 View logs:    kwaainet logs
+  💡 Stop daemon:  kwaainet stop
+─────────────────────────────────────────────────────────────────────
+[exit 0]
+```
+
+`start` again prints `Map entry: Llama-3.1-8B-Instruct` after confirming a different model, the same cosmetic mismatch seen in the 70B test.
+
+`shard.log` from this start, with blocks 25–38 omitted:
+
+```
+2026-11-15T05:28:30.531615Z  INFO kwaai_inference: CUDA device detected
+2026-11-15T05:28:30.846362Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 500ms
+2026-11-15T05:28:31.348131Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 1s
+2026-11-15T05:28:32.349496Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 2s
+2026-11-15T05:28:34.350820Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 4s
+2026-11-15T05:28:38.352259Z  WARN kwaainet::shard_cmd: inference-mux server failed to start after 5 attempts: register inference-mux stream handler
+│                      🧩 KwaaiNet Shard Server                       │
+  Blocks:      [24, 40)
+  Device:      CUDA (GPU 0)
+  Model:       unsloth/Mistral-Nemo-Instruct-2407
+  ✅ Node registered on protocol /kwaai/inference/1.0.0 — appearing on map.
+  💡 Loading model in background. Requests return 'warming up' until ready.
+─────────────────────────────────────────────────────────────────────
+  💡 Local bypass server on 127.0.0.1:37547
+  💡 Rebalancing disabled — this node pins blocks [24, 40). Unset start_block to allow moves.
+  💡 Loading shard (3 file(s), blocks [24, 40))…
+2026-11-15T05:28:38.353129Z  INFO kwaai_inference::shard: Loading shard [24..40) of 40: hidden=5120 heads=32 (8 kv)
+2026-11-15T05:28:38.353517Z  INFO kwaai_inference::shard:   Loading block 24
+2026-11-15T05:28:40.325836Z  INFO kwaai_inference::shard:   Loading block 39
+2026-11-15T05:28:40.454312Z  INFO kwaai_inference::shard:   Loading norm + lm_head
+2026-11-15T05:28:41.477971Z  INFO kwaai_inference::tokenizer: Loaded tokenizer.json: vocab=131072, bos=Some(1), eos=Some(2)
+2026-11-15T05:28:41.687449Z  INFO kwaai_inference::shard: Shard [24..40) ready — embedding=false final_head=true
+  ✅ Shard ready  (16 blocks, is_first=false, is_last=true)
+2026-11-15T05:28:42.043934Z  INFO kwaainet::daemon: Sent SIGHUP to daemon PID 1113257 — re-announce will follow
+```
+
+The `inference-mux server failed to start` warning is the same pre-existing collision with the daemon's own inference-mux recorded in the 70B test. The shard still loads and registers.
+
+GPU memory sampled every 2 s during the load, including the shard process's own figure:
+
+```
+05:28:29 avail=87708M gpu_total=449 MiB procs=[]
+05:28:31 avail=87412M gpu_total=673 MiB procs=[1113360, 216 MiB;]
+05:28:34 avail=87428M gpu_total=673 MiB procs=[1113360, 216 MiB;]
+05:28:36 avail=87427M gpu_total=673 MiB procs=[1113360, 216 MiB;]
+05:28:38 avail=87422M gpu_total=673 MiB procs=[1113360, 216 MiB;]
+05:28:40 avail=87383M gpu_total=8961 MiB procs=[1113360, 8664 MiB;]
+05:28:42 avail=87152M gpu_total=12257 MiB procs=[1113360, 11800 MiB;]
+```
+
+Checks after load:
+
+```
+$ ps -o pid,args -p $(cat ~/.kwaainet/run/shard.pid)
+    PID COMMAND
+1113360 /nix/store/460frpdijpwl6fcz89wg49hsp9jbdjlf-kwaainet-0.7.3/bin/kwaainet shard serve --auto-rebalance
+[exit 0]
+
+$ ps -o pid,args -p $(cat ~/.kwaainet/run/kwaainet.pid)
+    PID COMMAND
+1113257 /nix/store/460frpdijpwl6fcz89wg49hsp9jbdjlf-kwaainet-0.7.3/bin/kwaainet run-node --shard
+[exit 0]
+
+$ /nix/store/460frpdijpwl6fcz89wg49hsp9jbdjlf-kwaainet-0.7.3/bin/kwaainet status
+│                       📊 KwaaiNet Node Status                       │
+  🟢 Status:  Running
+  🔢 PID:     1113257
+  ⏱️  Uptime:  29s
+  💻 CPU:     0.0%
+  🧠 Memory:  203 MB
+  🟢 Shard:   Running (PID 1113360)
+─────────────────────────────────────────────────────────────────────
+[exit 0]
+
+$ nvidia-smi
+Sat Nov 14 21:28:58 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 595.99.02              Driver Version: 595.99.02      CUDA Version: 13.2     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA RTX A5000               Off |   00000000:15:00.0  On |                  Off |
+| 30%   38C    P5             47W /  230W |   12257MiB /  24564MiB |      1%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A           10771      G   /usr/libexec/Xorg                        93MiB |
+|    0   N/A  N/A           10870      G   /usr/bin/gnome-shell                    176MiB |
+|    0   N/A  N/A          166999      G   ...rack-uuid=3190708988185955192        107MiB |
+|    0   N/A  N/A         1113360      C   ...f-kwaainet-0.7.3/bin/kwaainet      11800MiB |
++-----------------------------------------------------------------------------------------+
+[exit 0]
+
+$ free -g
+               total        used        free      shared  buff/cache   available
+Mem:              93           8          33           0          52          85
+Swap:              3           3           0
+[exit 0]
+
+$ grep -c -E 'shape mismatch|panicked|ERROR' /tmp/claude-1000/-home-rezarassool-Documents-KwaaiNet/2b13942b-285f-4b6a-8d0f-c2eeeae4aeeb/scratchpad/mistral/p2-shardlog.txt
+0
+[exit 1]
+
+```
+
+The `grep -c` is 0 (it exits 1 when nothing matches): the log has no `shape mismatch`, no `panicked` and no `ERROR`.
+
+Measurements:
+- **Load time:** 3.3 s from `Loading shard` (05:28:38.35) to `Shard ready` (05:28:41.69), and 13 s from `start`.
+- **The shard process on the GPU:** PID 1113360 holds **11,800 MiB**, out of 12,257 MiB in use on the card. This is the process's own use, so it is not a CPU fallback.
+  - That is a little over the ~10 GB expected. From `config.json`'s shapes, the weights alone are about 10.1 GB in bf16: 16 blocks of about 272.6 M parameters, or 8.7 GB, plus `lm_head` at 131,072 × 5,120, or 1.3 GB.
+  - The rest is the CUDA context and cuBLAS working memory.
+- **RAM:** 85 GiB available.
+
+**PASS:**
+- `shard.log` has `Device: CUDA (GPU 0)` and then `Shard ready  (16 blocks, is_first=false, is_last=true)`, with no load error and no `q_proj: shape mismatch`.
+- `nvidia-smi` shows the shard process holding 11.8 GB.
+- Both the daemon and the shard child run the `$K` path.
+
+**metro-linux READY (Nemo, GPU 24–40).**
