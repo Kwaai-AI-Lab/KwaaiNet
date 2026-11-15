@@ -109,6 +109,11 @@ nix = { version = "0.27", features = ["signal", "process", "fs"] }
 # llama.cpp local inference — auto-detects Metal (macOS), CUDA (Linux/Windows), or CPU.
 llama-cpp-2 = { version = "0.1", optional = true }
 
+# `kwaainet stop` waits on the daemon's process handle (OpenProcess +
+# WaitForSingleObject) after asking it to shut down; see daemon.rs `win`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # Enable Metal GPU acceleration on macOS (Apple Silicon / M-series).
 # Cargo merges features from target-specific sections with the base [dependencies] entry.
 [target.'cfg(target_os = "macos")'.dependencies]

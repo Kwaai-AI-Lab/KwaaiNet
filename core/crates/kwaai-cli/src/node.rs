@@ -35,6 +35,9 @@ pub async fn run_node(
             crate::config::kwaainet_dir().display()
         );
     };
+    // Before the PID file: `stop` reads that first, so a request it writes
+    // for this node always lands after this.
+    daemon_mgr.clear_stop_request();
     daemon_mgr
         .write_pid(std::process::id())
         .context("writing PID")?;
@@ -504,10 +507,23 @@ pub(crate) async fn shutdown_signal() {
             _ = sigterm.recv()   => { info!("Received SIGTERM"); }
         }
     }
+    // No SIGTERM to a detached process on Windows: `kwaainet stop` writes a
+    // stop request instead, and waits for us to exit. Answering it is what
+    // gets the shutdown path, and its `state = -1` tombstone, to run there.
     #[cfg(not(unix))]
     {
-        signal::ctrl_c().await.expect("Ctrl-C handler");
-        info!("Received Ctrl-C");
+        // The writer's own path, so the two cannot drift apart.
+        let request = DaemonManager::new().stop_request_file();
+        tokio::select! {
+            r = signal::ctrl_c() => {
+                r.expect("Ctrl-C handler");
+                info!("Received Ctrl-C");
+            }
+            _ = crate::daemon::wait_for_stop_request(&request, std::process::id()) => {
+                let _ = std::fs::remove_file(&request);
+                info!("Received a stop request from `kwaainet stop`");
+            }
+        }
     }
 }
 
