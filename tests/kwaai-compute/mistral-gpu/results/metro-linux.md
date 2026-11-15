@@ -737,7 +737,7 @@ Civilizations collapse due to a complex interplay of various factors, and there'
 
 ```
 
-Run 2's last characters print as `���`: the terminal shows an emoji that arrived as unpaired bytes. The CLI decodes token by token, and that emoji is split across byte-level tokens.
+Run 2's last characters print as `���`: invalid UTF-8, probably an emoji split across byte-level tokens and decoded one token at a time. I have not verified this, and it is cosmetic.
 
 ### Full `--stats` output
 
