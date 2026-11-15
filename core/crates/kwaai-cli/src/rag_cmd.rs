@@ -9382,14 +9382,10 @@ async fn cmd_eval(
                     {
                         Ok(resp) => {
                             let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                            let text = body["choices"][0]["message"]["content"]
-                                .as_str()
-                                .unwrap_or("0");
-                            text.trim()
-                                .chars()
-                                .next()
-                                .and_then(|c| c.to_digit(10))
-                                .map(|d| d.min(2) as u8)
+                            // A reply with no content is an error body (a 503
+                            // from `shard api`, or any server's error): the judge
+                            // did not score, which is not a score of 0.
+                            judge_digit(body["choices"][0]["message"]["content"].as_str())
                         }
                         Err(_) => None,
                     }
@@ -11366,6 +11362,37 @@ fn vocabulary_report(
         }
     }
     out
+}
+
+/// The LLM judge's 0–2 score from its reply text; `None` when there is no
+/// reply or it does not start with a digit.
+fn judge_digit(content: Option<&str>) -> Option<u8> {
+    content?
+        .trim()
+        .chars()
+        .next()
+        .and_then(|c| c.to_digit(10))
+        .map(|d| d.min(2) as u8)
+}
+
+#[cfg(test)]
+mod judge_digit_tests {
+    use super::judge_digit;
+
+    #[test]
+    fn a_reply_without_content_is_no_score_not_zero() {
+        // #297: `shard api` now answers a failure with a 503 error body, which
+        // has no `choices`; it used to be scored as 0.
+        assert_eq!(judge_digit(None), None);
+        assert_eq!(judge_digit(Some("[inference error: x]")), None);
+    }
+
+    #[test]
+    fn digits_are_read_and_capped_at_two() {
+        assert_eq!(judge_digit(Some(" 1\n")), Some(1));
+        assert_eq!(judge_digit(Some("0")), Some(0));
+        assert_eq!(judge_digit(Some("7")), Some(2));
+    }
 }
 
 #[cfg(test)]

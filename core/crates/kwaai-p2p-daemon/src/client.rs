@@ -191,6 +191,11 @@ impl P2PClient {
     }
 
     /// Send a request to the daemon and receive a response
+    ///
+    /// If the control stream has died (the daemon restarted), it is replaced
+    /// transparently. Daemon state tied to the old connection is not carried
+    /// over: stream handlers registered through it were released with it and
+    /// must be registered again by the caller.
     pub async fn send_request(&mut self, request: Request) -> Result<Response> {
         // Debug: print request type
         debug!("Request type field = {}", request.r#type);
