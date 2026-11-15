@@ -78,16 +78,39 @@ pub async fn wait_for_stop_request(path: &std::path::Path, pid: u32) {
     }
 }
 
+/// What [`DaemonManager::request_stop_and_wait`] found.
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+enum StopOutcome {
+    /// It was running and has exited, asked or forced.
+    Stopped,
+    /// Nothing to stop: no such process, already exited, or the PID belongs
+    /// to another program now. The PID file is stale.
+    NotRunning,
+    /// Asked and forced, and still there.
+    StillRunning,
+}
+
 /// Whether `pid` is running a `kwaainet` executable — the guard against
-/// force-killing whatever reused the PID a stale PID file names.
+/// waiting on, or force-killing, whatever reused the PID a stale PID file
+/// names.
 #[cfg(windows)]
 fn is_kwaainet_process(pid: u32) -> bool {
     let mut sys = System::new();
     let pid = Pid::from_u32(pid);
     sys.refresh_process(pid);
-    // Exactly the CLI's executable: `kwaainet_gui.exe` shares the prefix.
     sys.process(pid)
-        .is_some_and(|p| p.name().eq_ignore_ascii_case("kwaainet.exe"))
+        .is_some_and(|p| is_kwaainet_image(p.name()))
+}
+
+/// `kwaainet.exe`, or a copy renamed from it (`kwaainet-cuda.exe`, a dev
+/// build kept beside the installed one), but not the GUI, which shares the
+/// prefix. A daemon run from some unrelated name is indistinguishable from a
+/// reused PID, and is treated as one.
+#[cfg(any(windows, test))]
+fn is_kwaainet_image(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("kwaainet") && name.ends_with(".exe") && !name.starts_with("kwaainet_gui")
 }
 
 pub struct DaemonManager {
@@ -307,11 +330,22 @@ impl DaemonManager {
     /// [`Self::stop_process`], reporting whether a daemon was actually
     /// running: `Ok(false)` is a PID file left by a node that is gone, which
     /// is removed. Only Windows can tell; Unix reports `true` as before.
+    ///
+    /// On Windows, a daemon still running after being asked *and* forced is
+    /// an error, and its PID file is kept: removing it would leave a live,
+    /// announced node that `status` and `stop` can no longer find.
     pub fn stop(&self) -> Result<bool> {
         let pid = self.read_pid().context("No daemon is running")?;
         info!("Stopping daemon PID {}", pid);
         #[cfg(windows)]
-        let was_running = self.request_stop_and_wait(pid, DAEMON_STOP_GRACE);
+        let was_running = match self.request_stop_and_wait(pid, DAEMON_STOP_GRACE) {
+            StopOutcome::Stopped => true,
+            StopOutcome::NotRunning => false,
+            StopOutcome::StillRunning => bail!(
+                "Daemon PID {pid} is still running: it did not answer the stop request and \
+                 could not be killed (does it run as another user?)"
+            ),
+        };
         #[cfg(not(windows))]
         let was_running = {
             stop_pid(pid, DAEMON_STOP_GRACE);
@@ -322,8 +356,7 @@ impl DaemonManager {
     }
 
     /// Windows: write the stop request, wait for the daemon to exit for up
-    /// to `grace`, and force it only if it is still there. Returns whether a
-    /// daemon was running at all.
+    /// to `grace`, and force it only if it is still there.
     ///
     /// The wait is on a process handle (`WaitForSingleObject`), not a PID
     /// probe: a PID probe reads a dead process as alive while anyone holds a
@@ -333,20 +366,35 @@ impl DaemonManager {
     /// the first choice because a v0.7.3 daemon, which predates it, never
     /// takes it. Such a daemon also never answers the request, and is forced
     /// after `grace` as before.
+    ///
+    /// The PID is identified first. A PID file whose PID now belongs to some
+    /// other program is stale and costs no wait; only a `kwaainet` process
+    /// (see [`is_kwaainet_process`]) is ever asked, waited on or forced.
     #[cfg(windows)]
-    fn request_stop_and_wait(&self, pid: u32, grace: Duration) -> bool {
+    fn request_stop_and_wait(&self, pid: u32, grace: Duration) -> StopOutcome {
         let process = match win::Process::open(pid) {
             Ok(p) => Some(p),
             Err(win::OpenError::NoSuchProcess) => {
                 info!("Daemon PID {pid} is not running — removing its PID file");
                 self.clear_stop_request();
-                return false;
+                return StopOutcome::NotRunning;
             }
             Err(win::OpenError::Other(code)) => {
                 warn!("Cannot open daemon PID {pid} (OpenProcess error {code}) — asking it to stop anyway");
                 None
             }
         };
+        // Exited, with a handle still held somewhere — the case a PID probe misreads.
+        if process.as_ref().is_some_and(|p| p.wait(Duration::ZERO)) {
+            info!("Daemon PID {pid} has already exited — removing its PID file");
+            self.clear_stop_request();
+            return StopOutcome::NotRunning;
+        }
+        if !is_kwaainet_process(pid) {
+            info!("PID {pid} now belongs to another program — the PID file is stale; removing it");
+            self.clear_stop_request();
+            return StopOutcome::NotRunning;
+        }
         // Taken before the request: a lock already free now proves nothing
         // about a daemon that never held it.
         let lock_was_held = process.is_none() && !self.instance_lock_free();
@@ -366,34 +414,40 @@ impl DaemonManager {
         self.clear_stop_request();
         if exited {
             info!("Daemon PID {pid} shut down cleanly");
-            return true;
+            return StopOutcome::Stopped;
         }
 
-        if asked {
+        if !asked {
+            warn!("Could not ask daemon PID {pid} to stop — forcing it");
+        } else if process.is_none() && !lock_was_held {
+            warn!(
+                "Cannot wait on daemon PID {pid}: no process handle, and it holds no instance \
+                 lock (a daemon older than the stop request) — forcing it"
+            );
+        } else {
             warn!(
                 "Daemon PID {pid} did not exit within {grace:?} of the stop request — forcing it. \
                  A daemon older than the request never answers it; a newer one may have \
                  unannounced and still be stopping its children"
             );
         }
-        if !is_kwaainet_process(pid) {
-            // It may simply have finished just after the deadline.
-            if process.as_ref().is_some_and(|p| p.wait(Duration::ZERO)) {
-                info!("Daemon PID {pid} exited just after the deadline");
-                return true;
+        let gone = match &process {
+            Some(p) if p.terminate() => p.wait(KILL_WAIT),
+            Some(p) => {
+                stop_pid(pid, grace);
+                p.wait(KILL_WAIT)
             }
-            warn!("PID {pid} is not a kwaainet process — not killing it");
-            return false;
-        }
-        match &process {
-            Some(p) if p.terminate() => {
-                if !p.wait(KILL_WAIT) {
-                    warn!("Daemon PID {pid} still running {KILL_WAIT:?} after TerminateProcess");
-                }
+            None => {
+                stop_pid(pid, grace);
+                !is_kwaainet_process(pid)
             }
-            _ => stop_pid(pid, grace),
+        };
+        if gone {
+            StopOutcome::Stopped
+        } else {
+            warn!("Daemon PID {pid} is still running after being forced");
+            StopOutcome::StillRunning
         }
-        true
     }
 
     /// Write the request atomically, naming the PID it is for: the node
@@ -859,6 +913,28 @@ mod stop_request_tests {
             pid_file: dir.join("kwaainet.pid"),
             lock_file: dir.join("kwaainet.lock"),
             status_file: dir.join("kwaainet.status"),
+        }
+    }
+
+    /// The CLI under its own name or a renamed copy is a node; the GUI and
+    /// anything else (a reused PID) is not.
+    #[test]
+    fn only_kwaainet_executables_count_as_the_daemon() {
+        for yes in [
+            "kwaainet.exe",
+            "KWAAINET.EXE",
+            "kwaainet-cuda.exe",
+            "kwaainet-fix.exe",
+        ] {
+            assert!(is_kwaainet_image(yes), "{yes}");
+        }
+        for no in [
+            "kwaainet_gui.exe",
+            "explorer.exe",
+            "kwaainet",
+            "svchost.exe",
+        ] {
+            assert!(!is_kwaainet_image(no), "{no}");
         }
     }
 

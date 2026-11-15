@@ -375,11 +375,18 @@ async fn main() -> Result<()> {
                 }
                 Err(_) => {}
             }
+            // A failure that kept the PID file is a daemon still running:
+            // its children are not orphans, and its start args still apply.
+            if daemon.is_err() && mgr.read_pid().is_some() {
+                return daemon.map(|_| ());
+            }
             DaemonManager::remove_start_args();
             // Orphans can outlive the daemon's PID file, so "no daemon" is
-            // an error only when there was nothing else to stop either.
-            if !stop_orphaned_children(matches!(daemon, Ok(true))) && !daemon? {
-                anyhow::bail!("No daemon is running");
+            // an error only when there was nothing else to stop either. A
+            // stale PID file, now removed, is not one: `stop && start` must
+            // still start.
+            if !stop_orphaned_children(matches!(daemon, Ok(true))) {
+                daemon?;
             }
             print_separator();
         }
