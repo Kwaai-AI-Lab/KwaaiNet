@@ -119,3 +119,39 @@ Leave both nodes running. Every 30 s or so while Reza runs prompts, record `free
    **PASS:** node A is gone, and node B is back to the 8B with its original flags, as in the Phase 1 baseline.
 3. Leave the 70B weights (about 70 GB) in the Hugging Face cache unless Reza says to delete them.
 4. Commit and push: `test(70b): metro-linux restored`.
+
+## Phase 2b: rebuild node A as a CPU-only binary (added by the Mac coordinator)
+
+**Why.** The first run reached node A and failed there:
+
+```
+Peer 12D3KooWJH5F (metro-linux-cpu/v0.7.3) failed: Remote inference error: Tensor operation failed: no cpu support for flash-attn
+```
+
+The installed Linux binary is built with `--features cuda`, which turns on `kwaai-inference/flash-attn`. In `kwaai-inference/src/shard.rs → TransformerShard` attention, the choice between flash-attn and the standard path is made at compile time (`#[cfg(feature = "flash-attn")]`), not by device. So a CUDA build can't serve blocks on CPU. That is a real bug, and it will be filed separately. For this test, node A runs a build without CUDA. Node B keeps the installed binary.
+
+Do not touch node B.
+
+1. Build a CPU-only binary from this branch's code, which is `main` at `c48c3b8e`. Use a separate target dir so the CUDA build artifacts are left alone, and use `-j 8` (this box runs out of memory with more):
+   ```bash
+   cd <your checkout>/core      # it needs core/patches/ (git-ignored); symlink it from the main clone if missing
+   CARGO_TARGET_DIR=$HOME/kwaainet-cpu-target cargo build -p kwaainet --release -j 8
+   cp $HOME/kwaainet-cpu-target/release/kwaainet $HOME/kwaainet-cpu
+   $HOME/kwaainet-cpu --version
+   ```
+   Record the build time. Expect about 5–10 min.
+2. Restart node A on that binary. Use a shell with node A's four variables set:
+   ```bash
+   export KWAAINET_HOME=$HOME/.kwaainet-70b-cpu
+   export KWAAINET_SOCKET=$KWAAINET_HOME/node.sock
+   export KWAAINET_PORT=8081
+   export KWAAINET_GRPC_PORT=8094
+   kwaainet stop
+   $HOME/kwaainet-cpu start --daemon --shard
+   tail -f $KWAAINET_HOME/logs/shard.log      # until ready
+   ```
+   The daemon starts its shard child from its own executable, so the child is CPU-only too. Check with `ps -o pid,args -p $(cat $KWAAINET_HOME/run/shard.pid)`.
+3. **PASS:** `Shard ready  (32 blocks, is_first=false, is_last=false)`, `ps` shows the shard child running `kwaainet-cpu`, node B is still running, and available memory stays above 8 GiB.
+4. Commit and push `test(70b): metro-linux node A cpu-only`. Tell Reza: **"node A restarted CPU-only"**.
+
+Phase 4 (restore) is unchanged: stop node A, with its variables set, using either binary. You may also delete `~/kwaainet-cpu` and `~/kwaainet-cpu-target`.
