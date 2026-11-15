@@ -10,6 +10,7 @@
 use anyhow::{bail, Context, Result};
 use axum::{
     extract::State,
+    http::StatusCode,
     response::{
         sse::{Event, Sse},
         IntoResponse, Json, Response,
@@ -210,7 +211,7 @@ async fn run_inference(
     temperature: f32,
     top_k: usize,
     top_p: f32,
-    tx: tokio::sync::mpsc::Sender<String>,
+    tx: tokio::sync::mpsc::Sender<Piece>,
 ) {
     use candle_core::IndexOp as _;
     use kwaai_inference::tokenizer::Tokenizer as _;
@@ -218,7 +219,7 @@ async fn run_inference(
     let mut token_ids: Vec<u32> = match state.tokenizer.encode(&prompt) {
         Ok(ids) => ids,
         Err(e) => {
-            let _ = tx.send(format!("[tokenizer error: {e}]")).await;
+            let _ = tx.send(Piece::Error(format!("tokenizer error: {e}"))).await;
             return;
         }
     };
@@ -255,7 +256,7 @@ async fn run_inference(
     ) {
         Ok(p) => p,
         Err(e) => {
-            let _ = tx.send(format!("[chain error: {e}]")).await;
+            let _ = tx.send(Piece::Error(format!("chain error: {e}"))).await;
             return;
         }
     };
@@ -343,14 +344,16 @@ async fn run_inference(
                             Ok(r) => r,
                             Err(e2) => {
                                 let _ = tx
-                                    .send(format!("[inference error after retry: {e2}]"))
+                                    .send(Piece::Error(format!(
+                                        "inference error after retry: {e2}"
+                                    )))
                                     .await;
                                 break;
                             }
                         }
                     }
                     Err(_) => {
-                        let _ = tx.send(format!("[inference error: {e}]")).await;
+                        let _ = tx.send(Piece::Error(format!("inference error: {e}"))).await;
                         break;
                     }
                 }
@@ -361,7 +364,7 @@ async fn run_inference(
         let logits_tensor = match f16_bytes_to_tensor(&logits_bytes.data, logits_shape, &device) {
             Ok(t) => t,
             Err(e) => {
-                let _ = tx.send(format!("[tensor error: {e}]")).await;
+                let _ = tx.send(Piece::Error(format!("tensor error: {e}"))).await;
                 break;
             }
         };
@@ -371,7 +374,7 @@ async fn run_inference(
             match logits_tensor.i((0, seq_len - 1, ..)) {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = tx.send(format!("[slice error: {e}]")).await;
+                    let _ = tx.send(Piece::Error(format!("slice error: {e}"))).await;
                     break;
                 }
             }
@@ -379,7 +382,7 @@ async fn run_inference(
             match logits_tensor.flatten_all() {
                 Ok(t) => t,
                 Err(e) => {
-                    let _ = tx.send(format!("[flatten error: {e}]")).await;
+                    let _ = tx.send(Piece::Error(format!("flatten error: {e}"))).await;
                     break;
                 }
             }
@@ -388,13 +391,13 @@ async fn run_inference(
         let next_id = match sample_token(&last_logits, temperature, top_k, top_p) {
             Ok(id) => id as u32,
             Err(e) => {
-                let _ = tx.send(format!("[sample error: {e}]")).await;
+                let _ = tx.send(Piece::Error(format!("sample error: {e}"))).await;
                 break;
             }
         };
 
         if let Ok(piece) = state.tokenizer.decode(&[next_id]) {
-            if tx.send(piece).await.is_err() {
+            if tx.send(Piece::Text(piece)).await.is_err() {
                 break; // client disconnected
             }
         }
@@ -420,8 +423,9 @@ async fn run_inference_local(
     temperature: f32,
     top_k: usize,
     top_p: f32,
-    tx: tokio::sync::mpsc::Sender<String>,
+    tx: tokio::sync::mpsc::Sender<Piece>,
 ) {
+    let err_tx = tx.clone();
     let result = tokio::task::spawn_blocking(move || {
         crate::llama_local::run_inference_streaming(
             &holder.backend,
@@ -431,16 +435,18 @@ async fn run_inference_local(
             temperature,
             top_k,
             top_p,
-            |piece| tx.blocking_send(piece).is_ok(),
+            |piece| tx.blocking_send(Piece::Text(piece)).is_ok(),
         )
     })
     .await;
 
-    match result {
-        Ok(Ok(_)) => {}
-        Ok(Err(e)) => tracing::error!("llama.cpp inference error: {e}"),
-        Err(e) => tracing::error!("llama.cpp inference panicked: {e}"),
-    }
+    let failure = match result {
+        Ok(Ok(_)) => return,
+        Ok(Err(e)) => format!("llama.cpp inference error: {e}"),
+        Err(e) => format!("llama.cpp inference panicked: {e}"),
+    };
+    tracing::error!("{failure}");
+    let _ = err_tx.send(Piece::Error(failure)).await;
 }
 
 /// Spawn the appropriate inference backend for a request.
@@ -451,7 +457,7 @@ fn spawn_inference(
     temperature: f32,
     top_k: usize,
     top_p: f32,
-    tx: tokio::sync::mpsc::Sender<String>,
+    tx: tokio::sync::mpsc::Sender<Piece>,
 ) {
     #[cfg(feature = "llama-cpp")]
     if let Some(ref holder) = state.llama_model {
@@ -492,7 +498,7 @@ async fn chat_completions(
     let top_k = req.top_k.unwrap_or(0) as usize;
     let top_p = req.top_p.unwrap_or(1.0);
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(512);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Piece>(512);
     spawn_inference(state, prompt, max_tokens, temperature, top_k, top_p, tx);
 
     if req.stream {
@@ -513,7 +519,7 @@ async fn completions(
     let top_k = req.top_k.unwrap_or(0) as usize;
     let top_p = req.top_p.unwrap_or(1.0);
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<String>(512);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Piece>(512);
     spawn_inference(state, prompt, max_tokens, temperature, top_k, top_p, tx);
 
     if req.stream {
@@ -523,17 +529,59 @@ async fn completions(
     }
 }
 
+// ── Generated output ──────────────────────────────────────────────────────────
+
+/// What the inference task sends the response builder: generated text, or the
+/// failure that ended generation. Failures used to be sent as text, so a client
+/// got HTTP 200 with `[inference error: …]` as the model's answer (#297).
+#[derive(Debug)]
+enum Piece {
+    Text(String),
+    Error(String),
+}
+
+/// OpenAI's error shape, so clients surface the message as an error.
+fn error_body(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "error": { "message": message, "type": "server_error", "code": "inference_failed" }
+    })
+}
+
+/// A non-streaming request that failed: 503, whatever was generated before the
+/// failure is dropped — a truncated answer must not read as a complete one.
+fn error_response(message: &str) -> Response {
+    (StatusCode::SERVICE_UNAVAILABLE, Json(error_body(message))).into_response()
+}
+
+/// Gather a non-streaming request's output, or the failure that ended it.
+async fn collect_text(rx: &mut tokio::sync::mpsc::Receiver<Piece>) -> Result<String, String> {
+    let mut text = String::new();
+    while let Some(piece) = rx.recv().await {
+        match piece {
+            Piece::Text(t) => text.push_str(&t),
+            Piece::Error(e) => return Err(e),
+        }
+    }
+    Ok(text)
+}
+
+/// A streamed failure: the status line has already gone out as 200, so the
+/// error travels as its own event, in OpenAI's shape, before `[DONE]`.
+fn error_event(message: &str) -> Event {
+    Event::default().data(error_body(message).to_string())
+}
+
 // ── SSE helpers ───────────────────────────────────────────────────────────────
 
 /// State threaded through `stream::unfold` for SSE.
 struct SseCtx {
-    rx: tokio::sync::mpsc::Receiver<String>,
+    rx: tokio::sync::mpsc::Receiver<Piece>,
     id: String,
     model_id: String,
     created: u64,
 }
 
-fn make_chat_sse(rx: tokio::sync::mpsc::Receiver<String>, model_id: String) -> Response {
+fn make_chat_sse(rx: tokio::sync::mpsc::Receiver<Piece>, model_id: String) -> Response {
     let ctx = SseCtx {
         rx,
         id: make_id("chatcmpl"),
@@ -543,6 +591,10 @@ fn make_chat_sse(rx: tokio::sync::mpsc::Receiver<String>, model_id: String) -> R
 
     let token_stream = stream::unfold(ctx, |mut ctx| async move {
         ctx.rx.recv().await.map(|piece| {
+            let piece = match piece {
+                Piece::Text(t) => t,
+                Piece::Error(e) => return (Ok(error_event(&e)), ctx),
+            };
             let chunk = ChatChunk {
                 id: ctx.id.clone(),
                 object: "chat.completion.chunk",
@@ -568,7 +620,7 @@ fn make_chat_sse(rx: tokio::sync::mpsc::Receiver<String>, model_id: String) -> R
     Sse::new(token_stream.chain(done)).into_response()
 }
 
-fn make_completion_sse(rx: tokio::sync::mpsc::Receiver<String>, model_id: String) -> Response {
+fn make_completion_sse(rx: tokio::sync::mpsc::Receiver<Piece>, model_id: String) -> Response {
     let ctx = SseCtx {
         rx,
         id: make_id("cmpl"),
@@ -578,6 +630,10 @@ fn make_completion_sse(rx: tokio::sync::mpsc::Receiver<String>, model_id: String
 
     let token_stream = stream::unfold(ctx, |mut ctx| async move {
         ctx.rx.recv().await.map(|piece| {
+            let piece = match piece {
+                Piece::Text(t) => t,
+                Piece::Error(e) => return (Ok(error_event(&e)), ctx),
+            };
             let data = serde_json::json!({
                 "id":      ctx.id,
                 "object":  "text_completion",
@@ -596,11 +652,11 @@ fn make_completion_sse(rx: tokio::sync::mpsc::Receiver<String>, model_id: String
     Sse::new(token_stream.chain(done)).into_response()
 }
 
-async fn collect_chat(mut rx: tokio::sync::mpsc::Receiver<String>, model_id: String) -> Response {
-    let mut text = String::new();
-    while let Some(piece) = rx.recv().await {
-        text.push_str(&piece);
-    }
+async fn collect_chat(mut rx: tokio::sync::mpsc::Receiver<Piece>, model_id: String) -> Response {
+    let text = match collect_text(&mut rx).await {
+        Ok(t) => t,
+        Err(e) => return error_response(&e),
+    };
     let n = estimate_tokens(&text);
     Json(ChatCompletionResponse {
         id: make_id("chatcmpl"),
@@ -625,13 +681,13 @@ async fn collect_chat(mut rx: tokio::sync::mpsc::Receiver<String>, model_id: Str
 }
 
 async fn collect_completion(
-    mut rx: tokio::sync::mpsc::Receiver<String>,
+    mut rx: tokio::sync::mpsc::Receiver<Piece>,
     model_id: String,
 ) -> Response {
-    let mut text = String::new();
-    while let Some(piece) = rx.recv().await {
-        text.push_str(&piece);
-    }
+    let text = match collect_text(&mut rx).await {
+        Ok(t) => t,
+        Err(e) => return error_response(&e),
+    };
     let n = estimate_tokens(&text);
     Json(CompletionResponse {
         id: make_id("cmpl"),
@@ -998,4 +1054,79 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
     crate::api::serve_all(listeners, app).await?;
     let _ = std::fs::remove_file(crate::shard_cmd::shard_api_port_file());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn body_text(resp: Response) -> String {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    fn channel_with(pieces: Vec<Piece>) -> tokio::sync::mpsc::Receiver<Piece> {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        for p in pieces {
+            tx.try_send(p).unwrap();
+        }
+        rx
+    }
+
+    /// #297: a failed request must not come back as a 200 whose "answer" is the
+    /// error text — OpenAI clients would show it as the model's reply.
+    #[tokio::test]
+    async fn a_failed_chat_is_a_503_with_an_openai_error_body() {
+        let rx = channel_with(vec![
+            Piece::Text("partial ".into()),
+            Piece::Error("inference error: All 1 candidate(s) for block 8 failed".into()),
+        ]);
+        let resp = collect_chat(rx, "m".into()).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+        assert_eq!(
+            body["error"]["message"],
+            "inference error: All 1 candidate(s) for block 8 failed"
+        );
+        assert!(body.get("choices").is_none(), "no partial answer: {body}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_completion_is_a_503_too() {
+        let rx = channel_with(vec![Piece::Error("chain error: no path".into())]);
+        let resp = collect_completion(rx, "m".into()).await;
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body_text(resp).await.contains("chain error: no path"));
+    }
+
+    #[tokio::test]
+    async fn a_successful_chat_is_unchanged() {
+        let rx = channel_with(vec![Piece::Text("Hello".into()), Piece::Text("!".into())]);
+        let resp = collect_chat(rx, "m".into()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_text(resp).await).unwrap();
+        assert_eq!(body["choices"][0]["message"]["content"], "Hello!");
+    }
+
+    /// A stream has already sent 200, so the failure arrives as an error event
+    /// rather than as more content.
+    #[tokio::test]
+    async fn a_failed_stream_sends_an_error_event_not_content() {
+        let rx = channel_with(vec![
+            Piece::Text("Hi".into()),
+            Piece::Error("inference error: boom".into()),
+        ]);
+        let text = body_text(make_chat_sse(rx, "m".into())).await;
+        let events: Vec<&str> = text
+            .lines()
+            .filter_map(|l| l.strip_prefix("data: "))
+            .collect();
+        assert_eq!(events.len(), 3, "content, error, [DONE]: {text}");
+        assert!(events[0].contains("\"content\":\"Hi\""), "{}", events[0]);
+        let err: serde_json::Value = serde_json::from_str(events[1]).unwrap();
+        assert_eq!(err["error"]["message"], "inference error: boom");
+        assert_eq!(events[2], "[DONE]");
+    }
 }

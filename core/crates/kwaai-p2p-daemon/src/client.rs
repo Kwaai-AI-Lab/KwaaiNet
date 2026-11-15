@@ -191,6 +191,11 @@ impl P2PClient {
     }
 
     /// Send a request to the daemon and receive a response
+    ///
+    /// If the control stream has died (the daemon restarted), it is replaced
+    /// transparently. Daemon state tied to the old connection is not carried
+    /// over: stream handlers registered through it were released with it and
+    /// must be registered again by the caller.
     pub async fn send_request(&mut self, request: Request) -> Result<Response> {
         // Debug: print request type
         debug!("Request type field = {}", request.r#type);
@@ -211,11 +216,35 @@ impl P2PClient {
                 .join(" ")
         );
 
-        // Write framed message: [8-byte length][protobuf]
-        self.write_framed(&buf).await?;
+        // Write framed message: [8-byte length][protobuf]. The control stream
+        // is opened once, in `connect`; if the daemon has since restarted it is
+        // dead, and before this it stayed dead for the life of the process
+        // (#297). A write that fails because the connection is gone delivered
+        // nothing, so reconnect and send it once more.
+        if let Err(e) = self.write_framed(&buf).await {
+            if !Self::connection_lost(&e) {
+                return Err(e);
+            }
+            debug!("Control stream lost ({e}); reconnecting to the daemon");
+            self.stream = Self::connect_stream(&self.daemon_addr).await?;
+            self.write_framed(&buf).await?;
+        }
 
-        // Read response
-        let response_bytes = self.read_framed().await?;
+        // Read response. A failure here may come after the daemon acted on the
+        // request, so it is not resent — but the stream is replaced, so the
+        // next request does not inherit a dead connection.
+        let response_bytes = match self.read_framed().await {
+            Ok(b) => b,
+            Err(e) => {
+                if Self::connection_lost(&e) {
+                    debug!("Control stream lost ({e}); reconnecting for the next request");
+                    if let Ok(stream) = Self::connect_stream(&self.daemon_addr).await {
+                        self.stream = stream;
+                    }
+                }
+                return Err(e);
+            }
+        };
 
         trace!("Received response ({} bytes)", response_bytes.len());
 
@@ -229,6 +258,19 @@ impl P2PClient {
         }
 
         Ok(response)
+    }
+
+    /// The daemon end of the control stream is gone (it restarted or exited),
+    /// as opposed to a protocol error on a live connection.
+    fn connection_lost(e: &Error) -> bool {
+        use std::io::ErrorKind::*;
+        matches!(
+            e,
+            Error::Io(io) if matches!(
+                io.kind(),
+                BrokenPipe | ConnectionReset | ConnectionAborted | NotConnected | UnexpectedEof
+            )
+        )
     }
 
     /// Write a framed message (varint length + payload)
@@ -1036,6 +1078,104 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    /// Answer every request on `sock` with an empty OK response until it closes.
+    async fn serve_ok(mut sock: tokio::net::TcpStream) {
+        loop {
+            let mut len_bytes = Vec::new();
+            let mut b = [0u8; 1];
+            loop {
+                if sock.read_exact(&mut b).await.is_err() {
+                    return;
+                }
+                len_bytes.push(b[0]);
+                if b[0] & 0x80 == 0 {
+                    break;
+                }
+            }
+            let (len, _) = unsigned_varint::decode::usize(&len_bytes).unwrap();
+            let mut body = vec![0u8; len];
+            if sock.read_exact(&mut body).await.is_err() {
+                return;
+            }
+            let resp = Response {
+                r#type: crate::protocol::p2pd::response::Type::Ok as i32,
+                ..Default::default()
+            }
+            .encode_to_vec();
+            let mut len_buf = varint_encode::usize_buffer();
+            if sock
+                .write_all(varint_encode::usize(resp.len(), &mut len_buf))
+                .await
+                .is_err()
+                || sock.write_all(&resp).await.is_err()
+            {
+                return;
+            }
+        }
+    }
+
+    /// #297: the control stream outlives a daemon restart. The fake daemon
+    /// hangs up on the first connection — the restart — and serves every later
+    /// one. Before the fix every request after the restart failed with a
+    /// broken pipe for the life of the client.
+    #[tokio::test]
+    async fn the_control_stream_reconnects_after_the_daemon_restarts() {
+        use std::time::Duration;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (first, _) = listener.accept().await.unwrap();
+            drop(first); // the daemon restarts
+            loop {
+                let (sock, _) = listener.accept().await.unwrap();
+                tokio::spawn(serve_ok(sock));
+            }
+        });
+
+        let mut client = P2PClient::connect(&format!("/ip4/127.0.0.1/tcp/{port}"))
+            .await
+            .expect("connect");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Over TCP the first write after the hang-up can still succeed, so the
+        // loss may only show on the read: then that request fails (it may have
+        // been acted on, so it is not resent) and the stream is replaced.
+        let first = tokio::time::timeout(Duration::from_secs(5), client.list_peers())
+            .await
+            .expect("must not hang");
+        let second = tokio::time::timeout(Duration::from_secs(5), client.list_peers())
+            .await
+            .expect("must not hang");
+        assert!(
+            second.is_ok(),
+            "the request after a daemon restart must succeed (first: {first:?}), got: {second:?}"
+        );
+        let third = client.list_peers().await;
+        assert!(third.is_ok(), "and keep succeeding, got: {third:?}");
+    }
+
+    #[test]
+    fn only_a_lost_connection_counts_as_lost() {
+        use std::io::{Error as IoError, ErrorKind};
+        for kind in [
+            ErrorKind::BrokenPipe,
+            ErrorKind::ConnectionReset,
+            ErrorKind::UnexpectedEof,
+        ] {
+            assert!(
+                P2PClient::connection_lost(&Error::Io(IoError::from(kind))),
+                "{kind:?}"
+            );
+        }
+        assert!(!P2PClient::connection_lost(&Error::Io(IoError::from(
+            ErrorKind::InvalidData
+        ))));
+        assert!(!P2PClient::connection_lost(&Error::Protocol(
+            "Daemon error: x".into()
+        )));
     }
 
     #[test]
