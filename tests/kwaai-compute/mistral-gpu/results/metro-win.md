@@ -99,3 +99,54 @@ EXIT 0
 **The live home was not touched:** `~\.kwaainet\config.yaml` is still dated 18:58 (the 70B test's switch). The throwaway `config set model` wrote only to `~\.kwaainet-mistral-dl\config.yaml`.
 
 **metro-win BUILT+DOWNLOADED.**
+
+## Phase 2: serve Nemo: PASS
+
+Live home (`KWAAINET_HOME` unset). Every command ran with `$K`: `config set contribute.auto_update false`, `model unsloth/Mistral-Nemo-Instruct-2407`, `use_gpu true`, `start_block 8`, `blocks 16`, then `start --daemon --shard` at 05:28:45.6Z. The daemon got PID 23972.
+
+New lines in `shard.log`:
+
+```
+05:28:55.653Z WARN kwaainet::shard_cmd: inference-mux server failed to start after 5 attempts: register inference-mux stream handler
+  Blocks:      [8, 24)
+  Device:      CUDA (GPU 0)
+  Model:       unsloth/Mistral-Nemo-Instruct-2407
+  ✅ Node registered on protocol /kwaai/inference/1.0.0 — appearing on map.
+  💡 Rebalancing disabled — this node pins blocks [8, 24). Unset start_block to allow moves.
+  💡 Loading shard (2 file(s), blocks [8, 24))…
+05:28:55.660Z INFO kwaai_inference::shard: Loading shard [8..24) of 40: hidden=5120 heads=32 (8 kv)
+05:29:02.728Z INFO kwaai_inference::tokenizer: Loaded tokenizer.json: vocab=131072, bos=Some(1), eos=Some(2)
+05:29:02.880Z INFO kwaai_inference::shard: Shard [8..24) ready — embedding=false final_head=false
+  ✅ Shard ready  (16 blocks, is_first=false, is_last=false)
+```
+
+- `Device: CUDA (GPU 0)`.
+- `Shard ready (16 blocks, is_first=false, is_last=false)`.
+- `grep -cE "ERROR|panicked|shape mismatch"` over the new lines returns **0**, so there is no `q_proj: shape mismatch`.
+- The loader reports `of 40` layers, which is Nemo's real depth. It is not the `of 32` name-based guess that `shard download` printed.
+- The inference-mux WARN is the same one the 8B and 70B nodes logged on every start, each time followed by "Shard ready". It is not new on this branch.
+
+**Load time:**
+- `Loading shard` to `ready`: 7.2 s (05:28:55.66 → 05:29:02.88).
+- `start` to ready: 17.3 s.
+
+**GPU** (`nvidia-smi`, about 05:34Z):
+- 10,125 MiB / 24,564 MiB in use, against 687 MiB at the Phase 0 baseline, so **≈ 9.4 GB for the shard**.
+- `20536 C:\...\KwaaiNet-headdim\core\target\release\kwaainet.exe` is among the compute apps. WDDM doesn't report per-process GPU memory, so it shows `[N/A]`.
+
+**Processes:** all three run from `$K`:
+- 23972 `run-node --shard`;
+- 23400 `storage serve`;
+- 20536 `shard serve --auto-rebalance`.
+
+The installed `kwaainet` is not running.
+
+**Map** (`/api/v1/state`, crawl of 05:34:35Z):
+- `model_reports` for `Mistral-Nemo-Instruct-2407` is **healthy**: professor_reza 0–8, metro-win-rtx-a5000 8–24 and metro-linux 24–40, all online.
+- metro-win's `peers` row still says `Llama-3.1-8B-Instruct`, blocks 0–32. Reza saw this on the map page too. It is not a Nemo problem. It comes from two existing bugs:
+  - The bootstraps still serve metro-win's 8B subkey long after it expired. It last read `state=2` with an expiration 56 minutes in the past, because the dictionary is kept fresh by other peers and expired subkeys inside it are never dropped.
+  - A Windows `kwaainet stop` is `taskkill /F`, so no `state = -1` tombstone ever replaced it. The map's `build_snapshot` then gives the peer row the first online model, which is the 8B.
+- The map's `model_reports` also still lists metro-win under the 8B, as 0–32 online.
+- The GUI, which reads the node directly, shows the Nemo shard loaded.
+
+**metro-win READY (Nemo, GPU 8–24).**
