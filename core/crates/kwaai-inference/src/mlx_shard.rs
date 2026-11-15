@@ -1009,7 +1009,21 @@ mod tests {
     /// token by its head index and fails here at every position past 0.
     #[test]
     fn test_attention_matches_reference() {
-        let (hid, nh, nkv, hd, seq) = (8usize, 2usize, 1usize, 4usize, 3usize);
+        attention_matches_reference(8, 2, 1, 4);
+    }
+
+    /// Heads narrower than `hidden / heads`, as in Mistral Nemo (`head_dim`
+    /// 128, hidden 5120, 32 heads): `q_proj` is `[q_dim, hidden]` and `o_proj`
+    /// `[hidden, q_dim]` with `q_dim` 8 < hidden 10. A merge reshaped to
+    /// `hidden_dim` instead of `n_heads * head_dim` fails here.
+    #[test]
+    fn test_attention_matches_reference_explicit_head_dim() {
+        attention_matches_reference(10, 2, 1, 4);
+    }
+
+    fn attention_matches_reference(hid: usize, nh: usize, nkv: usize, hd: usize) {
+        let seq = 3usize;
+        let qd = nh * hd;
         let cfg = super::MlxShardConfig {
             num_total_blocks: 1,
             hidden_dim: hid,
@@ -1027,20 +1041,20 @@ mod tests {
                 .collect()
         };
         let (wq, wk, wv, wo) = (
-            w(hid, hid, 1),
+            w(qd, hid, 1),
             w(nkv * hd, hid, 2),
             w(nkv * hd, hid, 3),
-            w(hid, hid, 4),
+            w(hid, qd, 4),
         );
         let xs: Vec<f32> = (0..seq * hid)
             .map(|i| ((i * 5) % 7) as f32 / 7.0 - 0.3)
             .collect();
 
         let mut attn = super::MlxAttention::new(&cfg).unwrap();
-        *attn.q_proj.weight = Array::from_slice(&wq, &[hid as i32, hid as i32]);
+        *attn.q_proj.weight = Array::from_slice(&wq, &[qd as i32, hid as i32]);
         *attn.k_proj.weight = Array::from_slice(&wk, &[(nkv * hd) as i32, hid as i32]);
         *attn.v_proj.weight = Array::from_slice(&wv, &[(nkv * hd) as i32, hid as i32]);
-        *attn.o_proj.weight = Array::from_slice(&wo, &[hid as i32, hid as i32]);
+        *attn.o_proj.weight = Array::from_slice(&wo, &[hid as i32, qd as i32]);
         attn.pretranspose().unwrap();
         let x = Array::from_slice(&xs, &[1, seq as i32, hid as i32]);
         let mut kv = None;
@@ -1049,15 +1063,15 @@ mod tests {
         let got = y.as_slice::<f32>();
 
         // reference
-        let q = linear_ref(&xs, &wq, hid, hid);
+        let q = linear_ref(&xs, &wq, hid, qd);
         let k = linear_ref(&xs, &wk, hid, nkv * hd);
         let v = linear_ref(&xs, &wv, hid, nkv * hd);
         let scale = (hd as f32).sqrt().recip();
-        let mut ao = vec![0.0f32; seq * hid];
+        let mut ao = vec![0.0f32; seq * qd];
         for t in 0..seq {
             for h in 0..nh {
                 let g = h / (nh / nkv);
-                let qr = rope_ref(&q[t * hid + h * hd..t * hid + (h + 1) * hd], t, 10000.0);
+                let qr = rope_ref(&q[t * qd + h * hd..t * qd + (h + 1) * hd], t, 10000.0);
                 let kr: Vec<Vec<f32>> = (0..=t)
                     .map(|j| {
                         rope_ref(
@@ -1076,12 +1090,12 @@ mod tests {
                 let z: f32 = ex.iter().sum();
                 for (j, e) in ex.iter().enumerate() {
                     for d in 0..hd {
-                        ao[t * hid + h * hd + d] += e / z * v[j * nkv * hd + g * hd + d];
+                        ao[t * qd + h * hd + d] += e / z * v[j * nkv * hd + g * hd + d];
                     }
                 }
             }
         }
-        let want = linear_ref(&ao, &wo, hid, hid);
+        let want = linear_ref(&ao, &wo, qd, hid);
         assert_eq!(got.len(), want.len());
         for t in 0..seq {
             let (g, w) = (&got[t * hid..(t + 1) * hid], &want[t * hid..(t + 1) * hid]);

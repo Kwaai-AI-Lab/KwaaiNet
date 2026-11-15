@@ -988,6 +988,10 @@ mod tests {
     /// runs. Before `config_head_dim`, `q_proj` and `o_proj` were built square
     /// (`hidden_dim` x `hidden_dim`), so loading Mistral Nemo's `[4096, 5120]`
     /// `q_proj` failed on shape.
+    ///
+    /// Not built with `flash-attn`: that path needs CUDA and f16, and this
+    /// test runs on CPU in f32 (#291).
+    #[cfg(not(feature = "flash-attn"))]
     #[test]
     fn block_with_explicit_head_dim_loads_and_runs() {
         let device = Device::Cpu;
