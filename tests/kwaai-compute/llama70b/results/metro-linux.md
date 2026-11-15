@@ -470,3 +470,134 @@ Node B was still Running after node A loaded: PID 1064630, Shard PID 1064719, an
 - Swap filled during node A's load, but nothing was being swapped out afterwards.
 
 **metro-linux READY: node A CPU 40–72, node B GPU 72–80.**
+
+## Phase 2b: node A on a CPU-only build
+
+### 1. Build
+
+The build was from this branch at `f0e494cd`, whose `core/` is identical to `c48c3b8e` (`git diff --name-only c48c3b8e HEAD -- core` lists no files). `core/patches/` was already present in this clone. The default features are `storage`, `rag` and `ipv6`, so neither `cuda` nor `flash-attn` is included.
+
+It ran under a memory cap so that it could not take memory from the two running nodes: 20 GB, with swap disabled. Available memory was 34 GiB at the start.
+
+```
+$ cd core
+$ CARGO_TARGET_DIR=$HOME/kwaainet-cpu-target systemd-run --user --scope -q -p MemoryMax=20G -p MemorySwapMax=0 \
+    cargo build -p kwaainet --release -j 8
+    Finished `release` profile [optimized] target(s) in 11m 29s
+$ cp $HOME/kwaainet-cpu-target/release/kwaainet $HOME/kwaainet-cpu
+$ $HOME/kwaainet-cpu --version
+kwaainet 0.7.3
+$ ldd $HOME/kwaainet-cpu | grep -E -c 'cuda|cublas|curand'
+0
+```
+
+The build took **11 min 29 s**, against the 5–10 min expected; the release profile uses fat LTO with `codegen-units=1`. It finished at 03:50:19 and was not killed by the cap.
+
+**PASS:** the CPU-only binary is built, and it links no CUDA libraries.
+
+### 2. Restart node A
+
+This ran from a script with node A's four variables exported, and the 8 GiB watchdog again sampled `free` every 2 s.
+
+```
+KWAAINET_GRPC_PORT=8094
+KWAAINET_HOME=/home/rezarassool/.kwaainet-70b-cpu
+KWAAINET_PORT=8081
+KWAAINET_SOCKET=/home/rezarassool/.kwaainet-70b-cpu/node.sock
+node B before: daemon 1064630 shard 1064719
+$ kwaainet stop  [03:50:36Z]
+│                      🛑 Stopping KwaaiNet Node                      │
+2026-11-15T03:50:36.563106Z  INFO kwaainet::daemon: Stopping daemon PID 1065960
+  ✅ KwaaiNet daemon stopped
+─────────────────────────────────────────────────────────────────────
+[exit 0]
+
+kwaainet processes after stop:
+1064630 /home/rezarassool/.cargo/bin/kwaainet run-node --shard
+1064719 /home/rezarassool/.cargo/bin/kwaainet shard serve --auto-rebalance
+$ /home/rezarassool/kwaainet-cpu start --daemon --shard  [03:50:44Z]
+│                       🗺  Reading Network Map                        │
+  Local models (1):
+    • llama3.1:8b
+  Network map (2 model(s)):
+    Llama-3.1-8B-Instruct                       12 server(s)  ✓ have locally
+    Llama-3.3-70B-Instruct                       4 server(s)  ✗ not installed
+  ✅ Confirmed model: unsloth/Llama-3.3-70B-Instruct
+    Map entry:  Llama-3.1-8B-Instruct  (12 server(s))
+─────────────────────────────────────────────────────────────────────
+│                      🚀 Starting KwaaiNet Node                      │
+  Model:   unsloth/Llama-3.3-70B-Instruct
+  Blocks:  32
+  Port:    8081
+  Peers:   2
+  Name:    metro-linux-cpu
+─────────────────────────────────────────────────────────────────────
+  ✅ KwaaiNet daemon started (PID 1079739)
+  ✅ Shard serving: the daemon starts and supervises it
+  💡 Shard logs:   kwaainet logs --shard
+  💡 Storage not initialised — skipping. Run: kwaainet storage init
+  💡 Check status: kwaainet status
+  💡 View logs:    kwaainet logs
+  💡 Stop daemon:  kwaainet stop
+─────────────────────────────────────────────────────────────────────
+[exit 0]
+
+```
+
+`kwaainet stop` stopped only node A's daemon, PID 1065960. Afterwards, only node B's two processes were left.
+
+`shard.log` (blocks 41–70 omitted):
+
+```
+  💡 Shard server stopped.
+2026-11-15T03:50:45.035620Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 500ms
+2026-11-15T03:50:45.537374Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 1s
+2026-11-15T03:50:46.538629Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 2s
+2026-11-15T03:50:48.539803Z  WARN kwaainet::shard_cmd: inference-mux server failed to start: register inference-mux stream handler — retrying in 4s
+2026-11-15T03:50:52.541160Z  WARN kwaainet::shard_cmd: inference-mux server failed to start after 5 attempts: register inference-mux stream handler
+  Blocks:      [40, 72)
+  Device:      CPU
+  💡 Loading model in background. Requests return 'warming up' until ready.
+  💡 Loading shard (16 file(s), blocks [40, 72))…
+2026-11-15T03:50:52.545701Z  INFO kwaai_inference::shard: Loading shard [40..72) of 80: hidden=8192 heads=64 (8 kv)
+2026-11-15T03:50:52.555447Z  INFO kwaai_inference::shard:   Loading block 40
+2026-11-15T03:54:01.288614Z  INFO kwaai_inference::shard:   Loading block 71
+2026-11-15T03:54:09.804655Z  INFO kwaai_inference::shard: Shard [40..72) ready — embedding=false final_head=false
+  ✅ Shard ready  (32 blocks, is_first=false, is_last=false)
+```
+
+The process check:
+
+```
+$ ps -o pid,args -p $(cat $KWAAINET_HOME/run/shard.pid)
+    PID COMMAND
+1079835 /home/rezarassool/kwaainet-cpu shard serve --auto-rebalance
+$ ps -o pid,args -p $(cat $KWAAINET_HOME/run/kwaainet.pid)
+    PID COMMAND
+1079739 /home/rezarassool/kwaainet-cpu run-node --shard
+```
+
+Measurements:
+- **Load time:** 197 s from `Loading shard` (03:50:52) to `Shard ready` (03:54:09), and 207 s from `start`.
+- **Shard process RSS:** 53,668,192 KiB, which is **51.2 GiB**.
+- **Available memory:** **at least 36,147 MiB (35.3 GiB)**, the lowest of 104 samples taken 2 s apart, at 03:54:07.
+- **`free -g` after load:** 58 GiB used, 35 GiB available, swap 3 of 3 GiB.
+- **Peer ID:** unchanged, because the identity lives in the same home.
+
+Node B was not touched:
+
+```
+Status: Running, PID 1064630, Uptime 56m 42s, Shard Running (PID 1064719)
+1064719 /home/rezarassool/.cargo/bin/kwaainet shard serve --auto-rebalance
+nvidia-smi: 18301 MiB used
+```
+
+The `inference-mux server failed to start` warning appears again; it is the same pre-existing collision described in Phase 2. `start` still prints `Map entry: Llama-3.1-8B-Instruct` for the 70B model.
+
+**PASS:**
+- Node A logged `Shard ready  (32 blocks, is_first=false, is_last=false)`.
+- Both the shard child and the daemon run `/home/rezarassool/kwaainet-cpu`.
+- Node B is still running on the installed CUDA binary, with the same PIDs.
+- Available memory stayed at or above 35.3 GiB.
+
+**Node A restarted CPU-only.**
