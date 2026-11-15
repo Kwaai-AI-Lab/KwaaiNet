@@ -839,7 +839,19 @@ Timings:
 - **Step 2** took 622 s (10.4 min) and fetched only `model-00009`.
 - **Total:** 43 min.
 
-The rate varied between about 7 and 19 MB/s, against about 16 MB/s for Nemo. Step 1 guessed 32 blocks, as the instructions predicted. It still fetched `model-00010` with `lm_head`, because file 10 also holds layers that step 1's guessed range mapped to. File 9 came only in step 2.
+The rate varied between about 7 and 19 MB/s, against about 16 MB/s for Nemo. Step 1 guessed 32 blocks, as the instructions predicted. It still fetched `model-00010`. Under that guess, [24, 32) is the *last* range, so the download also took the file holding the final head.
+
+The index places the layers as follows:
+
+```
+model-00006  layers 20–24
+model-00007  layers 24–29
+model-00008  layers 29–33
+model-00009  layers 33–37
+model-00010  layers 37–39, lm_head.weight, model.norm.weight
+```
+
+Layers 24–31 are all in files 6–8, so file 10 came only for `lm_head` and `model.norm`. File 9, with layers 33–37, came only in step 2.
 
 I checked the index's `weight_map` against each file's safetensors header:
 
