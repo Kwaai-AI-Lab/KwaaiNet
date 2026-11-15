@@ -54,6 +54,18 @@ enum ShardServeExit {
     Rebalance,
 }
 
+/// The node closed the connection our handlers were registered on, so it no
+/// longer routes anything to this process — yet it would go on announcing our
+/// blocks, and the process would look healthy, until someone restarted it.
+/// Exiting non-zero hands that to the supervisor, which restarts the shard
+/// with its handlers registered again (#296).
+fn handlers_lost() -> anyhow::Error {
+    anyhow::anyhow!(
+        "the node closed this shard's handler connection, so it no longer receives \
+         requests — exiting so the supervisor restarts it"
+    )
+}
+
 pub async fn run(args: ShardArgs) -> Result<()> {
     match args.action {
         ShardAction::Serve(mut a) => {
@@ -305,7 +317,10 @@ async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServe
     print_info("This node does not advertise a block range — by design on macOS.");
     print_separator();
 
-    crate::supervisor::stop_requested().await;
+    tokio::select! {
+        _ = crate::supervisor::stop_requested() => {}
+        _ = client.persistent_closed() => return Err(handlers_lost()),
+    }
     println!();
     print_info("Stopping whole-model server…");
     Ok(ShardServeExit::UserStop)
@@ -859,13 +874,19 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
             Box::pin(futures::future::pending::<()>())
         };
 
-    // ── Wait: stop request (Ctrl-C, SIGTERM, parent gone) or rebalance ───────
+    // ── Wait: stop request (Ctrl-C, SIGTERM, parent gone), rebalance, or the
+    //    node dropping our handlers ──────────────────────────────────────────
     let exit = tokio::select! {
         _ = crate::supervisor::stop_requested() => {
             ShardServeExit::UserStop
         }
         _ = rebalance_fut => {
             ShardServeExit::Rebalance
+        }
+        _ = client.persistent_closed() => {
+            let _ = std::fs::remove_file(local_server_port_file());
+            let _ = std::fs::remove_file(crate::daemon::ShardManager::ready_file());
+            return Err(handlers_lost());
         }
     };
 
