@@ -199,7 +199,7 @@ New lines in `shard.log` (byte offset 23,128,750 onward), abridged:
 02:58:49.759Z INFO kwaai_inference::shard: Loading shard [8..40) of 80: hidden=8192 heads=64 (8 kv)
 02:58:49.768Z INFO kwaai_inference::shard:   Loading block 8
    … one block every 3.3–4.8 s …
-02:59:52.671Z INFO kwaai_inference::shard:   Loading block 39
+03:00:52.671Z INFO kwaai_inference::shard:   Loading block 39
 03:00:57.458Z INFO kwaai_inference::tokenizer: Loaded tokenizer.json: vocab=128256, bos=Some(128000), eos=Some(128009)
 03:00:57.640Z INFO kwaai_inference::shard: Shard [8..40) ready — embedding=false final_head=false
   ✅ Shard ready  (32 blocks, is_first=false, is_last=false)
