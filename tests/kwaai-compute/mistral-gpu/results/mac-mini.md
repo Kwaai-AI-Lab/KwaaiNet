@@ -30,3 +30,14 @@ This was started early, since the Mac was idle. It was the first load of real Mi
 - The load took 13 s, and the shard's `phys_footprint` is 5541 MB.
 - The tokenizer resolves Mistral's `<s>`/`</s>` as BOS/EOS.
 - No forward pass has run yet; that needs the metros.
+
+## Phase 4: Mistral Small 24B
+
+**Download: PASS.** `shard download --start-block 0 --blocks 8` under `~/.kwaainet-mistral-dl`, 22:13:51–22:28:21 PST (14.5 min). It averaged about 11 MB/s, with a slow patch near 8 GB. Got `model-00001` through `model-00003-of-00010.safetensors` (3 × 4.78 GB = 14.3 GB), `config.json`, `tokenizer.json` and `tokenizer_config.json`. Snapshot: `~/.cache/huggingface/models--unsloth--Mistral-Small-24B-Instruct-2501/snapshots/2eddef09…`. 19 GiB of disk left.
+
+**Serve: PASS.** `$K stop`, `config set model unsloth/Mistral-Small-24B-Instruct-2501`, `$K start --daemon --shard`, with the same `start_block 0` and `blocks 8`:
+- `MLX: Loading [0..8) of 40: h=5120 heads=32(8 kv)`, then `MLX: Shard [0..8) ready — emb=true head=false`, 25 s after start (06:28:44 → 06:29:08 UTC);
+- the shard (PID 60780, `target-nemo` binary) has a `phys_footprint` of **9863 MB**, as expected (~10 GB); system memory is 35% free;
+- the tokenizer has vocab 131072, BOS 1, EOS 2.
+
+**mac-mini READY (Small 24B, MLX 0–8).**
