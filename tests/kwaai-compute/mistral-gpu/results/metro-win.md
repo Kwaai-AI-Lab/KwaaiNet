@@ -150,3 +150,34 @@ The installed `kwaainet` is not running.
 - The GUI, which reads the node directly, shows the Nemo shard loaded.
 
 **metro-win READY (Nemo, GPU 8–24).**
+
+## Phase 3: Nemo runs: PASS
+
+Sampled every 30 s from 05:36:04Z to 05:57:00Z (42 samples): `nvidia-smi` memory and utilisation, shard liveness (PID 20536), and new `shard.log` lines.
+
+- **GPU memory:** 10,116–10,162 MiB throughout, flat. KV cache added at most about 40 MiB.
+- **Utilisation:** peaked at 97% (the prefill at 05:38:07). It sat around 7–28% during decode.
+- **Shard:** alive in every sample. No ERROR, panic or "Message too large".
+- **The only non-timing lines** were three `GC evicted 1 stale sessions` (05:50, 05:52, 05:55).
+
+Runs, from `kwaainet::block_rpc: hop timing` (a gap of more than 5 s starts a new run):
+
+| Run | Time (Z) | Steps through 8–24 | Wall | Steps/s | First (prefill) step |
+|---|---|---|---|---|---|
+| 1 | 05:37:55–05:39:42 | 201 | 107 s | 1.88 | 536 ms |
+| 2 | 05:40:32–05:42:13 | 200 | 101 s | 1.96 | 274 ms |
+| 3 | 05:43:26–05:45:06 | 200 | 101 s | 1.98 | 286 ms |
+| 4 | 05:51:37–05:53:51 | 423 | 134 s | 3.14 | 234 ms |
+
+**metro-win compute** per step, over all 1,024 steps: median 44.2 ms, p90 75.7 ms. At about 2 steps/s end to end, most of each token's time is spent outside metro-win.
+
+Runs 1–3 are the three prompts in the KwaaiNet GUI on this machine, each cut at exactly 200 tokens. Run 4's source wasn't recorded here: 423 steps at 3.1/s could be the Mac's run, or two sessions at once.
+
+**GUI review, runs 1–3.** I took a screenshot at 05:45:06Z.
+- Answer 1 ("Summarize the critique of the standard model of physics?") is fluent and on topic, so the head-dim fix holds. It is cut off mid-sentence.
+- Answer 2 ("How do civiliations collapse?") repeats the question for 200 tokens.
+- Answer 3 ("Is that your real hair?") rambles as a persona.
+
+Cause: `run_streaming` sends Mistral prompts with no chat template, samples at temperature 1.0 with no top-k, top-p or repetition penalty, and stops silently at a default of 200 tokens. Filed as **#293**.
+
+Filed alongside: **#294**. The map shows metro-win on the 8B because the bootstraps serve expired dictionary subkeys, and a Windows stop writes no tombstone.
