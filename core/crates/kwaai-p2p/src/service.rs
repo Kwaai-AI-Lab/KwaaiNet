@@ -220,6 +220,7 @@ pub struct NetworkService {
     relay_stats: crate::diag::RelayServerStats,
     /// Outbound dial and hole-punch outcomes since the last summary.
     dial_stats: crate::diag::DialStats,
+    summary_window: crate::diag::SummaryWindow,
     /// Most recent ping round-trip time per peer. Sampled: overwritten on every
     /// ping event rather than accumulated, so this is "latency now", not an
     /// average. Same lifetime as `peer_protocols` — dropped with the last
@@ -634,6 +635,7 @@ impl NetworkService {
             relay_reservations: RelayReservations::default(),
             relay_stats: Default::default(),
             dial_stats: Default::default(),
+            summary_window: crate::diag::SummaryWindow::new(Instant::now()),
             peer_rtt: HashMap::new(),
             peer_agent: HashMap::new(),
             unary_handlers: HashMap::new(),
@@ -2526,11 +2528,14 @@ impl NetworkService {
     /// One INFO line each for dial outcomes and, when serving as a relay, relay
     /// activity; logged even when idle, so silence means the node is not running.
     fn log_summaries(&mut self) {
-        let window_secs = crate::diag::SUMMARY_INTERVAL.as_secs();
+        let window_secs = self.summary_window.roll(Instant::now()).as_secs();
         info!(window_secs, summary = %self.dial_stats.take(), "network summary");
         if self.swarm.behaviour().relay_server.is_enabled() {
-            let peers = self.relay_reservations.held.len();
-            info!(window_secs, summary = %self.relay_stats.take(peers), "relay server summary");
+            let relay = self.relay_stats.take(self.relay_reservations.held.len());
+            info!(window_secs, summary = %relay.info, "relay server summary");
+            if let Some(ips) = relay.ips {
+                debug!(window_secs, sources = %ips, "relay server denied sources");
+            }
         }
     }
 
