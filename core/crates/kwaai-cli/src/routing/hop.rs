@@ -27,6 +27,8 @@ pub fn classify_hop_failure(err: &str) -> HopFailureKind {
     } else if err.contains("stream reset")
         || err.contains("early eof")
         || err.contains("connection closed")
+        // A resend the hop refused because it ran the step: its reply was lost.
+        || err.contains(kwaai_inference::shard::STEP_ALREADY_IN_KV)
     {
         HopFailureKind::Transient
     } else {

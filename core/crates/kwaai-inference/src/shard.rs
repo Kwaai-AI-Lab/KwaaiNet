@@ -453,6 +453,10 @@ impl Session {
     }
 }
 
+/// In the refusal of a step the session's KV already holds. A client that
+/// sees it knows this server ran the step, e.g. a resend after a lost reply.
+pub const STEP_ALREADY_IN_KV: &str = "is already in this session's KV";
+
 /// Take a step of `seq_len` tokens at `seq_pos`, refusing one the cache
 /// already holds: running it would append its KV twice.
 pub(crate) fn advance_kv(
@@ -462,7 +466,7 @@ pub(crate) fn advance_kv(
 ) -> InferenceResult<()> {
     if seq_pos < *next_pos {
         return Err(InferenceError::InferenceFailed(format!(
-            "step at position {seq_pos} is already in this session's KV (next is {next_pos})"
+            "step at position {seq_pos} {STEP_ALREADY_IN_KV} (next is {next_pos})"
         )));
     }
     *next_pos = seq_pos + seq_len;
@@ -862,7 +866,11 @@ mod tests {
         let mut s = Session::new(1);
         s.advance(0, 5).unwrap();
         s.advance(5, 1).unwrap();
-        assert!(s.advance(5, 1).is_err(), "a replayed decode step");
+        let replay = s.advance(5, 1).unwrap_err().to_string();
+        assert!(
+            replay.contains(STEP_ALREADY_IN_KV),
+            "a replayed decode step: {replay}"
+        );
         assert!(s.advance(0, 7).is_err(), "a replayed prefill");
         s.advance(6, 1).unwrap();
         // A gap is not a double-apply: a server that lost the session keeps

@@ -1871,8 +1871,8 @@ pub enum ProgressPhase {
 pub enum HopFailureKind {
     /// Peer has no inference handler registered. Blacklisted for the run.
     NoHandler,
-    /// Stream reset / early eof / connection closed. Not blacklisted — the
-    /// peer may recover and is retried on the next token.
+    /// Stream reset / early eof / connection closed, or a resent step the
+    /// peer already ran. Not blacklisted — the peer stays eligible for the rebuilt path.
     Transient,
     /// Exceeded the per-hop deadline. Blacklisted for the run.
     Timeout,
@@ -5215,6 +5215,18 @@ mod tests {
             classify_hop_failure("something else entirely"),
             HopFailureKind::Other
         );
+    }
+
+    /// A reply lost after the hop ran the step makes `call_block_forward`
+    /// resend it, and the hop refuses the replay. That hop did nothing wrong,
+    /// so it must not be blacklisted: it may be the only server for its range.
+    #[test]
+    fn a_refused_replay_does_not_blacklist_the_hop() {
+        let msg = format!(
+            "Remote inference error: Inference failed: step at position 5 {} (next is 6)",
+            kwaai_inference::shard::STEP_ALREADY_IN_KV
+        );
+        assert_eq!(classify_hop_failure(&msg), HopFailureKind::Transient);
     }
 
     /// A timeout must classify as Timeout rather than Transient, even though
