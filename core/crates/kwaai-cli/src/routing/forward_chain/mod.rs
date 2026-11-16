@@ -227,6 +227,20 @@ impl ChainOriginator {
                 data,
                 error,
             } if error.kind != ForwardErrorKind::Failed => {
+                let resume_at = match partial_resume_block(chain, &error.peer_id, end_block) {
+                    Ok(b) => b,
+                    Err(reporter) => {
+                        let msg =
+                            format!("reported its blocks ending at {end_block}, not as planned");
+                        return Err(self.hop_failed(
+                            chain,
+                            failed_peers,
+                            &reporter,
+                            end_block,
+                            &msg,
+                        ));
+                    }
+                };
                 self.fall_back(format!(
                     "{:?} at block {} ({}): {}",
                     error.kind,
@@ -249,7 +263,7 @@ impl ChainOriginator {
                     session_id,
                     seq_pos,
                     resume,
-                    end_block as usize,
+                    resume_at,
                     our_peer_id,
                     failed_peers,
                     unreached,
@@ -290,6 +304,22 @@ impl ChainOriginator {
             message: format!("forward chain: hop {name} at block {block} failed: {msg}"),
         }
         .into()
+    }
+}
+
+/// Where star resumes after a `Partial` that blames `next`: the reporter is
+/// the hop planned before it, and its `end_block` must be the one planned.
+/// `Err` names the reporter to blame instead.
+fn partial_resume_block(
+    chain: &[BlockServerEntry],
+    next: &[u8],
+    end_block: u32,
+) -> Result<usize, Vec<u8>> {
+    let i = chain.iter().position(|e| e.peer_id.to_bytes() == next);
+    match i.and_then(|i| Some((&chain[i.checked_sub(1)?], &chain[i]))) {
+        Some((reporter, next)) if reporter.end_block == end_block as usize => Ok(next.start_block),
+        Some((reporter, _)) => Err(reporter.peer_id.to_bytes()),
+        None => Err(next.to_vec()),
     }
 }
 
@@ -465,6 +495,35 @@ mod tests {
             "a retry's fresh session"
         );
         assert_eq!(rx.try_recv().unwrap().step, 5);
+    }
+
+    fn entry(start: usize, end: usize) -> BlockServerEntry {
+        BlockServerEntry {
+            peer_id: PeerId::random(),
+            start_block: start,
+            end_block: end,
+            public_name: String::new(),
+            throughput: 1.0,
+            trust_score: None,
+            lease_v1: false,
+            dial_addrs: Vec::new(),
+        }
+    }
+
+    /// A `Partial`'s `end_block` comes from the reporter; star must not
+    /// resume anywhere but where the plan has the next hop start.
+    #[test]
+    fn a_partial_resumes_only_at_the_planned_block() {
+        let chain = [entry(0, 8), entry(8, 16), entry(16, 32)];
+        let id = |i: usize| chain[i].peer_id.to_bytes();
+        assert_eq!(partial_resume_block(&chain, &id(2), 16), Ok(16));
+        assert_eq!(
+            partial_resume_block(&chain, &id(2), 24),
+            Err(id(1)),
+            "skipping blocks blames the reporter"
+        );
+        assert_eq!(partial_resume_block(&chain, &id(2), 8), Err(id(1)));
+        assert_eq!(partial_resume_block(&chain, &id(0), 0), Err(id(0)));
     }
 
     #[test]
