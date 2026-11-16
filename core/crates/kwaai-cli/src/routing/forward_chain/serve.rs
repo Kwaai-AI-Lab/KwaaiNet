@@ -19,6 +19,7 @@ use crate::block_rpc::{
     run_inference_request, InferenceRequest, InferenceResponse, LoadedShard, PayloadType,
     ResponseType, ShardCell,
 };
+use crate::routing::hop::hidden_states_request;
 
 /// Steps computing at once. Past this a step is refused, which its
 /// originator handles by finishing in star.
@@ -195,21 +196,21 @@ pub async fn finish_hop<U: Unary + ?Sized>(
                 fwd_ms,
             });
             match (resp.response_type, route.first()) {
-                (ResponseType::Logits, _) => ChainOutcome::Logits {
+                (ResponseType::Logits | ResponseType::TokenId, _) => ChainOutcome::Done {
+                    response_type: resp.response_type,
                     shape: resp.shape,
                     data: resp.data,
                 },
                 (ResponseType::HiddenStates, Some(next)) => {
                     let onward = ChainRequest {
                         start_block: next.start_block,
-                        inner: InferenceRequest {
+                        inner: hidden_states_request(
                             session_id,
                             seq_pos,
-                            payload_type: PayloadType::HiddenStates,
-                            shape: resp.shape,
-                            data: resp.data,
-                            sample: inner.sample,
-                        },
+                            resp.shape,
+                            resp.data,
+                            inner.sample,
+                        ),
                         route: route[1..].to_vec(),
                         origin: origin.clone(),
                         return_proto: return_proto.clone(),
@@ -245,11 +246,6 @@ pub async fn finish_hop<U: Unary + ?Sized>(
                     peer_id: me.to_vec(),
                     block: blocks.0,
                     msg: "hidden states with no onward route".into(),
-                },
-                (ResponseType::TokenId, _) => ChainOutcome::HopFailed {
-                    peer_id: me.to_vec(),
-                    block: blocks.0,
-                    msg: "a sampled token, but chain steps carry no sampling".into(),
                 },
             }
         }
@@ -481,12 +477,67 @@ mod tests {
         .await;
         let r = result_sent(&fake);
         assert!(
-            matches!(r.outcome, ChainOutcome::Logits { .. }),
+            matches!(
+                r.outcome,
+                ChainOutcome::Done {
+                    response_type: ResponseType::Logits,
+                    ..
+                }
+            ),
             "{:?}",
             r.outcome
         );
         assert_eq!((r.step, r.trace.len()), (3, 1));
         assert_eq!(fake.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn the_last_hop_delivers_its_sampled_token_home() {
+        let fake = Fake::accepting();
+        let (shape, data) = crate::block_rpc::token_ids_to_bytes(&[42]);
+        let sampled = Ok(InferenceResponse {
+            session_id: 7,
+            response_type: ResponseType::TokenId,
+            shape,
+            data: data.clone(),
+            error: None,
+        });
+        finish_hop(&fake, ME, (8, 16), request(vec![]), sampled, 2.5).await;
+        match result_sent(&fake).outcome {
+            ChainOutcome::Done {
+                response_type,
+                data: d,
+                ..
+            } => assert_eq!((response_type, d), (ResponseType::TokenId, data)),
+            o => panic!("{o:?}"),
+        }
+    }
+
+    /// The server moves `inner` out to compute; `sample` must survive in the
+    /// envelope to reach the last hop.
+    #[tokio::test]
+    async fn a_middle_hop_passes_sample_on() {
+        let fake = Fake::accepting();
+        let mut req = request(vec![hop(NEXT, 16, 32)]);
+        let p = crate::block_rpc::SamplingParams {
+            temperature: 0.7,
+            top_k: 40,
+            top_p: 0.9,
+        };
+        req.inner.sample = Some(p);
+        let (_inner, req) = take_inner(req);
+        finish_hop(
+            &fake,
+            ME,
+            (8, 16),
+            req,
+            computed(ResponseType::HiddenStates),
+            1.0,
+        )
+        .await;
+        let calls = fake.calls();
+        let onward: ChainRequest = rmp_serde::from_slice(&calls[0].2).unwrap();
+        assert_eq!(onward.inner.sample, Some(p));
     }
 
     #[tokio::test]

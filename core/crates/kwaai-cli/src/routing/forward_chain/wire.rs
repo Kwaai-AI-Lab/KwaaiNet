@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::block_rpc::InferenceRequest;
+use crate::block_rpc::{InferenceRequest, ResponseType};
 
 /// Servers take a chain step here. The reply is a [`ChainAck`], sent before
 /// any compute — never the result.
@@ -80,8 +80,13 @@ pub struct ForwardError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChainOutcome {
-    /// The last block ran: the step is complete.
-    Logits { shape: Vec<u32>, data: Vec<u8> },
+    /// The last block ran: the step is complete. `response_type` is the last
+    /// hop's own — `TokenId` when it sampled, `Logits` when it did not.
+    Done {
+        response_type: ResponseType,
+        shape: Vec<u32>,
+        data: Vec<u8>,
+    },
     /// The sender ran its blocks but could not pass them on.
     Partial {
         end_block: u32,
@@ -166,9 +171,15 @@ mod tests {
     #[test]
     fn a_result_round_trips_every_outcome() {
         for outcome in [
-            ChainOutcome::Logits {
+            ChainOutcome::Done {
+                response_type: ResponseType::Logits,
                 shape: vec![1, 1, 2],
                 data: vec![0; 4],
+            },
+            ChainOutcome::Done {
+                response_type: ResponseType::TokenId,
+                shape: vec![1],
+                data: vec![42, 0, 0, 0],
             },
             ChainOutcome::Partial {
                 end_block: 8,

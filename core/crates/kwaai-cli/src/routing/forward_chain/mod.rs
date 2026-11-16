@@ -1,6 +1,6 @@
 //! Forward-chain routing, originator side: the step is sent to the first hop
 //! with the rest of the route, each server forwards to the next, and the last
-//! delivers the logits back here — N+1 network legs instead of star's 2N.
+//! delivers the step's result back here — N+1 network legs instead of star's 2N.
 //!
 //! Phase 1 is optimistic and originator-planned. Prefill stays star; any
 //! failure finishes the step in star where provably safe, and the rest of
@@ -20,9 +20,9 @@ use tokio::sync::oneshot;
 
 use self::serve::send_chain;
 use self::wire::*;
-use super::hop::ChainPositionError;
+use super::hop::{hidden_states_request, ChainPositionError};
 use super::star::forward_from;
-use crate::block_rpc::{InferenceRequest, InferenceResponse, PayloadType, ResponseType};
+use crate::block_rpc::{InferenceRequest, InferenceResponse, ResponseType};
 use crate::display::print_warning;
 use crate::reputation::ReputationStore;
 use crate::shard_cmd::{
@@ -146,11 +146,7 @@ impl ChainOriginator {
         );
         let req = ChainRequest {
             start_block: chain[0].start_block as u32,
-            // Sampling stays with the originator: the chain returns logits.
-            inner: InferenceRequest {
-                sample: None,
-                ..request
-            },
+            inner: request,
             route,
             origin: self.origin.clone(),
             return_proto: self.return_proto.clone(),
@@ -206,20 +202,18 @@ impl ChainOriginator {
         emit_trace(sink, chain, our_peer_id, &result.trace, token_ctx);
 
         match result.outcome {
-            ChainOutcome::Logits { shape, data } => {
+            ChainOutcome::Done {
+                response_type,
+                shape,
+                data,
+            } => {
                 self.steps += 1;
                 tracing::debug!(
                     step,
                     total_ms = started.elapsed().as_secs_f64() * 1000.0,
                     "forward chain step"
                 );
-                Ok(InferenceResponse {
-                    session_id,
-                    response_type: ResponseType::Logits,
-                    shape,
-                    data,
-                    error: None,
-                })
+                Ok(done_reply(session_id, response_type, shape, data))
             }
             ChainOutcome::Partial {
                 end_block,
@@ -248,14 +242,8 @@ impl ChainOriginator {
                     name_of(chain, &error.peer_id),
                     error.msg
                 ));
-                let resume = InferenceRequest {
-                    session_id,
-                    seq_pos,
-                    payload_type: PayloadType::HiddenStates,
-                    shape,
-                    data,
-                    sample: req.inner.sample,
-                };
+                let resume =
+                    hidden_states_request(session_id, seq_pos, shape, data, req.inner.sample);
                 forward_from(
                     client,
                     chain,
@@ -327,20 +315,37 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// A completed step's reply, typed as the last hop typed it: the same
+/// response star would return, so `next_token` reads either alike.
+fn done_reply(
+    session_id: u64,
+    response_type: ResponseType,
+    shape: Vec<u32>,
+    data: Vec<u8>,
+) -> InferenceResponse {
+    InferenceResponse {
+        session_id,
+        response_type,
+        shape,
+        data,
+        error: None,
+    }
+}
+
 /// Constant-time, so a forger learns nothing from how fast a guess fails.
 fn same_nonce(a: &[u8; 16], b: &[u8; 16]) -> bool {
     std::hint::black_box(a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y))) == 0
 }
 
 /// Whether `caller` may send this outcome for a step routed along `route`:
-/// logits only from the last hop, a failure only about itself or the hop
+/// a result only from the last hop, a failure only about itself or the hop
 /// after it.
 fn may_answer(route: &[Vec<u8>], caller: &[u8], outcome: &ChainOutcome) -> bool {
     let Some(at) = route.iter().position(|p| p == caller) else {
         return false;
     };
     match outcome {
-        ChainOutcome::Logits { .. } => at + 1 == route.len(),
+        ChainOutcome::Done { .. } => at + 1 == route.len(),
         ChainOutcome::Partial { error, .. } => route.get(at + 1) == Some(&error.peer_id),
         ChainOutcome::HopFailed { peer_id, .. } => peer_id == caller,
     }
@@ -442,7 +447,8 @@ mod tests {
     }
 
     fn logits() -> ChainOutcome {
-        ChainOutcome::Logits {
+        ChainOutcome::Done {
+            response_type: ResponseType::Logits,
             shape: vec![1, 1, 1],
             data: vec![0, 0],
         }
@@ -495,6 +501,104 @@ mod tests {
             "a retry's fresh session"
         );
         assert_eq!(rx.try_recv().unwrap().step, 5);
+    }
+
+    /// Keeps what the last hop delivers home; accepts it.
+    struct Home(Mutex<Vec<Vec<u8>>>);
+
+    impl serve::Unary for Home {
+        fn call<'a>(
+            &'a self,
+            _peer: &'a [u8],
+            _proto: &'a str,
+            data: Vec<u8>,
+        ) -> futures::future::BoxFuture<'a, Result<Vec<u8>>> {
+            lock(&self.0).push(data);
+            Box::pin(async {
+                Ok(rmp_serde::to_vec_named(&ChainAck {
+                    accepted: true,
+                    error: None,
+                })?)
+            })
+        }
+    }
+
+    const GREEDY: crate::block_rpc::SamplingParams = crate::block_rpc::SamplingParams {
+        temperature: 1.0,
+        top_k: 0,
+        top_p: 1.0,
+    };
+
+    /// A sampling decode step's last hop replies `reply`; what the originator
+    /// returns for it, as `step` does.
+    async fn chained_home(reply: InferenceResponse) -> InferenceResponse {
+        let origin = PeerId::random().to_bytes();
+        let req = ChainRequest {
+            inner: InferenceRequest {
+                session_id: 7,
+                seq_pos: 5,
+                payload_type: crate::block_rpc::PayloadType::HiddenStates,
+                shape: vec![1, 1, 2],
+                data: vec![0; 4],
+                sample: Some(GREEDY),
+            },
+            start_block: 16,
+            route: vec![],
+            origin,
+            return_proto: result_proto(1),
+            step: 4,
+            nonce: NONCE,
+            trace: vec![],
+        };
+        let home = Home(Mutex::default());
+        serve::finish_hop(&home, ROUTE[2], (16, 32), req, Ok(reply), 1.0).await;
+        let pending = Pending::default();
+        let mut rx = wait(&pending, 4, 7);
+        let delivered = lock(&home.0).pop().expect("a result was delivered");
+        assert!(accepted(&pending, ROUTE[2], delivered));
+        match rx.try_recv().unwrap().outcome {
+            ChainOutcome::Done {
+                response_type,
+                shape,
+                data,
+            } => done_reply(7, response_type, shape, data),
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sampled_token_comes_home_as_a_token_id() {
+        let (shape, data) = crate::block_rpc::token_ids_to_bytes(&[42]);
+        let resp = chained_home(InferenceResponse {
+            session_id: 7,
+            response_type: ResponseType::TokenId,
+            shape,
+            data,
+            error: None,
+        })
+        .await;
+        assert_eq!(resp.response_type, ResponseType::TokenId);
+        assert_eq!(crate::block_rpc::next_token(&resp, GREEDY).unwrap(), 42);
+    }
+
+    /// A last hop may ignore `sample` (an older server, or a synthetic shard)
+    /// and reply logits; the originator then samples them itself.
+    #[tokio::test]
+    async fn logits_still_come_home_when_sample_was_asked() {
+        let mut v = vec![0f32; 16];
+        v[9] = 9.0;
+        let t = candle_core::Tensor::from_vec(v, (1, 1, 16), &candle_core::Device::Cpu).unwrap();
+        let (shape, data) = crate::block_rpc::tensor_to_f16_bytes(&t).unwrap();
+        let resp = chained_home(InferenceResponse {
+            session_id: 7,
+            response_type: ResponseType::Logits,
+            shape,
+            data,
+            error: None,
+        })
+        .await;
+        assert_eq!(resp.response_type, ResponseType::Logits);
+        assert_eq!(crate::block_rpc::next_token(&resp, GREEDY).unwrap(), 9);
     }
 
     fn entry(start: usize, end: usize) -> BlockServerEntry {

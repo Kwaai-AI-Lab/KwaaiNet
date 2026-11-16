@@ -8,8 +8,11 @@ use anyhow::Result;
 use kwaai_p2p_daemon::P2PClient;
 use libp2p::PeerId;
 
-use super::hop::{classify_hop_failure, hop_candidates, ChainPositionError, HOP_TIMEOUT_MARKER};
-use crate::block_rpc::{call_block_forward, InferenceRequest, PayloadType};
+use super::hop::{
+    classify_hop_failure, hidden_states_request, hop_candidates, ChainPositionError,
+    HOP_TIMEOUT_MARKER,
+};
+use crate::block_rpc::{call_block_forward, InferenceRequest};
 use crate::display::print_warning;
 use crate::reputation::{now_secs, PeerObservation, ReputationStore};
 use crate::shard_cmd::{
@@ -150,15 +153,13 @@ pub(super) async fn forward_from(
                     });
                     pos = candidate.end_block;
                     if pos < total_blocks {
-                        request = InferenceRequest {
+                        request = hidden_states_request(
                             session_id,
                             seq_pos,
-                            payload_type: PayloadType::HiddenStates,
-                            shape: resp.shape.clone(),
-                            data: resp.data.clone(),
-                            // Only the last node acts on it; middle nodes ignore it.
-                            sample: request.sample,
-                        };
+                            resp.shape.clone(),
+                            resp.data.clone(),
+                            request.sample,
+                        );
                     }
                     response = Some(resp);
                     succeeded = true;

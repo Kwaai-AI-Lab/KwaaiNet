@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 use libp2p::PeerId;
 
+use crate::block_rpc::{InferenceRequest, PayloadType, SamplingParams};
 use crate::shard_cmd::{BlockServerEntry, HopFailureKind};
 
 /// Per-hop timing record: (peer display name, start_block, end_block, elapsed_ms).
@@ -87,3 +88,40 @@ impl std::fmt::Display for ChainPositionError {
 }
 
 impl std::error::Error for ChainPositionError {}
+
+/// The request a hop's hidden states go on in, by star or chain. `sample` rides
+/// along: only the last node acts on it.
+pub(crate) fn hidden_states_request(
+    session_id: u64,
+    seq_pos: u32,
+    shape: Vec<u32>,
+    data: Vec<u8>,
+    sample: Option<SamplingParams>,
+) -> InferenceRequest {
+    InferenceRequest {
+        session_id,
+        seq_pos,
+        payload_type: PayloadType::HiddenStates,
+        shape,
+        data,
+        sample,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_next_hop_request_carries_sample_on() {
+        let p = SamplingParams {
+            temperature: 0.7,
+            top_k: 40,
+            top_p: 0.9,
+        };
+        let r = hidden_states_request(7, 3, vec![1, 1, 2], vec![0; 4], Some(p));
+        assert_eq!((r.session_id, r.seq_pos), (7, 3));
+        assert_eq!(r.payload_type, PayloadType::HiddenStates);
+        assert_eq!(r.sample, Some(p));
+    }
+}
