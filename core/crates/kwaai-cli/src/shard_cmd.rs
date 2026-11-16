@@ -1517,17 +1517,6 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let show_stats = args.stats;
     #[cfg(feature = "synthetic")]
-    let synthetic_servers: Vec<(Vec<u8>, u32, u32)> = chain
-        .iter()
-        .map(|e| {
-            (
-                e.peer_id.to_bytes(),
-                e.start_block as u32,
-                e.end_block as u32,
-            )
-        })
-        .collect();
-    #[cfg(feature = "synthetic")]
     let mut synthetic_kv_resets = 0usize;
     #[cfg(feature = "synthetic")]
     let mut synthetic_steps = 0usize;
@@ -1637,6 +1626,16 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         #[cfg(feature = "synthetic")]
         let verified = if synthetic {
             let seq_pos = cur.seq_pos as u32;
+            let path: Vec<(Vec<u8>, u32, u32)> = pinned_path
+                .iter()
+                .map(|e| {
+                    (
+                        e.peer_id.to_bytes(),
+                        e.start_block as u32,
+                        e.end_block as u32,
+                    )
+                })
+                .collect();
             if seq_pos == 0 {
                 synthetic_prompt_len = step.len() as u32;
             }
@@ -1649,7 +1648,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     token_ids: &step,
                     prompt_len: synthetic_prompt_len,
                     total_blocks: total_blocks as u32,
-                    servers: &synthetic_servers,
+                    path: &path,
                 },
             )
             .with_context(|| format!("synthetic verification failed at seq_pos {seq_pos}"))?;
