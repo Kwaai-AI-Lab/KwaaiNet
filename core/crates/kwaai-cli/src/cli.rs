@@ -960,7 +960,10 @@ pub struct ShardRunArgs {
     #[arg(long, default_value = "200")]
     pub max_tokens: usize,
 
-    /// Explicit session ID (randomly generated if not set)
+    /// Explicit session ID (randomly generated if not set). Servers keep a
+    /// session's KV for 600 s after its last step, so reusing an ID within
+    /// that window is refused and the run moves to a fresh ID, as it does
+    /// after any failed hop.
     #[arg(long)]
     pub session_id: Option<u64>,
 

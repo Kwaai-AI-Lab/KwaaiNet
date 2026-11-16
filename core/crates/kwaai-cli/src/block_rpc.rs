@@ -214,7 +214,10 @@ pub fn f16_bytes_to_tensor(bytes: &[u8], shape: &[u32], device: &Device) -> Resu
         .collect();
     let shape_usize: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
     // `Tensor::from_vec` does not check this: a short buffer would back an oversized tensor.
-    let n: usize = shape_usize.iter().product();
+    let n = shape_usize
+        .iter()
+        .try_fold(1usize, |n, &d| n.checked_mul(d))
+        .with_context(|| format!("shape {shape:?} overflows usize"))?;
     if n != f16_vec.len() {
         bail!(
             "shape {shape:?} needs {n} f16 elements, got {}",
@@ -752,6 +755,8 @@ mod tests {
         let bytes = vec![0u8; 8]; // four f16
         assert!(f16_bytes_to_tensor(&bytes, &[1, 5], &Device::Cpu).is_err());
         assert!(f16_bytes_to_tensor(&bytes, &[2, 2], &Device::Cpu).is_ok());
+        // 2^64 elements: an unchecked product wraps to 0 and matches no bytes.
+        assert!(f16_bytes_to_tensor(&[], &[1 << 16; 4], &Device::Cpu).is_err());
     }
 
     #[cfg(feature = "mlx")]
