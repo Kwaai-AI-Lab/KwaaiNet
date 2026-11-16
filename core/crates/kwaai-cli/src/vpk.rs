@@ -620,8 +620,8 @@ fn parse_vpk_regular(bytes: &[u8]) -> Option<VpkNodeEntry> {
 
 /// Decode a FoundDictionary value into one VpkNodeEntry per unexpired subkey.
 ///
-/// Python Hivemind serialises DictionaryDHTValue as:
-///   Ext(80, msgpack([global_expiry_f64, created_f64, [[subkey_str, value_bytes, entry_expiry_f64], …]]))
+/// A DictionaryDHTValue is serialised (`storage.rs`, `serialize_dictionary`) as:
+///   Ext(80, msgpack([maxsize_or_nil, latest_expiration_f64, [[subkey, value_bytes, expiry_f64], …]]))
 fn parse_vpk_dictionary(bytes: &[u8], now: f64, out: &mut Vec<VpkNodeEntry>) {
     // Outer layer: Ext(80, inner_bytes)
     let outer = match rmpv::decode::read_value(&mut &bytes[..]) {
@@ -633,7 +633,7 @@ fn parse_vpk_dictionary(bytes: &[u8], now: f64, out: &mut Vec<VpkNodeEntry>) {
         _ => return,
     };
 
-    // Inner layer: [global_expiry, created_time, [[subkey, value, expiry], …]]
+    // Inner layer: [maxsize, latest_expiration, [[subkey, value, expiry], …]]
     let inner = match rmpv::decode::read_value(&mut &inner_bytes[..]) {
         Ok(v) => v,
         Err(_) => return,
