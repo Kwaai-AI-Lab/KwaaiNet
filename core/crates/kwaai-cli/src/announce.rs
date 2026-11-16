@@ -550,7 +550,7 @@ fn select_dial_addrs(
     quic: bool,
 ) -> Vec<libp2p::Multiaddr> {
     use kwaai_p2p::addresses::{
-        is_announceable_with, is_dns_hosted, peer_id_from_multiaddr, strip_dest_p2p,
+        circuit_preference, is_announceable_with, peer_id_from_multiaddr, strip_dest_p2p,
     };
     use kwaai_p2p::{is_circuit, uses_dialable_transport};
 
@@ -560,9 +560,14 @@ fn select_dial_addrs(
         .chain(listeners)
         .filter(|a| is_announceable_with(a, strict) && uses_dialable_transport(a, quic))
         .collect();
-    // Direct before circuit, stably, so the declared address stays first; an
-    // IP-hosted circuit before a DNS one, so it is the form kept per relay.
-    sorted.sort_by_key(|a| (is_circuit(a), is_circuit(a) && is_dns_hosted(a)));
+    // Direct before circuit, stably, so the declared address stays first; per
+    // relay, the circuit form a QUIC-off, IPv4-only reader can dial wins.
+    sorted.sort_by_key(|a| {
+        (
+            is_circuit(a),
+            is_circuit(a).then(|| circuit_preference(a, false)),
+        )
+    });
 
     let mut direct: Vec<libp2p::Multiaddr> = Vec::new();
     let mut circuits: Vec<libp2p::Multiaddr> = Vec::new();
@@ -1305,6 +1310,35 @@ mod tests {
             relay().to_base58()
         );
         assert_eq!(out, addrs(&[expected]));
+    }
+
+    /// A QUIC or IPv6 circuit must not displace the dnsaddr form: a QUIC-off
+    /// or IPv4-only reader would then have nothing for that relay.
+    #[test]
+    fn select_dial_addrs_publishes_the_form_every_reader_can_dial() {
+        let circuit = |host: &str| {
+            format!(
+                "{host}/p2p/{}/p2p-circuit/p2p/{}",
+                relay().to_base58(),
+                peer().to_base58()
+            )
+        };
+        let quic = circuit("/ip4/76.13.5.74/udp/4001/quic-v1");
+        let v6 = circuit("/ip6/2001:db8::2/tcp/4001");
+        let dns = circuit("/dnsaddr/bootstrap.kwaai.ai");
+        let tcp = circuit("/ip4/76.13.5.74/tcp/4001");
+        let published = |host: &str| format!("{host}/p2p/{}/p2p-circuit", relay().to_base58());
+
+        let out = select_dial_addrs(
+            addrs(&[quic.clone(), v6.clone(), dns.clone()]),
+            None,
+            false,
+            true,
+        );
+        assert_eq!(out, addrs(&[published("/dnsaddr/bootstrap.kwaai.ai")]));
+
+        let out = select_dial_addrs(addrs(&[quic, v6, dns, tcp]), None, false, true);
+        assert_eq!(out, addrs(&[published("/ip4/76.13.5.74/tcp/4001")]));
     }
 
     /// This build has no webtransport transport, and the certhash form is the
