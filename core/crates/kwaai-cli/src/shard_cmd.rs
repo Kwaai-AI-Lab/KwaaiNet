@@ -1538,6 +1538,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             payload_type: PayloadType::TokenIds,
             shape,
             data,
+            // Sent on every chunk, including prefill chunks whose token is
+            // discarded: a 4-byte reply beats [1, n, vocab] logits.
             sample: Some(sampling),
         };
 
@@ -2508,6 +2510,8 @@ async fn run_streaming_inner(
             payload_type: PayloadType::TokenIds,
             shape,
             data,
+            // Sent on every chunk, including prefill chunks whose token is
+            // discarded: a 4-byte reply beats [1, n, vocab] logits.
             sample: Some(sampling),
         };
 

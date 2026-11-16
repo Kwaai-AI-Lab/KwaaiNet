@@ -282,6 +282,8 @@ async fn run_inference(
             payload_type: PayloadType::TokenIds,
             shape,
             data,
+            // Sent on every chunk, including prefill chunks whose token is
+            // discarded: a 4-byte reply beats [1, n, vocab] logits.
             sample: Some(sampling),
         };
 
