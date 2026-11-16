@@ -9,9 +9,11 @@
 //! [`Behaviour`] wraps `kad::Behaviour` and rewrites each dial kad starts so
 //! it carries only direct addresses; a peer with none is refused, which kad
 //! sees as an ordinary dial failure. The target of a running lookup is
-//! exempt: kad only reports peers that answered. Other dials that borrow kad's addresses
-//! get one circuit per relay. Everything else passes straight through, and
-//! the wrapper derefs to the inner behaviour so callers are unchanged.
+//! exempt: kad only reports peers that answered. So is the liveness check on
+//! a full bucket's oldest entry, which would otherwise lose its slot. Other
+//! dials that borrow kad's addresses get one circuit per relay. Everything
+//! else passes straight through, and the wrapper derefs to the inner
+//! behaviour so callers are unchanged.
 
 use std::{
     collections::HashSet,
@@ -84,10 +86,22 @@ impl Behaviour {
         )
     }
 
+    /// Whether `peer` is the disconnected oldest entry of a bucket holding a
+    /// pending newcomer: kad dials it to check liveness, and evicts it if unanswered.
+    fn is_liveness_check(&mut self, peer: &PeerId) -> bool {
+        self.inner.kbucket(*peer).is_some_and(|bucket| {
+            bucket.has_pending()
+                && bucket.iter().next().is_some_and(|oldest| {
+                    oldest.node.key.preimage() == peer
+                        && oldest.status == kad::NodeStatus::Disconnected
+                })
+        })
+    }
+
     /// Rewrites a dial kad started (always by peer id alone); `None` leaves it as built.
     fn rewrite(&mut self, opts: &DialOpts) -> Option<DialOpts> {
         let peer = opts.get_peer_id()?;
-        if self.is_lookup_target(&peer) {
+        if self.is_lookup_target(&peer) || self.is_liveness_check(&peer) {
             return None;
         }
         let mut direct: Vec<Multiaddr> = Vec::new();
@@ -234,6 +248,35 @@ mod tests {
         wrapper_with(false, kad::K_VALUE.get())
     }
 
+    /// Marks `peer` connected, as the swarm would before kad sees it.
+    fn connect(b: &mut Behaviour, peer: PeerId, addr: &Multiaddr) {
+        let endpoint = libp2p::core::ConnectedPoint::Dialer {
+            address: addr.clone(),
+            role_override: Endpoint::Dialer,
+            port_use: PortUse::Reuse,
+        };
+        b.on_swarm_event(FromSwarm::ConnectionEstablished(
+            libp2p::swarm::behaviour::ConnectionEstablished {
+                peer_id: peer,
+                connection_id: ConnectionId::new_unchecked(99),
+                endpoint: &endpoint,
+                failed_addresses: &[],
+                other_established: 0,
+            },
+        ));
+    }
+
+    /// The next dial kad emits, after the wrapper's rewrite.
+    fn next_dial(b: &mut Behaviour) -> Option<DialOpts> {
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        while let Poll::Ready(ev) = b.poll(&mut cx) {
+            if let ToSwarm::Dial { opts } = ev {
+                return Some(opts);
+            }
+        }
+        None
+    }
+
     fn circuit(host: &str, dest: PeerId) -> Multiaddr {
         format!("{host}/p2p/{RELAY}/p2p-circuit/p2p/{dest}")
             .parse()
@@ -337,5 +380,31 @@ mod tests {
                 "quic={quic} keeps {want}: {addrs:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_liveness_check_on_a_full_bucket_keeps_its_circuit() {
+        // One slot per bucket, so a second peer in the same bucket contends for it.
+        let mut b = wrapper_with(false, 1);
+        let oldest = PeerId::random();
+        let relayed = circuit("/ip4/198.51.100.2/tcp/8000", oldest);
+        b.add_address(&oldest, relayed.clone());
+        let range = b.kbucket(oldest).map(|k| k.range());
+        let newcomer = std::iter::repeat_with(PeerId::random)
+            .find(|p| b.kbucket(*p).map(|k| k.range()) == range)
+            .unwrap();
+        let direct: Multiaddr = "/ip4/203.0.113.9/tcp/8080".parse().unwrap();
+        while next_dial(&mut b).is_some() {}
+
+        connect(&mut b, newcomer, &direct);
+        assert!(matches!(
+            b.add_address(&newcomer, direct),
+            kad::RoutingUpdate::Pending
+        ));
+        let opts = next_dial(&mut b).expect("kad checks the oldest entry");
+        assert_eq!(opts.get_peer_id(), Some(oldest));
+        let addrs = pending(&mut b, opts.connection_id(), oldest)
+            .expect("a refused check would cost the oldest entry its slot");
+        assert_eq!(addrs, vec![relayed]);
     }
 }
