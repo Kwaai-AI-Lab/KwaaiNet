@@ -1482,8 +1482,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     // ── Inference loop ────────────────────────────────────────────────────────
     let mut generated_ids: Vec<u32> = Vec::new();
-    let mut seq_pos: usize = 0;
-    let mut current_ids = token_ids.clone();
+    let mut cur = PrefillCursor::new(
+        token_ids.clone(),
+        session_id,
+        prefill_chunk_tokens_for_model(&model_dir),
+    );
     let mut failed_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
 
     // Pin the peer path for this session — same peers handle the same blocks
@@ -1515,38 +1518,40 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     );
     let mut gen_bar = crate::progress::GenBar::new(max_tokens);
 
-    loop {
-        let token_start = std::time::Instant::now();
+    // The sink accumulates the same per-hop timings the `--stats` table has
+    // always used; nothing else consumes progress on the CLI path. It is
+    // drained once per token, so a chunked prefill counts as one.
+    let hop_sink = HopTimingSink::new();
+    let sink_ref: Option<&dyn ProgressSink> = show_stats.then_some(&hop_sink as &dyn ProgressSink);
+    let mut token_start = std::time::Instant::now();
 
-        // Build first request
-        let (shape, data) = token_ids_to_bytes(&current_ids);
+    loop {
+        // While prefilling, a step is one chunk of the prompt (#301); a token
+        // is sampled only once the whole prompt is in every hop's KV.
+        let mut step = cur.step();
+        let (shape, data) = token_ids_to_bytes(&step);
         let request = InferenceRequest {
-            session_id,
-            seq_pos: seq_pos as u32,
+            session_id: cur.session_id,
+            seq_pos: cur.seq_pos as u32,
             payload_type: PayloadType::TokenIds,
             shape,
             data,
         };
 
-        // Forward through the pinned path. The sink accumulates the same
-        // per-hop timings the `--stats` table has always used; nothing else
-        // consumes progress on the CLI path.
-        let hop_sink = HopTimingSink::new();
-        let sink_ref: Option<&dyn ProgressSink> =
-            show_stats.then_some(&hop_sink as &dyn ProgressSink);
-        let token_ctx = TokenContext::new(
+        // Forward through the pinned path.
+        let mut token_ctx = TokenContext::new(
             generated_ids.len(),
             generated_ids.is_empty(),
             generation_start,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
         );
         let logits_bytes = match forward_through_chain(
             &mut client,
             &pinned_path,
             total_blocks,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
             request,
             Some(&our_peer_id),
             &mut failed_peers,
@@ -1561,12 +1566,15 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             Err(e) => {
                 // Move to a clean line before printing the warning so it doesn't
                 // appear inline with the last-printed token.
-                if !generated_ids.is_empty() {
+                let prefilling = generated_ids.is_empty();
+                if !prefilling {
                     println!();
                 }
-                print_warning(&format!(
-                    "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
-                ));
+                print_warning(&if prefilling {
+                    format!("{e:#} — rebuilding path and restarting the prompt")
+                } else {
+                    format!("{e:#} — rebuilding path (KV-cache lost, output may degrade)")
+                });
                 unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
                 pinned_path =
                     build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
@@ -1574,11 +1582,17 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 // stats table reports only the path that actually produced the
                 // token — matching the pre-sink `token_hops.clear()`.
                 let _ = hop_sink.take();
-                // Retry this token with the new path
-                let (shape2, data2) = token_ids_to_bytes(&current_ids);
+                if prefilling {
+                    cur.restart().map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
+                    print_info(&format!("Session ID:   {}", cur.session_id));
+                    step = cur.step();
+                    token_ctx = TokenContext::new(0, true, generation_start, cur.session_id, 0);
+                }
+                // Retry this step with the new path
+                let (shape2, data2) = token_ids_to_bytes(&step);
                 let retry_req = InferenceRequest {
-                    session_id,
-                    seq_pos: seq_pos as u32,
+                    session_id: cur.session_id,
+                    seq_pos: cur.seq_pos as u32,
                     payload_type: PayloadType::TokenIds,
                     shape: shape2,
                     data: data2,
@@ -1587,8 +1601,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     &mut client,
                     &pinned_path,
                     total_blocks,
-                    session_id,
-                    seq_pos as u32,
+                    cur.session_id,
+                    cur.seq_pos as u32,
                     retry_req,
                     Some(&our_peer_id),
                     &mut failed_peers,
@@ -1607,6 +1621,10 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 result
             }
         };
+        if !cur.advance(step.len()) {
+            continue; // more of the prompt to prefill
+        }
+
         if show_stats {
             let token_hops = hop_sink.take();
             if !token_hops.is_empty() {
@@ -1660,7 +1678,6 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         token_times_ms.push(token_ms);
 
         generated_ids.push(next_id);
-        seq_pos += current_ids.len(); // advance by tokens sent this step
 
         if generated_ids.len() > 1 {
             gen_bar.tick(generated_ids.len(), token_ms);
@@ -1672,7 +1689,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         }
 
         // Next decode step: send just the new token
-        current_ids = vec![next_id];
+        cur.push(next_id);
+        token_start = std::time::Instant::now();
     }
 
     let total_secs = generation_start.elapsed().as_secs_f64();
@@ -2039,8 +2057,9 @@ impl InferenceProgress {
 /// Which generated token a forward pass belongs to. Telemetry only.
 ///
 /// Threaded rather than derived from `seq_pos`, because that is a *sequence*
-/// position, not a token ordinal — the two diverge after prefill, where one
-/// pass covers the whole prompt.
+/// position, not a token ordinal — the two diverge after prefill, which
+/// covers the whole prompt as token 0, in one pass per chunk (#301). Each
+/// chunk's passes carry its own `seq_pos`.
 #[derive(Debug, Clone, Copy)]
 pub struct TokenContext {
     pub index: usize,
@@ -2049,7 +2068,8 @@ pub struct TokenContext {
     pub started: std::time::Instant,
     /// The run's session id — the same value sent in every
     /// `InferenceRequest` and used by each server as its KV-cache key, so
-    /// a hop reported here can be found in that server's own log.
+    /// a hop reported here can be found in that server's own log. A prompt
+    /// restarted after a failed prefill moves to a new one.
     pub session_id: u64,
     /// Global sequence position of this call's first token, as sent on the
     /// wire. Distinct from `index` for the reason given above.
@@ -2473,22 +2493,28 @@ async fn run_streaming_inner(
     });
 
     let mut generated_ids: Vec<u32> = Vec::new();
-    let mut seq_pos: usize = 0;
-    let mut current_ids = token_ids.clone();
+    let mut cur = PrefillCursor::new(
+        token_ids.clone(),
+        session_id,
+        prefill_chunk_tokens_for_model(&model_dir),
+    );
+    let mut token_started = std::time::Instant::now();
 
     loop {
-        let token_started = std::time::Instant::now();
-        let token_ctx = TokenContext::new(
+        // While prefilling, a step is one chunk of the prompt (#301); a token
+        // is sampled only once the whole prompt is in every hop's KV.
+        let mut step = cur.step();
+        let mut token_ctx = TokenContext::new(
             generated_ids.len(),
             generated_ids.is_empty(),
             run_started,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
         );
-        let (shape, data) = token_ids_to_bytes(&current_ids);
+        let (shape, data) = token_ids_to_bytes(&step);
         let request = InferenceRequest {
-            session_id,
-            seq_pos: seq_pos as u32,
+            session_id: cur.session_id,
+            seq_pos: cur.seq_pos as u32,
             payload_type: PayloadType::TokenIds,
             shape,
             data,
@@ -2498,8 +2524,8 @@ async fn run_streaming_inner(
             &mut client,
             &pinned_path,
             total_blocks,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
             request,
             Some(&our_peer_id),
             &mut failed_peers,
@@ -2514,13 +2540,16 @@ async fn run_streaming_inner(
             Err(e) => {
                 // Rebuild path on transient failure and retry once,
                 // matching cmd_shard_run's recovery behaviour.
+                let prefilling = generated_ids.is_empty();
                 emit_progress(sink, || {
                     let mut ev = InferenceProgress::new(run_started, ProgressPhase::PathRebuild)
                         .token(token_ctx)
                         .attempt(path_attempt + 1)
-                        .msg(format!(
-                            "{e:#} — rebuilding path (KV-cache lost, output may degrade)"
-                        ));
+                        .msg(if prefilling {
+                            format!("{e:#} — rebuilding path and restarting the prompt")
+                        } else {
+                            format!("{e:#} — rebuilding path (KV-cache lost, output may degrade)")
+                        });
                     ev.block_start = e.downcast_ref::<ChainPositionError>().map(|c| c.block);
                     ev
                 });
@@ -2535,10 +2564,15 @@ async fn run_streaming_inner(
                         .attempt(path_attempt)
                         .msg(format!("{} hop(s)", pinned_path.len()))
                 });
-                let (shape2, data2) = token_ids_to_bytes(&current_ids);
+                if prefilling {
+                    cur.restart().map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
+                    step = cur.step();
+                    token_ctx = TokenContext::new(0, true, run_started, cur.session_id, 0);
+                }
+                let (shape2, data2) = token_ids_to_bytes(&step);
                 let retry_req = InferenceRequest {
-                    session_id,
-                    seq_pos: seq_pos as u32,
+                    session_id: cur.session_id,
+                    seq_pos: cur.seq_pos as u32,
                     payload_type: PayloadType::TokenIds,
                     shape: shape2,
                     data: data2,
@@ -2547,8 +2581,8 @@ async fn run_streaming_inner(
                     &mut client,
                     &pinned_path,
                     total_blocks,
-                    session_id,
-                    seq_pos as u32,
+                    cur.session_id,
+                    cur.seq_pos as u32,
                     retry_req,
                     Some(&our_peer_id),
                     &mut failed_peers,
@@ -2560,6 +2594,9 @@ async fn run_streaming_inner(
                 .await?
             }
         };
+        if !cur.advance(step.len()) {
+            continue; // more of the prompt to prefill
+        }
 
         let logits_shape = &logits_bytes.shape;
         let device = candle_core::Device::Cpu;
@@ -2588,7 +2625,6 @@ async fn run_streaming_inner(
         });
 
         generated_ids.push(next_id);
-        seq_pos += current_ids.len();
 
         if next_id == eos_id || generated_ids.len() >= max_tokens {
             let stop_reason = if next_id == eos_id {
@@ -2609,7 +2645,8 @@ async fn run_streaming_inner(
             }
             break;
         }
-        current_ids = vec![next_id];
+        cur.push(next_id);
+        token_started = std::time::Instant::now();
     }
 
     Ok(())
@@ -4600,12 +4637,100 @@ fn rand_f32() -> f32 {
     ((shuffled >> 33) as u32 as f32) / (u32::MAX as f32)
 }
 
+/// Prompt tokens sent per prefill step (#301). Every hop but the last replies
+/// with `[1, n, hidden]` f16, so a whole-prompt step outgrows the control
+/// socket's frame cap past a few hundred tokens and the request fails. A step
+/// is sized to fill at most half the cap, at 2 bytes per f16 value and up to
+/// 2× for msgpack writing the bytes as an integer array (#300).
+fn prefill_chunk_tokens(hidden_size: usize) -> usize {
+    let per_token = hidden_size.max(1) * 2 * 2;
+    (kwaai_p2p_daemon::persistent::MAX_FRAME_SIZE / 2 / per_token).clamp(16, 512)
+}
+
+/// [`prefill_chunk_tokens`] for the model in `model_dir`, read from its
+/// `config.json`. Without one, a hidden size of 8192 (70B) keeps the steps
+/// small enough for every model the network serves today.
+pub(crate) fn prefill_chunk_tokens_for_model(model_dir: &Path) -> usize {
+    let hidden = std::fs::read_to_string(model_dir.join("config.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("hidden_size")?.as_u64())
+        .unwrap_or(8192) as usize;
+    prefill_chunk_tokens(hidden)
+}
+
+/// Times a generation loop may start its prompt over before giving up.
+const MAX_PREFILL_RESTARTS: usize = 2;
+
+/// A generation loop's place in its token stream, shared by the three chain
+/// clients (`cmd_shard_run`, `run_streaming_inner`, `shard api`). It hands out
+/// the prompt in chunks of at most `chunk` tokens, then one sampled token at
+/// a time, and tracks the session and position they go to.
+pub(crate) struct PrefillCursor {
+    prompt: Vec<u32>,
+    /// Tokens not yet sent: what is left of the prompt, then the last sample.
+    pending: Vec<u32>,
+    chunk: usize,
+    pub(crate) session_id: u64,
+    /// Position of the first pending token.
+    pub(crate) seq_pos: usize,
+    restarts: usize,
+}
+
+impl PrefillCursor {
+    pub(crate) fn new(prompt: Vec<u32>, session_id: u64, chunk: usize) -> Self {
+        Self {
+            pending: prompt.clone(),
+            prompt,
+            chunk,
+            session_id,
+            seq_pos: 0,
+            restarts: 0,
+        }
+    }
+
+    /// The tokens to send next: at most `chunk` while prefilling, else the
+    /// one sampled token.
+    pub(crate) fn step(&self) -> Vec<u32> {
+        self.pending[..self.pending.len().min(self.chunk)].to_vec()
+    }
+
+    /// Record that the first `sent` pending tokens reached every hop. Returns
+    /// whether a token can be sampled now, i.e. nothing is left to send.
+    pub(crate) fn advance(&mut self, sent: usize) -> bool {
+        self.pending.drain(..sent);
+        self.seq_pos += sent;
+        self.pending.is_empty()
+    }
+
+    /// Queue a sampled token for the next decode step.
+    pub(crate) fn push(&mut self, token: u32) {
+        self.pending = vec![token];
+    }
+
+    /// Start the prompt over in a new session after a hop failed mid-prefill.
+    /// Hops that survived the path rebuild already hold the chunks sent so
+    /// far, and resending them in the same session would append them twice.
+    /// A transient failure does not blacklist its peer, so the same hop can
+    /// fail again: after [`MAX_PREFILL_RESTARTS`] this gives up.
+    pub(crate) fn restart(&mut self) -> Result<()> {
+        if self.restarts == MAX_PREFILL_RESTARTS {
+            bail!("prompt failed to prefill after {MAX_PREFILL_RESTARTS} restarts");
+        }
+        self.restarts += 1;
+        self.session_id = rand_session_id();
+        self.seq_pos = 0;
+        self.pending = self.prompt.clone();
+        Ok(())
+    }
+}
+
 /// Generate a random u64 session ID using splitmix64 over (nanos ⊕ pid).
 ///
 /// Using raw `as_nanos() as u64` truncates a u128 and collides if called
 /// twice within the same nanosecond. Mixing in the process ID + splitmix64
 /// gives adequate entropy without adding a dependency.
-fn rand_session_id() -> u64 {
+pub(crate) fn rand_session_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -4690,6 +4815,80 @@ mod tests {
             lease_v1: false,
             dial_addrs: Vec::new(),
         }
+    }
+
+    /// #301: one prefill step's reply fits the control socket's frame cap,
+    /// even at msgpack's worst case of 2 bytes per byte. The cases are the
+    /// hidden sizes the network serves: 8B, Mistral Small 24B, 70B.
+    #[test]
+    fn a_prefill_steps_reply_fits_the_frame_cap() {
+        let cap = kwaai_p2p_daemon::persistent::MAX_FRAME_SIZE;
+        for (hidden, want) in [(4096, 320), (5120, 256), (8192, 160)] {
+            let chunk = prefill_chunk_tokens(hidden);
+            assert_eq!(chunk, want, "hidden {hidden}");
+            assert!(chunk * hidden * 2 * 2 <= cap / 2, "hidden {hidden}");
+        }
+        // The clamp: tiny models don't send thousand-token steps, and huge
+        // ones still make progress.
+        assert_eq!(prefill_chunk_tokens(64), 512);
+        assert_eq!(prefill_chunk_tokens(1 << 20), 16);
+    }
+
+    #[test]
+    fn the_chunk_size_comes_from_the_models_config() {
+        let dir = std::env::temp_dir().join(format!("kwaai-301-{}", rand_session_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Without a config.json, assume 70B's hidden size.
+        assert_eq!(prefill_chunk_tokens_for_model(&dir), 160);
+        std::fs::write(dir.join("config.json"), r#"{"hidden_size": 5120}"#).unwrap();
+        assert_eq!(prefill_chunk_tokens_for_model(&dir), 256);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `PrefillCursor` is how all three generation loops walk their tokens:
+    /// the prompt in steps of at most `chunk` at consecutive positions in
+    /// one session, sampling only after the last; then one token per step.
+    #[test]
+    fn a_long_prompt_is_sent_in_consecutive_chunks() {
+        let prompt: Vec<u32> = (0..2000).collect();
+        let chunk = prefill_chunk_tokens(5120);
+        let mut cur = PrefillCursor::new(prompt.clone(), 42, chunk);
+        let (mut sent, mut steps) = (Vec::new(), Vec::new());
+        loop {
+            let step = cur.step();
+            assert!(!step.is_empty() && step.len() <= chunk);
+            assert_eq!(cur.session_id, 42);
+            steps.push((cur.seq_pos, step.len()));
+            sent.extend_from_slice(&step);
+            if cur.advance(step.len()) {
+                break;
+            }
+        }
+        assert_eq!(sent, prompt);
+        assert_eq!(steps.len(), 2000usize.div_ceil(chunk));
+        assert_eq!(steps[1], (chunk, chunk));
+        // Decode: one sampled token at the next position, never split.
+        cur.push(7);
+        assert_eq!((cur.step(), cur.seq_pos), (vec![7], 2000));
+        assert!(cur.advance(1));
+        assert_eq!(cur.seq_pos, 2001);
+    }
+
+    /// A failure mid-prefill starts the prompt over from position 0 in a new
+    /// session, and a hop that keeps failing ends the run rather than
+    /// restarting it forever.
+    #[test]
+    fn a_prefill_restart_starts_over_in_a_new_session_a_bounded_number_of_times() {
+        let prompt: Vec<u32> = (0..600).collect();
+        let mut cur = PrefillCursor::new(prompt.clone(), 42, 256);
+        for _ in 0..MAX_PREFILL_RESTARTS {
+            assert!(!cur.advance(cur.step().len())); // one chunk lands, then a hop fails
+            let old = cur.session_id;
+            cur.restart().unwrap();
+            assert_ne!(cur.session_id, old);
+            assert_eq!((cur.seq_pos, cur.step()), (0, prompt[..256].to_vec()));
+        }
+        assert!(cur.restart().is_err());
     }
 
     #[test]

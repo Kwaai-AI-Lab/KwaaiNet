@@ -1105,6 +1105,71 @@ mod tests {
         }
     }
 
+    /// #301: a prompt sent as chunks gives the same output as one step. The
+    /// second chunk is several tokens against a longer cache (q_len 3 <
+    /// kv_len 5), so the causal mask must line up with the bottom-right of
+    /// the score matrix; aligned top-left, token 2 would see only key 0.
+    #[test]
+    fn test_chunked_prefill_matches_one_step() {
+        let (hid, nh, nkv, hd, seq, split) = (8usize, 2usize, 1usize, 4usize, 5usize, 2usize);
+        let qd = nh * hd;
+        let cfg = super::MlxShardConfig {
+            num_total_blocks: 1,
+            hidden_dim: hid,
+            num_heads: nh,
+            num_kv_heads: nkv,
+            head_dim: hd,
+            intermediate_dim: 16,
+            vocab_size: 16,
+            rope_theta: 10000.0,
+            rms_norm_eps: 1e-5,
+        };
+        let w = |n_out: usize, n_in: usize, seed: usize| -> Vec<f32> {
+            (0..n_out * n_in)
+                .map(|i| ((i * 7 + seed * 3) % 11) as f32 / 11.0 - 0.5)
+                .collect()
+        };
+        let mut attn = super::MlxAttention::new(&cfg).unwrap();
+        *attn.q_proj.weight = Array::from_slice(&w(qd, hid, 1), &[qd as i32, hid as i32]);
+        *attn.k_proj.weight =
+            Array::from_slice(&w(nkv * hd, hid, 2), &[(nkv * hd) as i32, hid as i32]);
+        *attn.v_proj.weight =
+            Array::from_slice(&w(nkv * hd, hid, 3), &[(nkv * hd) as i32, hid as i32]);
+        *attn.o_proj.weight = Array::from_slice(&w(hid, qd, 4), &[hid as i32, qd as i32]);
+        attn.pretranspose().unwrap();
+        let xs: Vec<f32> = (0..seq * hid)
+            .map(|i| ((i * 5) % 7) as f32 / 7.0 - 0.3)
+            .collect();
+        let run = |attn: &mut super::MlxAttention,
+                   kv: &mut Option<(Array, Array)>,
+                   from: usize,
+                   to: usize| {
+            let x = Array::from_slice(
+                &xs[from * hid..to * hid],
+                &[1, (to - from) as i32, hid as i32],
+            );
+            let y = attn.forward(&x, kv, from).unwrap();
+            y.eval().unwrap();
+            y.as_slice::<f32>().to_vec()
+        };
+
+        let mut kv = None;
+        let whole = run(&mut attn, &mut kv, 0, seq);
+        let mut kv = None;
+        let mut chunked = run(&mut attn, &mut kv, 0, split);
+        chunked.extend(run(&mut attn, &mut kv, split, seq));
+
+        for t in 0..seq {
+            let (a, b) = (
+                &whole[t * hid..(t + 1) * hid],
+                &chunked[t * hid..(t + 1) * hid],
+            );
+            for i in 0..hid {
+                assert!((a[i] - b[i]).abs() < 1e-4, "pos {t}: {a:?} vs {b:?}");
+            }
+        }
+    }
+
     #[test]
     fn test_mlx_array_basic() {
         let a = Array::from_slice::<f32>(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);

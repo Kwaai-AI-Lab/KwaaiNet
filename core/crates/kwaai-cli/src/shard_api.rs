@@ -64,6 +64,8 @@ struct AppState {
     default_temp: f32,
     eos_id: u32,
     bos_id: Option<u32>,
+    /// Prompt tokens per prefill step (#301).
+    prefill_chunk: usize,
     our_peer_id: PeerId,
     /// When set, use llama.cpp GPU inference instead of P2P chain.
     /// Only populated when: llama-cpp feature + all blocks local + GGUF available.
@@ -227,17 +229,12 @@ async fn run_inference(
         token_ids.insert(0, bos);
     }
 
-    let session_id: u64 = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(42)
-    };
-
     let mut generated = 0usize;
-    let mut seq_pos = 0usize;
-    let mut current_ids = token_ids;
+    let mut cur = crate::shard_cmd::PrefillCursor::new(
+        token_ids,
+        crate::shard_cmd::rand_session_id(),
+        state.prefill_chunk,
+    );
     let device = Device::Cpu;
 
     let mut client_guard = state.client.lock().await;
@@ -267,17 +264,20 @@ async fn run_inference(
     let run_started = std::time::Instant::now();
 
     loop {
-        let token_ctx = crate::shard_cmd::TokenContext::new(
+        // While prefilling, a step is one chunk of the prompt (#301); a token
+        // is sampled only once the whole prompt is in every hop's KV.
+        let mut step = cur.step();
+        let mut token_ctx = crate::shard_cmd::TokenContext::new(
             generated,
             generated == 0,
             run_started,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
         );
-        let (shape, data) = token_ids_to_bytes(&current_ids);
+        let (shape, data) = token_ids_to_bytes(&step);
         let request = InferenceRequest {
-            session_id,
-            seq_pos: seq_pos as u32,
+            session_id: cur.session_id,
+            seq_pos: cur.seq_pos as u32,
             payload_type: PayloadType::TokenIds,
             shape,
             data,
@@ -287,8 +287,8 @@ async fn run_inference(
             &mut client_guard,
             &pinned_path,
             state.total_blocks,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
             request,
             Some(&state.our_peer_id),
             &mut failed_peers,
@@ -316,11 +316,27 @@ async fn run_inference(
                 ) {
                     Ok(new_path) => {
                         pinned_path = new_path;
+                        if generated == 0 {
+                            if let Err(e2) = cur.restart() {
+                                let _ = tx
+                                    .send(Piece::Error(format!("inference error: {e}; {e2}")))
+                                    .await;
+                                break;
+                            }
+                            step = cur.step();
+                            token_ctx = crate::shard_cmd::TokenContext::new(
+                                0,
+                                true,
+                                run_started,
+                                cur.session_id,
+                                0,
+                            );
+                        }
                         // Retry once with rebuilt path
-                        let (s2, d2) = token_ids_to_bytes(&current_ids);
+                        let (s2, d2) = token_ids_to_bytes(&step);
                         let retry = InferenceRequest {
-                            session_id,
-                            seq_pos: seq_pos as u32,
+                            session_id: cur.session_id,
+                            seq_pos: cur.seq_pos as u32,
                             payload_type: PayloadType::TokenIds,
                             shape: s2,
                             data: d2,
@@ -329,8 +345,8 @@ async fn run_inference(
                             &mut client_guard,
                             &pinned_path,
                             state.total_blocks,
-                            session_id,
-                            seq_pos as u32,
+                            cur.session_id,
+                            cur.seq_pos as u32,
                             retry,
                             Some(&state.our_peer_id),
                             &mut failed_peers,
@@ -359,6 +375,9 @@ async fn run_inference(
                 }
             }
         };
+        if !cur.advance(step.len()) {
+            continue; // more of the prompt to prefill
+        }
 
         let logits_shape = &logits_bytes.shape;
         let logits_tensor = match f16_bytes_to_tensor(&logits_bytes.data, logits_shape, &device) {
@@ -403,12 +422,11 @@ async fn run_inference(
         }
 
         generated += 1;
-        seq_pos += current_ids.len();
 
         if next_id == state.eos_id || generated >= max_tokens {
             break;
         }
-        current_ids = vec![next_id];
+        cur.push(next_id);
     }
     // tx dropped here → channel closes → SSE stream ends
 }
@@ -1008,6 +1026,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         default_temp: args.temperature,
         eos_id,
         bos_id,
+        prefill_chunk: crate::shard_cmd::prefill_chunk_tokens_for_model(&model_dir),
         our_peer_id,
         #[cfg(feature = "llama-cpp")]
         llama_model,
