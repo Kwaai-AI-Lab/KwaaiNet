@@ -965,6 +965,29 @@ mod tests {
         assert!(next_token(&reply(ResponseType::HiddenStates, shape, data), GREEDY).is_err());
     }
 
+    #[cfg(feature = "synthetic")]
+    #[tokio::test]
+    async fn a_synthetic_last_node_returns_its_packet_even_when_asked_to_sample() {
+        use crate::synthetic::{Packet, SyntheticConfig, SyntheticShard};
+        let whole = SyntheticShard::new(vec![0; 4], 0, 32, SyntheticConfig::default());
+        let (shape, data) = token_ids_to_bytes(&[1, 2, 3]);
+        let req = InferenceRequest {
+            session_id: 7,
+            seq_pos: 0,
+            payload_type: PayloadType::TokenIds,
+            shape,
+            data,
+            sample: Some(GREEDY),
+        };
+        let raw = rmp_serde::to_vec_named(&req).unwrap();
+        let shard = Arc::new(LoadedShard::Synthetic(whole));
+        let resp = handle_inference_request(shard, Device::Cpu, raw)
+            .await
+            .unwrap();
+        assert_eq!(resp.response_type, ResponseType::Logits);
+        Packet::decode(&resp.data).unwrap();
+    }
+
     #[test]
     fn f16_bytes_large_tensor() {
         use candle_core::{DType, Device, Tensor};
