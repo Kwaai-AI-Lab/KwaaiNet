@@ -204,6 +204,10 @@ impl NetworkBehaviour for Behaviour {
     }
 
     fn on_swarm_event(&mut self, event: FromSwarm) {
+        // A dial stopped before reaching us (peer condition, an earlier behaviour's denial).
+        if let FromSwarm::DialFailure(failure) = &event {
+            self.refuse.remove(&failure.connection_id);
+        }
         self.inner.on_swarm_event(event);
     }
 
@@ -406,5 +410,27 @@ mod tests {
         let addrs = pending(&mut b, opts.connection_id(), oldest)
             .expect("a refused check would cost the oldest entry its slot");
         assert_eq!(addrs, vec![relayed]);
+    }
+
+    #[test]
+    fn a_refusal_is_dropped_when_its_dial_fails_before_reaching_us() {
+        let mut b = wrapper();
+        let peer = PeerId::random();
+        b.add_address(&peer, circuit("/ip4/198.51.100.2/tcp/8000", peer));
+        let opts = DialOpts::peer_id(peer).build();
+        assert!(b.rewrite(&opts).is_none());
+        assert_eq!(b.refuse.len(), 1);
+
+        let error = libp2p::swarm::DialError::Denied {
+            cause: ConnectionDenied::new(OnlyCircuitAddresses(peer)),
+        };
+        b.on_swarm_event(FromSwarm::DialFailure(
+            libp2p::swarm::behaviour::DialFailure {
+                peer_id: Some(peer),
+                error: &error,
+                connection_id: opts.connection_id(),
+            },
+        ));
+        assert!(b.refuse.is_empty(), "no refusal outlives its dial");
     }
 }
