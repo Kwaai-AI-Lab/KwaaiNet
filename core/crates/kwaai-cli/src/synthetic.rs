@@ -448,8 +448,8 @@ pub struct Expected<'a> {
     pub token_ids: &'a [u32],
     pub prompt_len: u32,
     pub total_blocks: u32,
-    /// Every `(peer_id, start, end)` the DHT announced; each hop must be one.
-    pub servers: &'a [(Vec<u8>, u32, u32)],
+    /// The pinned path as `(peer_id, start, end)`: hop i must be entry i.
+    pub path: &'a [(Vec<u8>, u32, u32)],
 }
 
 #[derive(Debug)]
@@ -493,18 +493,22 @@ pub fn verify_final(shape: &[u32], data: &[u8], exp: &Expected<'_>) -> Result<Ve
         "token digest mismatch — the first hop saw different token ids"
     );
 
+    ensure!(
+        p.hops.len() == exp.path.len(),
+        "{} hops, the pinned path has {}",
+        p.hops.len(),
+        exp.path.len()
+    );
     let mut pos = 0;
-    for (i, h) in p.hops.iter().enumerate() {
+    for (i, (h, (id, s, e))) in p.hops.iter().zip(exp.path).enumerate() {
         ensure!(
             h.start_block == pos,
             "hop {i} starts at block {}, expected {pos}",
             h.start_block
         );
         ensure!(
-            exp.servers
-                .iter()
-                .any(|(id, s, e)| *id == h.peer_id && *s == h.start_block && *e == h.end_block),
-            "hop {i} [{}, {}) is not a server announcing that range",
+            *id == h.peer_id && *s == h.start_block && *e == h.end_block,
+            "hop {i} [{}, {}) was not served by the pinned peer for [{s}, {e})",
             h.start_block,
             h.end_block
         );
@@ -562,7 +566,7 @@ mod tests {
             .collect()
     }
 
-    fn servers() -> Vec<(Vec<u8>, u32, u32)> {
+    fn pinned() -> Vec<(Vec<u8>, u32, u32)> {
         vec![(vec![0; 4], 0, 4), (vec![1; 4], 4, 8), (vec![2; 4], 8, 12)]
     }
 
@@ -597,18 +601,14 @@ mod tests {
         Ok((req.shape, req.data))
     }
 
-    fn expect<'a>(
-        seq_pos: u32,
-        ids: &'a [u32],
-        servers: &'a [(Vec<u8>, u32, u32)],
-    ) -> Expected<'a> {
+    fn expect<'a>(seq_pos: u32, ids: &'a [u32], path: &'a [(Vec<u8>, u32, u32)]) -> Expected<'a> {
         Expected {
             session_id: 7,
             seq_pos,
             token_ids: ids,
             prompt_len: 5,
             total_blocks: 12,
-            servers,
+            path,
         }
     }
 
@@ -660,10 +660,10 @@ mod tests {
     #[test]
     fn a_three_hop_generation_verifies_every_step() {
         let path = path();
-        let servers = servers();
+        let pinned = pinned();
         let prompt = [10, 11, 12, 13, 14];
         let (shape, data) = step(&path, 7, 0, &prompt).unwrap();
-        let v = verify_final(&shape, &data, &expect(0, &prompt, &servers)).unwrap();
+        let v = verify_final(&shape, &data, &expect(0, &prompt, &pinned)).unwrap();
         assert_eq!(Packet::decode(&data).unwrap().hops.len(), 3);
         assert_eq!(v.kv_resets, 0);
 
@@ -672,7 +672,7 @@ mod tests {
         for _ in 0..4 {
             let ids = [tok];
             let (shape, data) = step(&path, 7, seq_pos, &ids).unwrap();
-            let v = verify_final(&shape, &data, &expect(seq_pos, &ids, &servers)).unwrap();
+            let v = verify_final(&shape, &data, &expect(seq_pos, &ids, &pinned)).unwrap();
             tok = v.next_token;
             seq_pos += 1;
         }
@@ -689,17 +689,17 @@ mod tests {
 
     #[test]
     fn a_fresh_server_mid_session_flags_a_kv_reset() {
-        let servers = servers();
+        let pinned = pinned();
         let prompt = [1, 2, 3, 4, 5];
         step(&path(), 7, 0, &prompt).unwrap();
         // A rebuilt path: same ranges, servers that never saw the prefill.
         let rebuilt = path();
         let (shape, data) = step(&rebuilt, 7, 5, &[9]).unwrap();
-        let v = verify_final(&shape, &data, &expect(5, &[9], &servers)).unwrap();
+        let v = verify_final(&shape, &data, &expect(5, &[9], &pinned)).unwrap();
         assert_eq!(v.kv_resets, 3);
         // The next step on that path is in order and carries no stale prompt_len.
         let (shape, data) = step(&rebuilt, 7, 6, &[4]).unwrap();
-        let v = verify_final(&shape, &data, &expect(6, &[4], &servers)).unwrap();
+        let v = verify_final(&shape, &data, &expect(6, &[4], &pinned)).unwrap();
         assert_eq!(v.kv_resets, 0);
     }
 
@@ -756,19 +756,30 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_a_hop_nobody_announced() {
+    fn verify_rejects_more_hops_than_the_pinned_path() {
         let prompt = [1, 2, 3, 4, 5];
         let (shape, data) = step(&path(), 7, 0, &prompt).unwrap();
-        let only_two = &servers()[..2];
+        let only_two = &pinned()[..2];
         let err = verify_final(&shape, &data, &expect(0, &prompt, only_two)).unwrap_err();
-        assert!(format!("{err:#}").contains("not a server"), "{err:#}");
+        assert!(format!("{err:#}").contains("pinned path"), "{err:#}");
+    }
+
+    #[test]
+    fn verify_rejects_another_server_of_a_pinned_range() {
+        // Same range as the pinned hop, different peer: a routing bug, not a pass.
+        let mut detour = path();
+        detour[1] = SyntheticShard::new(vec![9; 4], 4, 8, cfg());
+        let prompt = [1, 2, 3, 4, 5];
+        let (shape, data) = step(&detour, 7, 0, &prompt).unwrap();
+        let err = verify_final(&shape, &data, &expect(0, &prompt, &pinned())).unwrap_err();
+        assert!(format!("{err:#}").contains("pinned peer"), "{err:#}");
     }
 
     #[test]
     fn verify_rejects_a_different_prompt() {
-        let servers = servers();
+        let pinned = pinned();
         let (shape, data) = step(&path(), 7, 0, &[1, 2, 3, 4, 5]).unwrap();
-        let err = verify_final(&shape, &data, &expect(0, &[1, 2, 3, 4, 6], &servers)).unwrap_err();
+        let err = verify_final(&shape, &data, &expect(0, &[1, 2, 3, 4, 6], &pinned)).unwrap_err();
         assert!(format!("{err:#}").contains("digest"), "{err:#}");
     }
 
