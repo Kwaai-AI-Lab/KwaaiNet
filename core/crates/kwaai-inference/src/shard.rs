@@ -458,7 +458,8 @@ impl Session {
 pub const STEP_ALREADY_IN_KV: &str = "is already in this session's KV";
 
 /// Take a step of `seq_len` tokens at `seq_pos`, refusing one the cache
-/// already holds: running it would append its KV twice.
+/// already holds (its KV would be appended twice) and, once the session holds
+/// anything, one past its end (every later real step would then be refused).
 pub(crate) fn advance_kv(
     next_pos: &mut usize,
     seq_pos: usize,
@@ -467,6 +468,11 @@ pub(crate) fn advance_kv(
     if seq_pos < *next_pos {
         return Err(InferenceError::InferenceFailed(format!(
             "step at position {seq_pos} {STEP_ALREADY_IN_KV} (next is {next_pos})"
+        )));
+    }
+    if *next_pos > 0 && seq_pos > *next_pos {
+        return Err(InferenceError::InferenceFailed(format!(
+            "step at position {seq_pos} is past the end of this session's KV (next is {next_pos})"
         )));
     }
     *next_pos = seq_pos + seq_len;
@@ -873,9 +879,20 @@ mod tests {
         );
         assert!(s.advance(0, 7).is_err(), "a replayed prefill");
         s.advance(6, 1).unwrap();
-        // A gap is not a double-apply: a server that lost the session keeps
-        // serving it, as it always has.
+        // A gap in a new session is not a double-apply: a server that lost
+        // the session keeps serving it, as it always has.
         Session::new(1).advance(9, 1).unwrap();
+    }
+
+    /// A step past the end of a session that holds KV would push its next
+    /// position ahead, so every later real step would be refused.
+    #[test]
+    fn a_step_past_the_end_of_the_kv_is_refused() {
+        let mut s = Session::new(1);
+        s.advance(0, 5).unwrap();
+        assert!(s.advance(1_000_000, 1).is_err(), "far past the end");
+        assert!(s.advance(6, 1).is_err(), "one past the end");
+        s.advance(5, 1).unwrap();
     }
 
     #[test]
