@@ -229,13 +229,12 @@ async fn run_inference(
         token_ids.insert(0, bos);
     }
 
-    let mut session_id: u64 = crate::shard_cmd::rand_session_id();
-
     let mut generated = 0usize;
-    let mut seq_pos = 0usize;
-    // Tokens not yet sent: the prompt, then each sampled token in turn.
-    let mut pending = token_ids.clone();
-    let chunk = state.prefill_chunk;
+    let mut cur = crate::shard_cmd::PrefillCursor::new(
+        token_ids,
+        crate::shard_cmd::rand_session_id(),
+        state.prefill_chunk,
+    );
     let device = Device::Cpu;
 
     let mut client_guard = state.client.lock().await;
@@ -267,18 +266,18 @@ async fn run_inference(
     loop {
         // While prefilling, a step is one chunk of the prompt (#301); a token
         // is sampled only once the whole prompt is in every hop's KV.
-        let mut step = crate::shard_cmd::next_step(&pending, chunk);
+        let mut step = cur.step();
         let mut token_ctx = crate::shard_cmd::TokenContext::new(
             generated,
             generated == 0,
             run_started,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
         );
         let (shape, data) = token_ids_to_bytes(&step);
         let request = InferenceRequest {
-            session_id,
-            seq_pos: seq_pos as u32,
+            session_id: cur.session_id,
+            seq_pos: cur.seq_pos as u32,
             payload_type: PayloadType::TokenIds,
             shape,
             data,
@@ -288,8 +287,8 @@ async fn run_inference(
             &mut client_guard,
             &pinned_path,
             state.total_blocks,
-            session_id,
-            seq_pos as u32,
+            cur.session_id,
+            cur.seq_pos as u32,
             request,
             Some(&state.our_peer_id),
             &mut failed_peers,
@@ -318,27 +317,26 @@ async fn run_inference(
                     Ok(new_path) => {
                         pinned_path = new_path;
                         if generated == 0 {
-                            // Hops that survive the rebuild already hold the
-                            // chunks sent so far, and resending them in this
-                            // session would append them twice: start the
-                            // prompt over in a new one.
-                            session_id = crate::shard_cmd::rand_session_id();
-                            seq_pos = 0;
-                            pending = token_ids.clone();
-                            step = crate::shard_cmd::next_step(&pending, chunk);
+                            if let Err(e2) = cur.restart() {
+                                let _ = tx
+                                    .send(Piece::Error(format!("inference error: {e}; {e2}")))
+                                    .await;
+                                break;
+                            }
+                            step = cur.step();
                             token_ctx = crate::shard_cmd::TokenContext::new(
                                 0,
                                 true,
                                 run_started,
-                                session_id,
+                                cur.session_id,
                                 0,
                             );
                         }
                         // Retry once with rebuilt path
                         let (s2, d2) = token_ids_to_bytes(&step);
                         let retry = InferenceRequest {
-                            session_id,
-                            seq_pos: seq_pos as u32,
+                            session_id: cur.session_id,
+                            seq_pos: cur.seq_pos as u32,
                             payload_type: PayloadType::TokenIds,
                             shape: s2,
                             data: d2,
@@ -347,8 +345,8 @@ async fn run_inference(
                             &mut client_guard,
                             &pinned_path,
                             state.total_blocks,
-                            session_id,
-                            seq_pos as u32,
+                            cur.session_id,
+                            cur.seq_pos as u32,
                             retry,
                             Some(&state.our_peer_id),
                             &mut failed_peers,
@@ -377,9 +375,7 @@ async fn run_inference(
                 }
             }
         };
-        seq_pos += step.len();
-        pending.drain(..step.len());
-        if !pending.is_empty() {
+        if !cur.advance(step.len()) {
             continue; // more of the prompt to prefill
         }
 
@@ -430,7 +426,7 @@ async fn run_inference(
         if next_id == state.eos_id || generated >= max_tokens {
             break;
         }
-        pending = vec![next_id];
+        cur.push(next_id);
     }
     // tx dropped here → channel closes → SSE stream ends
 }
