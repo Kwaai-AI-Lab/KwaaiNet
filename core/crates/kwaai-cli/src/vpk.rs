@@ -734,19 +734,21 @@ mod tests {
         out
     }
 
-    fn dictionary(entries: &[(&str, f64)]) -> Vec<u8> {
+    /// A `None` expiry writes a two-element `[subkey, value]` entry.
+    fn dictionary(entries: &[(&str, Option<f64>)]) -> Vec<u8> {
         let entries = entries
             .iter()
             .map(|(peer, expiry)| {
-                rmpv::Value::Array(vec![
+                let mut entry = vec![
                     rmpv::Value::from(*peer),
                     rmpv::Value::Binary(vpk_value("eve")),
-                    rmpv::Value::from(*expiry),
-                ])
+                ];
+                entry.extend(expiry.map(rmpv::Value::from));
+                rmpv::Value::Array(entry)
             })
             .collect();
         let inner = rmpv::Value::Array(vec![
-            rmpv::Value::from(0.0),
+            rmpv::Value::Nil,
             rmpv::Value::from(0.0),
             rmpv::Value::Array(entries),
         ]);
@@ -761,11 +763,19 @@ mod tests {
     fn expired_subkeys_are_not_listed() {
         let mut found = Vec::new();
         parse_vpk_dictionary(
-            &dictionary(&[("live", 1000.0), ("dead", 999.0)]),
+            &dictionary(&[("live", Some(1000.0)), ("dead", Some(999.0))]),
             999.5,
             &mut found,
         );
         let ids: Vec<_> = found.iter().map(|e| e.peer_id.as_str()).collect();
         assert_eq!(ids, ["live"]);
+    }
+
+    #[test]
+    fn subkeys_without_an_expiry_are_kept() {
+        let mut found = Vec::new();
+        parse_vpk_dictionary(&dictionary(&[("bare", None)]), 999.5, &mut found);
+        let ids: Vec<_> = found.iter().map(|e| e.peer_id.as_str()).collect();
+        assert_eq!(ids, ["bare"]);
     }
 }
