@@ -64,6 +64,8 @@ struct AppState {
     default_temp: f32,
     eos_id: u32,
     bos_id: Option<u32>,
+    /// Prompt tokens per prefill step (#301).
+    prefill_chunk: usize,
     our_peer_id: PeerId,
     /// When set, use llama.cpp GPU inference instead of P2P chain.
     /// Only populated when: llama-cpp feature + all blocks local + GGUF available.
@@ -227,17 +229,13 @@ async fn run_inference(
         token_ids.insert(0, bos);
     }
 
-    let session_id: u64 = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(42)
-    };
+    let mut session_id: u64 = crate::shard_cmd::rand_session_id();
 
     let mut generated = 0usize;
     let mut seq_pos = 0usize;
-    let mut current_ids = token_ids;
+    // Tokens not yet sent: the prompt, then each sampled token in turn.
+    let mut pending = token_ids.clone();
+    let chunk = state.prefill_chunk;
     let device = Device::Cpu;
 
     let mut client_guard = state.client.lock().await;
@@ -267,14 +265,17 @@ async fn run_inference(
     let run_started = std::time::Instant::now();
 
     loop {
-        let token_ctx = crate::shard_cmd::TokenContext::new(
+        // While prefilling, a step is one chunk of the prompt (#301); a token
+        // is sampled only once the whole prompt is in every hop's KV.
+        let mut step = crate::shard_cmd::next_step(&pending, chunk);
+        let mut token_ctx = crate::shard_cmd::TokenContext::new(
             generated,
             generated == 0,
             run_started,
             session_id,
             seq_pos as u32,
         );
-        let (shape, data) = token_ids_to_bytes(&current_ids);
+        let (shape, data) = token_ids_to_bytes(&step);
         let request = InferenceRequest {
             session_id,
             seq_pos: seq_pos as u32,
@@ -316,8 +317,25 @@ async fn run_inference(
                 ) {
                     Ok(new_path) => {
                         pinned_path = new_path;
+                        if generated == 0 {
+                            // Hops that survive the rebuild already hold the
+                            // chunks sent so far, and resending them in this
+                            // session would append them twice: start the
+                            // prompt over in a new one.
+                            session_id = crate::shard_cmd::rand_session_id();
+                            seq_pos = 0;
+                            pending = token_ids.clone();
+                            step = crate::shard_cmd::next_step(&pending, chunk);
+                            token_ctx = crate::shard_cmd::TokenContext::new(
+                                0,
+                                true,
+                                run_started,
+                                session_id,
+                                0,
+                            );
+                        }
                         // Retry once with rebuilt path
-                        let (s2, d2) = token_ids_to_bytes(&current_ids);
+                        let (s2, d2) = token_ids_to_bytes(&step);
                         let retry = InferenceRequest {
                             session_id,
                             seq_pos: seq_pos as u32,
@@ -359,6 +377,11 @@ async fn run_inference(
                 }
             }
         };
+        seq_pos += step.len();
+        pending.drain(..step.len());
+        if !pending.is_empty() {
+            continue; // more of the prompt to prefill
+        }
 
         let logits_shape = &logits_bytes.shape;
         let logits_tensor = match f16_bytes_to_tensor(&logits_bytes.data, logits_shape, &device) {
@@ -403,12 +426,11 @@ async fn run_inference(
         }
 
         generated += 1;
-        seq_pos += current_ids.len();
 
         if next_id == state.eos_id || generated >= max_tokens {
             break;
         }
-        current_ids = vec![next_id];
+        pending = vec![next_id];
     }
     // tx dropped here → channel closes → SSE stream ends
 }
@@ -1008,6 +1030,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         default_temp: args.temperature,
         eos_id,
         bos_id,
+        prefill_chunk: crate::shard_cmd::prefill_chunk_tokens_for_model(&model_dir),
         our_peer_id,
         #[cfg(feature = "llama-cpp")]
         llama_model,

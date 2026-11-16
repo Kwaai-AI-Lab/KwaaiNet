@@ -995,7 +995,57 @@ mod tests {
     #[test]
     fn block_with_explicit_head_dim_loads_and_runs() {
         let device = Device::Cpu;
-        // hidden 40, 4 heads of 8 (not 10), 2 KV heads: q_dim 32, kv_dim 16.
+        let (cfg, block) = test_block(&device);
+        let h = cfg.hidden_dim;
+        let rope = RopeCache::new(&cfg, &device).unwrap();
+        let x = Tensor::randn(0f32, 1.0, (1, 3, h), &device).unwrap();
+        let mut kv_cache = None;
+        let y = block.forward(&x, 0, &mut kv_cache, &rope).unwrap();
+        assert_eq!(y.dims(), &[1, 3, h]);
+        // Decode one more token against the cache.
+        let x1 = Tensor::randn(0f32, 1.0, (1, 1, h), &device).unwrap();
+        let y1 = block.forward(&x1, 3, &mut kv_cache, &rope).unwrap();
+        assert_eq!(y1.dims(), &[1, 1, h]);
+    }
+
+    /// #301: a prompt sent as chunks gives the same output as one step. The
+    /// second chunk is several tokens at `seq_pos` 2 against a cache of 5, so
+    /// it needs the mask's `seq_pos` offset.
+    #[cfg(not(feature = "flash-attn"))]
+    #[test]
+    fn chunked_prefill_matches_one_step() {
+        let device = Device::Cpu;
+        let (cfg, block) = test_block(&device);
+        let rope = RopeCache::new(&cfg, &device).unwrap();
+        let x = Tensor::randn(0f32, 1.0, (1, 5, cfg.hidden_dim), &device).unwrap();
+
+        let mut kv = None;
+        let whole = block.forward(&x, 0, &mut kv, &rope).unwrap();
+        let mut kv = None;
+        let a = block
+            .forward(&x.narrow(1, 0, 2).unwrap(), 0, &mut kv, &rope)
+            .unwrap();
+        let b = block
+            .forward(&x.narrow(1, 2, 3).unwrap(), 2, &mut kv, &rope)
+            .unwrap();
+        let chunked = Tensor::cat(&[&a, &b], 1).unwrap();
+
+        let diff = (whole - chunked)
+            .unwrap()
+            .abs()
+            .unwrap()
+            .max_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        assert!(diff < 1e-4, "chunked prefill differs by {diff}");
+    }
+
+    /// One block with hidden 40, 4 heads of 8 (not 10), 2 KV heads: q_dim 32,
+    /// kv_dim 16.
+    #[cfg(not(feature = "flash-attn"))]
+    fn test_block(device: &Device) -> (ShardConfig, ShardBlock) {
+        let device = device.clone();
         let cfg = ShardConfig {
             num_total_blocks: 1,
             hidden_dim: 40,
@@ -1031,14 +1081,6 @@ mod tests {
         let vb = VarBuilder::from_tensors(t, DType::F32, &device);
 
         let block = ShardBlock::load(vb, &cfg).expect("block with head_dim 8 must load");
-        let rope = RopeCache::new(&cfg, &device).unwrap();
-        let x = Tensor::randn(0f32, 1.0, (1, 3, h), &device).unwrap();
-        let mut kv_cache = None;
-        let y = block.forward(&x, 0, &mut kv_cache, &rope).unwrap();
-        assert_eq!(y.dims(), &[1, 3, h]);
-        // Decode one more token against the cache.
-        let x1 = Tensor::randn(0f32, 1.0, (1, 1, h), &device).unwrap();
-        let y1 = block.forward(&x1, 3, &mut kv_cache, &rope).unwrap();
-        assert_eq!(y1.dims(), &[1, 1, h]);
+        (cfg, block)
     }
 }
