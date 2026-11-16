@@ -397,6 +397,16 @@ impl SyntheticShard {
 
     /// Check the step against this session's fake KV and move it on.
     fn advance_session(&self, packet: &mut Packet) -> Result<u8> {
+        // Checked before the session is touched, so a refused step leaves no trace.
+        let next_pos = packet
+            .seq_pos
+            .checked_add(packet.seq_len)
+            .with_context(|| {
+                format!(
+                    "seq_pos {} + seq_len {} overflows u32",
+                    packet.seq_pos, packet.seq_len
+                )
+            })?;
         let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
         let mut flags = 0;
         let fresh = !sessions.contains_key(&packet.session_id);
@@ -420,7 +430,7 @@ impl SyntheticShard {
                 packet.seq_pos
             );
         }
-        s.next_pos = packet.seq_pos + packet.seq_len;
+        s.next_pos = next_pos;
         s.last_used = Instant::now();
         if self.is_first() {
             packet.prompt_len = s.prompt_len;
@@ -760,5 +770,20 @@ mod tests {
         let (shape, data) = step(&path(), 7, 0, &[1, 2, 3, 4, 5]).unwrap();
         let err = verify_final(&shape, &data, &expect(0, &[1, 2, 3, 4, 6], &servers)).unwrap_err();
         assert!(format!("{err:#}").contains("digest"), "{err:#}");
+    }
+
+    #[test]
+    fn a_step_whose_end_overflows_is_refused() {
+        let (shape, data) = token_ids_to_bytes(&[1, 2]);
+        let req = InferenceRequest {
+            session_id: 7,
+            seq_pos: u32::MAX,
+            payload_type: PayloadType::TokenIds,
+            shape,
+            data,
+            sample: None,
+        };
+        let err = path()[0].forward(&req).unwrap_err();
+        assert!(format!("{err:#}").contains("overflow"), "{err:#}");
     }
 }
