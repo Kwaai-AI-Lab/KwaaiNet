@@ -94,9 +94,10 @@ impl Router {
         reputation: Option<Arc<Mutex<ReputationStore>>>,
         token_ctx: TokenContext,
     ) -> Result<InferenceResponse> {
-        let decode = first_request.payload_type == PayloadType::TokenIds && seq_pos > 0;
         match self {
-            Self::Chain(o) if o.fallback.is_none() && decode && chain.len() > 1 => {
+            Self::Chain(o)
+                if o.fallback.is_none() && is_decode_step(&first_request) && chain.len() > 1 =>
+            {
                 o.step(
                     client,
                     chain,
@@ -134,9 +135,38 @@ impl Router {
     }
 }
 
+/// Whether a step is one sampled token, the only kind a chain server takes;
+/// prefill chunks go star.
+fn is_decode_step(req: &InferenceRequest) -> bool {
+    req.payload_type == PayloadType::TokenIds && req.seq_pos > 0 && req.data.len() == 4
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block_rpc::token_ids_to_bytes;
+
+    fn token_step(seq_pos: u32, ids: &[u32]) -> InferenceRequest {
+        let (shape, data) = token_ids_to_bytes(ids);
+        InferenceRequest {
+            session_id: 1,
+            seq_pos,
+            payload_type: PayloadType::TokenIds,
+            shape,
+            data,
+            sample: None,
+        }
+    }
+
+    /// A prefill chunk past the first sits at `seq_pos > 0` too; sending it by
+    /// chain would be refused and drop the rest of the run to star.
+    #[test]
+    fn only_a_single_token_decode_step_goes_by_chain() {
+        assert!(is_decode_step(&token_step(7, &[42])));
+        assert!(!is_decode_step(&token_step(0, &[42])), "a one-token prompt");
+        assert!(!is_decode_step(&token_step(0, &[1, 2, 3])), "first chunk");
+        assert!(!is_decode_step(&token_step(256, &[1, 2, 3])), "later chunk");
+    }
 
     #[test]
     fn originating_is_off_unless_asked() {
