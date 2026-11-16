@@ -17,6 +17,12 @@
 //! Tensor data is serialised as raw little-endian bytes:
 //! - Token IDs: `u32-LE` each
 //! - Hidden states / logits: `f16-LE` each (native half precision)
+//!
+//! A request that carries [`SamplingParams`] asks the last node to sample the next
+//! token itself and reply with [`ResponseType::TokenId`]: 4 bytes instead of the
+//! full-vocabulary logits (256 KB for a 131k vocabulary), on every decode step.
+//! Servers that predate the field ignore it and return logits, which the client
+//! then samples as before — see [`next_token`].
 
 use anyhow::{bail, Context, Result};
 use candle_core::{DType, Device, Tensor};
@@ -126,6 +132,19 @@ pub enum ResponseType {
     HiddenStates,
     /// Final logits from the last node — use for sampling.
     Logits,
+    /// The next token, sampled by the last node because the request carried
+    /// [`SamplingParams`]. `data` is one `u32-LE`, `shape` is `[1]`.
+    TokenId,
+}
+
+/// How the last node should pick the next token. Same meaning as the client's own
+/// sampling settings, so a token sampled on the last node is drawn from the same
+/// distribution as one sampled on the client.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct SamplingParams {
+    pub temperature: f32,
+    pub top_k: u32,
+    pub top_p: f32,
 }
 
 /// Sent by the coordinator to a block server.
@@ -141,6 +160,11 @@ pub struct InferenceRequest {
     pub shape: Vec<u32>,
     /// Raw tensor bytes (u32-LE for token IDs, f16-LE for hidden states).
     pub data: Vec<u8>,
+    /// Ask the last node to sample and return [`ResponseType::TokenId`] instead of
+    /// logits. Ignored by every other node, and by servers that predate it: the
+    /// request is named msgpack, and an unknown key is skipped on deserialise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<SamplingParams>,
 }
 
 /// Sent by a block server back to the coordinator.
@@ -243,6 +267,42 @@ pub fn f16_bytes_to_array(bytes: &[u8], shape: &[u32]) -> Result<kwaai_inference
         );
     }
     Ok(kwaai_inference::mlx_rs::Array::from_slice(&f16_vec, &shape))
+}
+
+/// The last row of a logits payload (`[1, seq_len, vocab]`, `[1, 1, vocab]` or
+/// `[vocab]`), as a CPU tensor ready for [`crate::shard_cmd::sample_token`].
+pub fn last_logits_row(data: &[u8], shape: &[u32]) -> Result<Tensor> {
+    use candle_core::IndexOp as _;
+    let t = f16_bytes_to_tensor(data, shape, &Device::Cpu).context("decode logits")?;
+    if shape.len() == 3 && shape[1] > 1 {
+        Ok(t.i((0, shape[1] as usize - 1, ..))?)
+    } else {
+        Ok(t.flatten_all()?)
+    }
+}
+
+/// The next token from the last hop's reply: the token the last node sampled, or,
+/// when it returned logits (it predates [`SamplingParams`], or none were sent),
+/// a token sampled here from them with the same settings.
+pub fn next_token(resp: &InferenceResponse, params: SamplingParams) -> Result<u32> {
+    match resp.response_type {
+        ResponseType::TokenId => match bytes_to_token_ids(&resp.data)?.as_slice() {
+            [id] => Ok(*id),
+            ids => bail!("TokenId reply carries {} ids, expected 1", ids.len()),
+        },
+        ResponseType::Logits => {
+            let row = last_logits_row(&resp.data, &resp.shape)?;
+            Ok(crate::shard_cmd::sample_token(
+                &row,
+                params.temperature,
+                params.top_k as usize,
+                params.top_p,
+            )? as u32)
+        }
+        ResponseType::HiddenStates => {
+            bail!("the chain ended on hidden states, not logits — the last hop has no lm_head")
+        }
+    }
 }
 
 /// Serialise token IDs to raw `u32-LE` bytes.
@@ -432,6 +492,7 @@ pub async fn handle_inference_request(
         rmp_serde::from_slice(&raw).context("deserialise InferenceRequest")?;
 
     let session_id = req.session_id;
+    let sample = req.sample;
     let seq_pos = req.seq_pos as usize;
     let is_first = shard.is_first();
     let is_last = shard.is_last();
@@ -444,8 +505,8 @@ pub async fn handle_inference_request(
 
     // Run the synchronous forward pass on the blocking thread pool so the
     // tokio runtime stays responsive to other tasks during compute.
-    let (shape, data, is_logits) =
-        tokio::task::spawn_blocking(move || -> Result<(Vec<u32>, Vec<u8>, bool)> {
+    let (shape, data, response_type) =
+        tokio::task::spawn_blocking(move || -> Result<(Vec<u32>, Vec<u8>, ResponseType)> {
             let fwd_start = std::time::Instant::now();
             if req.payload_type == PayloadType::TokenIds && !is_first {
                 bail!(
@@ -505,29 +566,51 @@ pub async fn handle_inference_request(
                     (shape, data, is_logits)
                 }
             };
+            let (shape, data, is_logits) = result;
+            let (shape, data, response_type) = finish_reply(shape, data, is_logits, sample)?;
             let fwd_ms = fwd_start.elapsed().as_secs_f64() * 1000.0;
             info!(
                 fwd_ms = format!("{fwd_ms:.1}"),
                 payload = format!("{:?}", req.payload_type),
                 blocks = format!("[{start_blk}..{end_blk})"),
+                reply = format!("{response_type:?}"),
                 "hop timing"
             );
-            Ok(result)
+            Ok((shape, data, response_type))
         })
         .await
         .map_err(|e| anyhow::anyhow!("forward pass panicked: {e}"))??;
 
     Ok(InferenceResponse {
         session_id,
-        response_type: if is_logits {
-            ResponseType::Logits
-        } else {
-            ResponseType::HiddenStates
-        },
+        response_type,
         shape,
         data,
         error: None,
     })
+}
+
+/// Turn a forward pass's output into the reply payload. Hidden states pass
+/// through. Logits are sampled here when the request asked for it, so the reply is
+/// one token rather than the whole vocabulary; decoding the f16 bytes back is a
+/// local copy of a few hundred KB, far cheaper than sending them.
+fn finish_reply(
+    shape: Vec<u32>,
+    data: Vec<u8>,
+    is_logits: bool,
+    sample: Option<SamplingParams>,
+) -> Result<(Vec<u32>, Vec<u8>, ResponseType)> {
+    match (is_logits, sample) {
+        (false, _) => Ok((shape, data, ResponseType::HiddenStates)),
+        (true, None) => Ok((shape, data, ResponseType::Logits)),
+        (true, Some(p)) => {
+            let row = last_logits_row(&data, &shape)?;
+            let id = crate::shard_cmd::sample_token(&row, p.temperature, p.top_k as usize, p.top_p)?
+                as u32;
+            let (shape, data) = token_ids_to_bytes(&[id]);
+            Ok((shape, data, ResponseType::TokenId))
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -572,6 +655,7 @@ mod tests {
             payload_type: PayloadType::HiddenStates,
             shape: vec![1, 1, 4096],
             data: vec![0u8; 8192],
+            sample: None,
         };
         let bytes = rmp_serde::to_vec_named(&req).unwrap();
         let decoded: InferenceRequest = rmp_serde::from_slice(&bytes).unwrap();
@@ -643,7 +727,11 @@ mod tests {
 
     #[test]
     fn response_type_serialization() {
-        let variants = [ResponseType::HiddenStates, ResponseType::Logits];
+        let variants = [
+            ResponseType::HiddenStates,
+            ResponseType::Logits,
+            ResponseType::TokenId,
+        ];
         for v in &variants {
             let bytes = rmp_serde::to_vec_named(v).unwrap();
             let decoded: ResponseType = rmp_serde::from_slice(&bytes).unwrap();
@@ -683,6 +771,168 @@ mod tests {
         assert!(m.is_poisoned());
         *lock_recover(&m) += 1;
         assert_eq!(*lock_recover(&m), 2);
+    }
+
+    /// `InferenceRequest` as it was before `sample` existed: what a node that
+    /// has not been upgraded deserialises into.
+    #[derive(Debug, Serialize, Deserialize)]
+    struct RequestBeforeSample {
+        session_id: u64,
+        seq_pos: u32,
+        payload_type: PayloadType,
+        shape: Vec<u32>,
+        data: Vec<u8>,
+    }
+
+    const GREEDY: SamplingParams = SamplingParams {
+        temperature: 1.0,
+        top_k: 0,
+        top_p: 1.0,
+    };
+
+    /// f16 logits `[1, rows, vocab]` whose last row peaks at `peak`, and every
+    /// earlier row at 0 — so reading the wrong row gives the wrong token.
+    fn logits_bytes(rows: usize, vocab: usize, peak: usize) -> (Vec<u32>, Vec<u8>) {
+        let mut v = vec![0f32; rows * vocab];
+        for r in 0..rows {
+            v[r * vocab] = 5.0;
+        }
+        v[(rows - 1) * vocab] = 0.0;
+        v[(rows - 1) * vocab + peak] = 9.0;
+        let t = Tensor::from_vec(v, (1, rows, vocab), &Device::Cpu).unwrap();
+        tensor_to_f16_bytes(&t).unwrap()
+    }
+
+    #[test]
+    fn a_node_without_sample_still_reads_a_request_that_carries_it() {
+        let req = InferenceRequest {
+            session_id: 7,
+            seq_pos: 3,
+            payload_type: PayloadType::HiddenStates,
+            shape: vec![1, 1, 2],
+            data: vec![0u8; 4],
+            sample: Some(GREEDY),
+        };
+        let bytes = rmp_serde::to_vec_named(&req).unwrap();
+        let old: RequestBeforeSample = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!((old.session_id, old.seq_pos), (7, 3));
+        assert_eq!(old.data.len(), 4);
+    }
+
+    #[test]
+    fn a_request_without_sample_is_byte_identical_to_the_old_format() {
+        let req = InferenceRequest {
+            session_id: 7,
+            seq_pos: 3,
+            payload_type: PayloadType::TokenIds,
+            shape: vec![1],
+            data: vec![1, 0, 0, 0],
+            sample: None,
+        };
+        let old = RequestBeforeSample {
+            session_id: 7,
+            seq_pos: 3,
+            payload_type: PayloadType::TokenIds,
+            shape: vec![1],
+            data: vec![1, 0, 0, 0],
+        };
+        let new_bytes = rmp_serde::to_vec_named(&req).unwrap();
+        assert_eq!(new_bytes, rmp_serde::to_vec_named(&old).unwrap());
+        // And the old format reads back as "no sampling requested".
+        let back: InferenceRequest = rmp_serde::from_slice(&new_bytes).unwrap();
+        assert!(back.sample.is_none());
+    }
+
+    #[test]
+    fn sample_params_survive_the_wire() {
+        let p = SamplingParams {
+            temperature: 0.7,
+            top_k: 40,
+            top_p: 0.9,
+        };
+        let req = InferenceRequest {
+            session_id: 1,
+            seq_pos: 0,
+            payload_type: PayloadType::TokenIds,
+            shape: vec![1],
+            data: vec![0; 4],
+            sample: Some(p),
+        };
+        let back: InferenceRequest =
+            rmp_serde::from_slice(&rmp_serde::to_vec_named(&req).unwrap()).unwrap();
+        assert_eq!(back.sample, Some(p));
+    }
+
+    #[test]
+    fn finish_reply_samples_the_last_row_when_asked() {
+        // Prefill reply with several rows: the token must come from the last.
+        let (shape, data) = logits_bytes(3, 16, 11);
+        let (s, d, ty) = finish_reply(shape, data, true, Some(GREEDY)).unwrap();
+        assert_eq!(ty, ResponseType::TokenId);
+        assert_eq!(s, vec![1]);
+        assert_eq!(bytes_to_token_ids(&d).unwrap(), vec![11]);
+    }
+
+    #[test]
+    fn finish_reply_returns_logits_when_not_asked() {
+        let (shape, data) = logits_bytes(1, 16, 4);
+        let n = data.len();
+        let (s, d, ty) = finish_reply(shape.clone(), data, true, None).unwrap();
+        assert_eq!((ty, s, d.len()), (ResponseType::Logits, shape, n));
+    }
+
+    #[test]
+    fn finish_reply_passes_hidden_states_through_even_when_asked_to_sample() {
+        // A middle node sees the same `sample` field; it must not touch its output.
+        let (shape, data) = logits_bytes(1, 16, 4);
+        let (s, d, ty) = finish_reply(shape.clone(), data.clone(), false, Some(GREEDY)).unwrap();
+        assert_eq!((ty, s, d), (ResponseType::HiddenStates, shape, data));
+    }
+
+    fn reply(response_type: ResponseType, shape: Vec<u32>, data: Vec<u8>) -> InferenceResponse {
+        InferenceResponse {
+            session_id: 1,
+            response_type,
+            shape,
+            data,
+            error: None,
+        }
+    }
+
+    #[test]
+    fn next_token_reads_a_sampled_token() {
+        let (shape, data) = token_ids_to_bytes(&[42]);
+        let r = reply(ResponseType::TokenId, shape, data);
+        assert_eq!(next_token(&r, GREEDY).unwrap(), 42);
+    }
+
+    #[test]
+    fn next_token_samples_logits_from_an_older_last_node() {
+        let (shape, data) = logits_bytes(2, 16, 9);
+        let r = reply(ResponseType::Logits, shape, data);
+        assert_eq!(next_token(&r, GREEDY).unwrap(), 9);
+    }
+
+    #[test]
+    fn last_node_and_client_sampling_agree() {
+        // The same greedy settings give the same token wherever they run.
+        let (shape, data) = logits_bytes(1, 32, 17);
+        let local = next_token(
+            &reply(ResponseType::Logits, shape.clone(), data.clone()),
+            GREEDY,
+        )
+        .unwrap();
+        let (s, d, ty) = finish_reply(shape, data, true, Some(GREEDY)).unwrap();
+        assert_eq!(next_token(&reply(ty, s, d), GREEDY).unwrap(), local);
+    }
+
+    #[test]
+    fn next_token_rejects_a_malformed_or_unfinished_reply() {
+        let (shape, data) = token_ids_to_bytes(&[1, 2]);
+        assert!(next_token(&reply(ResponseType::TokenId, shape, data), GREEDY).is_err());
+        assert!(next_token(&reply(ResponseType::TokenId, vec![0], vec![]), GREEDY).is_err());
+        let (shape, data) = logits_bytes(1, 16, 4);
+        assert!(next_token(&reply(ResponseType::HiddenStates, shape, data), GREEDY).is_err());
     }
 
     #[test]

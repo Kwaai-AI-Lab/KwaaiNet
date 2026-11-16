@@ -1462,9 +1462,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
     let max_tokens = args.max_tokens;
-    let temperature = args.temperature;
-    let top_k = args.top_k;
-    let top_p = args.top_p;
+    let sampling = crate::block_rpc::SamplingParams {
+        temperature: args.temperature,
+        top_k: args.top_k as u32,
+        top_p: args.top_p,
+    };
 
     println!("  Input tokens: {}", token_ids.len());
     println!("  Session ID:   {}", session_id);
@@ -1536,6 +1538,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             payload_type: PayloadType::TokenIds,
             shape,
             data,
+            sample: Some(sampling),
         };
 
         // Forward through the pinned path.
@@ -1596,6 +1599,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                     payload_type: PayloadType::TokenIds,
                     shape: shape2,
                     data: data2,
+                    sample: Some(sampling),
                 };
                 let result = forward_through_chain(
                     &mut client,
@@ -1648,24 +1652,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
             std::io::stdout().flush().ok();
         }
 
-        // logits_bytes.data is f16 bytes of shape [1, 1, vocab_size] or [1, seq_len, vocab_size]
-        // We need only the last position
-        let logits_shape = &logits_bytes.shape;
-        let device = candle_core::Device::Cpu;
-        let logits_tensor = f16_bytes_to_tensor(&logits_bytes.data, logits_shape, &device)
-            .context("decode logits tensor")?;
-
-        // Take last token position: [1, seq_len, vocab_size] → [vocab_size]
-        let last_logits = if logits_shape.len() == 3 && logits_shape[1] > 1 {
-            use candle_core::IndexOp as _;
-            let seq_len = logits_shape[1] as usize;
-            logits_tensor.i((0, seq_len - 1, ..))?
-        } else {
-            // Shape [1, 1, vocab_size] or [vocab_size]
-            logits_tensor.flatten_all()?
-        };
-
-        let next_id = sample_token(&last_logits, temperature, top_k, top_p)? as u32;
+        // The last node sampled it, or (an older node) returned logits we sample here.
+        let next_id = crate::block_rpc::next_token(&logits_bytes, sampling)?;
 
         // Decode and print incrementally
         if let Ok(piece) = tokenizer.decode(&[next_id]) {
@@ -2307,9 +2295,11 @@ async fn run_streaming_inner(
     // Default max_tokens matches the CLI's clap default (see ShardRunArgs).
     let max_tokens = opts.max_tokens.unwrap_or(200);
     // Sampling defaults also mirror ShardRunArgs.
-    let temperature: f32 = 1.0;
-    let top_k: usize = 0;
-    let top_p: f32 = 1.0;
+    let sampling = crate::block_rpc::SamplingParams {
+        temperature: 1.0,
+        top_k: 0,
+        top_p: 1.0,
+    };
 
     // p2pd connection — separate client from `run_node`'s; concurrent
     // IPC connections are supported by p2pd.
@@ -2518,6 +2508,7 @@ async fn run_streaming_inner(
             payload_type: PayloadType::TokenIds,
             shape,
             data,
+            sample: Some(sampling),
         };
 
         let logits_bytes = match forward_through_chain(
@@ -2576,6 +2567,7 @@ async fn run_streaming_inner(
                     payload_type: PayloadType::TokenIds,
                     shape: shape2,
                     data: data2,
+                    sample: Some(sampling),
                 };
                 forward_through_chain(
                     &mut client,
@@ -2598,18 +2590,7 @@ async fn run_streaming_inner(
             continue; // more of the prompt to prefill
         }
 
-        let logits_shape = &logits_bytes.shape;
-        let device = candle_core::Device::Cpu;
-        let logits_tensor = f16_bytes_to_tensor(&logits_bytes.data, logits_shape, &device)
-            .context("decode logits tensor")?;
-        let last_logits = if logits_shape.len() == 3 && logits_shape[1] > 1 {
-            use candle_core::IndexOp as _;
-            let seq_len = logits_shape[1] as usize;
-            logits_tensor.i((0, seq_len - 1, ..))?
-        } else {
-            logits_tensor.flatten_all()?
-        };
-        let next_id = sample_token(&last_logits, temperature, top_k, top_p)? as u32;
+        let next_id = crate::block_rpc::next_token(&logits_bytes, sampling)?;
 
         if let Ok(piece) = tokenizer.decode(&[next_id]) {
             // If the consumer has dropped, stop generating — they're gone.
@@ -4115,6 +4096,8 @@ pub async fn forward_through_chain(
                             payload_type: PayloadType::HiddenStates,
                             shape: resp.shape.clone(),
                             data: resp.data.clone(),
+                            // Only the last node acts on it; middle nodes ignore it.
+                            sample: request.sample,
                         };
                     }
                     response = Some(resp);
@@ -4260,6 +4243,8 @@ async fn run_via_local_bypass(
             payload_type: PayloadType::TokenIds,
             shape,
             data,
+            // Local bypass: the logits never cross the network, so sample here.
+            sample: None,
         };
 
         let response = local_inference_call(port, &request).await?;

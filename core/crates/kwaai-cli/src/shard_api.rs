@@ -18,7 +18,6 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use candle_core::Device;
 use futures::stream::{self, StreamExt as _};
 use kwaai_p2p::NetworkConfig;
 use kwaai_p2p_daemon::P2PClient;
@@ -27,14 +26,14 @@ use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, sync::Arc};
 use tokio::sync::Mutex;
 
-use crate::block_rpc::{f16_bytes_to_tensor, token_ids_to_bytes, InferenceRequest, PayloadType};
+use crate::block_rpc::{token_ids_to_bytes, InferenceRequest, PayloadType, SamplingParams};
 use crate::cli::ShardApiArgs;
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
 use crate::shard_cmd::{
     daemon_socket, discover_chain, forward_through_chain, load_circuit_by_id,
-    refresh_circuit_addrs, sample_token, BlockServerEntry,
+    refresh_circuit_addrs, BlockServerEntry,
 };
 
 // ── llama.cpp fast path (macOS Metal acceleration) ──────────────────────────
@@ -215,7 +214,6 @@ async fn run_inference(
     top_p: f32,
     tx: tokio::sync::mpsc::Sender<Piece>,
 ) {
-    use candle_core::IndexOp as _;
     use kwaai_inference::tokenizer::Tokenizer as _;
 
     let mut token_ids: Vec<u32> = match state.tokenizer.encode(&prompt) {
@@ -229,14 +227,17 @@ async fn run_inference(
         token_ids.insert(0, bos);
     }
 
+    let sampling = SamplingParams {
+        temperature,
+        top_k: top_k as u32,
+        top_p,
+    };
     let mut generated = 0usize;
     let mut cur = crate::shard_cmd::PrefillCursor::new(
         token_ids,
         crate::shard_cmd::rand_session_id(),
         state.prefill_chunk,
     );
-    let device = Device::Cpu;
-
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
@@ -281,6 +282,7 @@ async fn run_inference(
             payload_type: PayloadType::TokenIds,
             shape,
             data,
+            sample: Some(sampling),
         };
 
         let logits_bytes = match forward_through_chain(
@@ -340,6 +342,7 @@ async fn run_inference(
                             payload_type: PayloadType::TokenIds,
                             shape: s2,
                             data: d2,
+                            sample: Some(sampling),
                         };
                         match forward_through_chain(
                             &mut client_guard,
@@ -379,36 +382,8 @@ async fn run_inference(
             continue; // more of the prompt to prefill
         }
 
-        let logits_shape = &logits_bytes.shape;
-        let logits_tensor = match f16_bytes_to_tensor(&logits_bytes.data, logits_shape, &device) {
-            Ok(t) => t,
-            Err(e) => {
-                let _ = tx.send(Piece::Error(format!("tensor error: {e}"))).await;
-                break;
-            }
-        };
-
-        let last_logits = if logits_shape.len() == 3 && logits_shape[1] > 1 {
-            let seq_len = logits_shape[1] as usize;
-            match logits_tensor.i((0, seq_len - 1, ..)) {
-                Ok(t) => t,
-                Err(e) => {
-                    let _ = tx.send(Piece::Error(format!("slice error: {e}"))).await;
-                    break;
-                }
-            }
-        } else {
-            match logits_tensor.flatten_all() {
-                Ok(t) => t,
-                Err(e) => {
-                    let _ = tx.send(Piece::Error(format!("flatten error: {e}"))).await;
-                    break;
-                }
-            }
-        };
-
-        let next_id = match sample_token(&last_logits, temperature, top_k, top_p) {
-            Ok(id) => id as u32,
+        let next_id = match crate::block_rpc::next_token(&logits_bytes, sampling) {
+            Ok(id) => id,
             Err(e) => {
                 let _ = tx.send(Piece::Error(format!("sample error: {e}"))).await;
                 break;
