@@ -1684,6 +1684,9 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
     let mut synthetic_kv_resets = 0usize;
     #[cfg(feature = "synthetic")]
     let mut synthetic_steps = 0usize;
+    // A session's prompt is whatever its seq_pos 0 step sent.
+    #[cfg(feature = "synthetic")]
+    let mut synthetic_prompt_len = 0u32;
     let mut token_times_ms: Vec<f64> = Vec::new();
     // Decode steps that re-prefilled after a failed hop: kept out of decode stats.
     let mut reprefill_ms: Vec<f64> = Vec::new();
@@ -1787,6 +1790,9 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
         #[cfg(feature = "synthetic")]
         let verified = if synthetic {
             let seq_pos = cur.seq_pos as u32;
+            if seq_pos == 0 {
+                synthetic_prompt_len = step.len() as u32;
+            }
             let v = crate::synthetic::verify_final(
                 &logits_bytes.shape,
                 &logits_bytes.data,
@@ -1794,7 +1800,7 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
                     session_id: cur.session_id,
                     seq_pos,
                     token_ids: &step,
-                    prompt_len: n_input as u32,
+                    prompt_len: synthetic_prompt_len,
                     total_blocks: total_blocks as u32,
                     servers: &synthetic_servers,
                 },
