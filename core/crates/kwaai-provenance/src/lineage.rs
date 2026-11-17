@@ -1,6 +1,6 @@
 //! Immutable lineage events and an append-only, in-memory lineage log.
 //!
-//! Design (Option A from the handoff): artifact identity (evidence/claim/entity IDs)
+//! Artifact identity (evidence/claim/entity IDs)
 //! is separate from lineage identity. A derivation is recorded as a [`LineageEvent`]
 //! whose ID covers *what* was derived from *what*, never the mutation state.
 //! State changes (proposed -> committed | failed) are separate append-only log
@@ -10,7 +10,9 @@
 //! `EvidenceRef.parent_ids` is NOT consulted here; this log is the authoritative
 //! derivation record.
 //!
-//! Scope: in-memory only. No persistence, snapshots, or durable quarantine yet.
+//! This module is in-memory; durable replay/snapshots live in `crate::persist`.
+//! Artifact IDs form a DAG: recurring content and survivor-ID entity merges need
+//! separate occurrence identities, or an adapter that captures boundary states.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -368,10 +370,14 @@ impl LineageLog {
     /// True if lineage reaches at least one artifact the caller identifies as
     /// original source evidence. This is *traceability*, not semantic support.
     pub fn traces_to(&self, artifact: &str, is_original: impl Fn(&str) -> bool) -> bool {
-        is_original(artifact) || self.roots(artifact).iter().any(|r| is_original(r))
+        is_original(artifact) || self.ancestors(artifact).iter().any(|a| is_original(a))
     }
 
-    /// True if a committed prune consumed this artifact. Its lineage is retained.
+    /// True if a committed prune ever consumed this artifact. Its lineage is retained.
+    ///
+    /// This historical flag deliberately stays true after re-extraction; it is not
+    /// current graph liveness. Deriving from historical pruned artifacts is allowed.
+    /// Use ordered graph-state captures to determine current presence/evidence.
     pub fn is_pruned(&self, artifact: &str) -> bool {
         self.pruned.contains(artifact)
     }

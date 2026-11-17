@@ -120,7 +120,7 @@ impl fmt::Display for PersistError {
             ),
             PersistError::UnterminatedFile => write!(
                 f,
-                "file does not end with a newline; repair it with truncate_torn_tail before appending"
+                "file does not end with a newline; back it up, then use validated truncate_torn_tail repair before appending"
             ),
             PersistError::Lineage { line, error } => write!(f, "line {line}: {error}"),
         }
@@ -229,7 +229,8 @@ impl JsonlWriter<File> {
     }
 }
 
-/// What to do with a final line that has no trailing newline and does not parse.
+/// What to do with an incomplete JSON/UTF-8 prefix on the unterminated final line.
+/// Complete schema-invalid records and non-EOF syntax corruption always fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TailPolicy {
     /// Treat it as an error (default).
@@ -287,20 +288,19 @@ pub fn read_records<R: BufRead>(
 ) -> Result<ReadOutput, PersistError> {
     let mut records = Vec::new();
     let mut dropped_torn_tail = false;
-    let mut buf = String::new();
+    let mut buf = Vec::new();
     let mut line_no = 0usize;
     loop {
         buf.clear();
-        if reader.read_line(&mut buf)? == 0 {
+        if reader.read_until(b'\n', &mut buf)? == 0 {
             break;
         }
         line_no += 1;
-        let terminated = buf.ends_with('\n');
-        let text = buf.trim_end_matches(['\n', '\r']);
-        if text.trim().is_empty() {
+        let terminated = buf.ends_with(b"\n");
+        if std::str::from_utf8(&buf).is_ok_and(|text| text.trim().is_empty()) {
             continue;
         }
-        match serde_json::from_str::<Record>(text) {
+        match serde_json::from_slice::<Record>(&buf) {
             Ok(record) => {
                 if record.schema_version() != SCHEMA_VERSION {
                     return Err(PersistError::UnsupportedVersion {
@@ -320,7 +320,12 @@ pub fn read_records<R: BufRead>(
                 }
                 records.push((line_no, record));
             }
-            Err(_) if !terminated && tail == TailPolicy::DropTornTail => {
+            Err(e)
+                if !terminated
+                    && tail == TailPolicy::DropTornTail
+                    && !e.is_data()
+                    && incomplete_json_tail(&buf) =>
+            {
                 dropped_torn_tail = true;
             }
             Err(e) => {
@@ -337,6 +342,18 @@ pub fn read_records<R: BufRead>(
     })
 }
 
+// A missing newline alone is not evidence of a torn write. Only an otherwise
+// valid JSON prefix ending at EOF (possibly inside its last UTF-8 character) is
+// recoverable. Complete but schema-invalid records and syntax corruption are not.
+fn incomplete_json_tail(bytes: &[u8]) -> bool {
+    let prefix = match std::str::from_utf8(bytes) {
+        Ok(_) => bytes,
+        Err(error) if error.error_len().is_none() => &bytes[..error.valid_up_to()],
+        Err(_) => return false,
+    };
+    serde_json::from_slice::<serde_json::Value>(prefix).is_err_and(|error| error.is_eof())
+}
+
 fn ends_with_newline_or_empty(file: &mut File) -> io::Result<bool> {
     let len = file.metadata()?.len();
     if len == 0 {
@@ -348,19 +365,31 @@ fn ends_with_newline_or_empty(file: &mut File) -> io::Result<bool> {
     Ok(last[0] == b'\n')
 }
 
-/// Remove everything after the last newline in `path` (a torn final line left by
-/// an interrupted write). Returns the number of bytes removed; 0 if the file
-/// already ends with a newline or is empty. This discards data, so call it only
-/// when [`read_file`] with [`TailPolicy::DropTornTail`] reports a dropped tail.
+/// Validate and repair an unterminated JSONL file, under the single-writer contract.
+///
+/// A complete valid final record is preserved and gets a newline (returns 0).
+/// Only an incomplete JSON/UTF-8 final prefix is removed; the return value counts removed
+/// bytes. The retained records must parse, validate and replay before any write.
+/// Invalid terminated lines, unsupported versions and invalid lineage are errors.
+/// Back up the file first. This cannot recover bytes lost in an interrupted write.
 pub fn truncate_torn_tail(path: &Path) -> Result<u64, PersistError> {
     let bytes = fs::read(path)?;
-    let keep = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-    let removed = (bytes.len() - keep) as u64;
-    if removed > 0 {
-        let file = OpenOptions::new().write(true).open(path)?;
-        file.set_len(keep as u64)?;
-        file.sync_all()?;
+    let read = read_records(io::Cursor::new(&bytes), TailPolicy::DropTornTail)?;
+    read.replay()?;
+    if bytes.is_empty() || bytes.ends_with(b"\n") {
+        return Ok(0);
     }
+    let mut file = OpenOptions::new().write(true).open(path)?;
+    let removed = if read.dropped_torn_tail {
+        let keep = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        file.set_len(keep as u64)?;
+        (bytes.len() - keep) as u64
+    } else {
+        file.seek(SeekFrom::End(0))?;
+        file.write_all(b"\n")?;
+        0
+    };
+    file.sync_all()?;
     Ok(removed)
 }
 
