@@ -75,6 +75,17 @@ pub struct NetworkConfig {
     /// Request timeout
     pub request_timeout: Duration,
 
+    /// How long one application request holds the peer's connections open, so a
+    /// session's next request reuses them; the idle timeout starts when it ends. `0` disables.
+    #[serde(default = "default_active_peer_keep_alive")]
+    pub active_peer_keep_alive: Duration,
+
+    /// How long a relay circuit to such a peer stays open with no application
+    /// traffic. Short, because each circuit holds one of the relay's few slots;
+    /// `0` leaves circuits to the idle timeout.
+    #[serde(default = "default_relayed_peer_keep_alive")]
+    pub relayed_peer_keep_alive: Duration,
+
     /// Interval of the kad maintenance tick: bucket refresh plus re-dialing
     /// configured bootstraps with no recent connection. Defaulted so a config
     /// predating the field still loads; tests shorten it. Clamped to at least
@@ -415,6 +426,16 @@ fn default_relay_max_circuit_duration() -> Duration {
     Duration::from_secs(30 * 60)
 }
 
+/// 30 minutes, the relay circuit lifetime: a session pausing longer redials anyway.
+fn default_active_peer_keep_alive() -> Duration {
+    Duration::from_secs(30 * 60)
+}
+
+/// 3 minutes: bridges the gaps between inference steps and short user pauses.
+fn default_relayed_peer_keep_alive() -> Duration {
+    Duration::from_secs(3 * 60)
+}
+
 /// 5 minutes, matching kad's own periodic bootstrap.
 fn default_kad_maintenance_interval() -> Duration {
     Duration::from_secs(5 * 60)
@@ -433,6 +454,8 @@ impl Default for NetworkConfig {
             // used. `max_connections` is what keeps this bounded.
             idle_connection_timeout: Duration::from_secs(10 * 60),
             request_timeout: Duration::from_secs(60),
+            active_peer_keep_alive: default_active_peer_keep_alive(),
+            relayed_peer_keep_alive: default_relayed_peer_keep_alive(),
             kad_maintenance_interval: default_kad_maintenance_interval(),
             max_connections: 100,
             enable_quic: DEFAULT_ENABLE_QUIC,

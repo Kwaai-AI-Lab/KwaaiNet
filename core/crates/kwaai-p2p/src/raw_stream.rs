@@ -38,8 +38,11 @@
 //! see [`crate::raw_stream::RawStream`].
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
+
+use futures::io::{AsyncRead, AsyncWrite};
 
 use libp2p::core::transport::PortUse;
 use libp2p::core::{Endpoint, Multiaddr};
@@ -55,15 +58,78 @@ use libp2p::PeerId;
 use tokio::sync::oneshot;
 use tracing::{debug, trace};
 
+use crate::addresses::is_circuit;
+use crate::conn_use::{ConnUse, InFlight};
 use crate::unary::{Protocols, UnaryProtocol};
 
 /// A negotiated raw libp2p stream.
 ///
-/// This is `libp2p::swarm::Stream` — `futures::io::AsyncRead + AsyncWrite`,
+/// A `libp2p::swarm::Stream` — `futures::io::AsyncRead + AsyncWrite`,
 /// full-duplex, with `close()` performing a half-close (FIN) that the remote
-/// observes as EOF. The alias exists to give the pipe-mode call sites a name
-/// that says what the value is for.
-pub type RawStream = Stream;
+/// observes as EOF — plus its connection's busy token, held until it drops.
+pub struct RawStream {
+    inner: Stream,
+    _in_flight: InFlight,
+}
+
+impl RawStream {
+    fn new(inner: Stream, in_flight: &InFlight) -> Self {
+        Self {
+            inner,
+            _in_flight: Arc::clone(in_flight),
+        }
+    }
+}
+
+impl std::fmt::Debug for RawStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+impl AsyncRead for RawStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+
+    fn poll_read_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &mut [std::io::IoSliceMut<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_read_vectored(cx, bufs)
+    }
+}
+
+impl AsyncWrite for RawStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_close(cx)
+    }
+}
 
 /// Why opening a raw stream failed.
 ///
@@ -136,6 +202,8 @@ pub struct OutboundOpen {
     /// multistream-select pick the first the remote supports.
     protocols: Vec<UnaryProtocol>,
     reply: oneshot::Sender<OpenResult>,
+    /// Set once queued on a connection, so it reads busy while negotiating.
+    in_flight: Option<InFlight>,
 }
 
 impl std::fmt::Debug for OutboundOpen {
@@ -188,6 +256,8 @@ pub struct Handler {
     next_outbound_id: u64,
     /// Negotiated streams waiting to be drained in `poll`.
     ready: VecDeque<HandlerEvent>,
+    /// This connection's token; see [`crate::conn_use`].
+    in_flight: InFlight,
 }
 
 /// What the handler hands the behaviour.
@@ -211,13 +281,14 @@ impl std::fmt::Debug for HandlerEvent {
 }
 
 impl Handler {
-    fn new(inbound_protocols: Arc<RwLock<HashSet<UnaryProtocol>>>) -> Self {
+    fn new(inbound_protocols: Arc<RwLock<HashSet<UnaryProtocol>>>, in_flight: InFlight) -> Self {
         Self {
             inbound_protocols,
             pending_outbound: VecDeque::new(),
             requested_outbound: HashMap::new(),
             next_outbound_id: 0,
             ready: VecDeque::new(),
+            in_flight,
         }
     }
 
@@ -283,7 +354,8 @@ impl ConnectionHandler for Handler {
         SubstreamProtocol::new(Protocols::new(protocols), ())
     }
 
-    fn on_behaviour_event(&mut self, open: Self::FromBehaviour) {
+    fn on_behaviour_event(&mut self, mut open: Self::FromBehaviour) {
+        open.in_flight = Some(Arc::clone(&self.in_flight));
         self.pending_outbound.push_back(open);
     }
 
@@ -328,6 +400,7 @@ impl ConnectionHandler for Handler {
                 ..
             }) => {
                 trace!(%proto, "inbound raw stream negotiated");
+                let stream = RawStream::new(stream, &self.in_flight);
                 self.ready
                     .push_back(HandlerEvent::Inbound { proto, stream });
             }
@@ -349,6 +422,7 @@ impl ConnectionHandler for Handler {
                     trace!(%proto, "outbound raw stream negotiated");
                     // If the caller has gone away the stream is dropped here,
                     // which resets it — the correct signal to the remote.
+                    let stream = RawStream::new(stream, &self.in_flight);
                     let _ = open.reply.send(Ok((proto, stream)));
                 }
                 None => debug!(
@@ -384,11 +458,18 @@ pub struct Behaviour {
     addresses: PeerAddresses,
     /// Our own addresses, so we never dial ourselves — see issue #108.
     own_addrs: crate::addresses::OwnAddresses,
+    /// Per-connection busy tokens and relayed flags.
+    conn_use: ConnUse,
 }
 
 impl Behaviour {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Whether an open is pending, or a stream it produced is alive, on `connection`.
+    pub fn busy(&self, connection: ConnectionId) -> bool {
+        self.conn_use.busy(connection)
     }
 
     /// Start advertising `proto` for inbound raw streams. Idempotent, and
@@ -448,13 +529,17 @@ impl Behaviour {
             return;
         }
 
-        let open = OutboundOpen { protocols, reply };
+        let open = OutboundOpen {
+            protocols,
+            reply,
+            in_flight: None,
+        };
 
         match self.connected.get(&peer) {
             Some(connections) if !connections.is_empty() => {
                 self.pending_events.push_back(ToSwarm::NotifyHandler {
                     peer_id: peer,
-                    handler: NotifyHandler::One(connections[0]),
+                    handler: NotifyHandler::One(self.conn_use.pick(connections)),
                     event: open,
                 });
             }
@@ -490,10 +575,11 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _local_addr: &Multiaddr,
+        local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        let mut handler = Handler::new(Arc::clone(&self.inbound_protocols));
+        let in_flight = self.conn_use.open(connection_id, is_circuit(local_addr));
+        let mut handler = Handler::new(Arc::clone(&self.inbound_protocols), in_flight);
         self.preload_new_handler(&mut handler, peer);
         self.connected.entry(peer).or_default().push(connection_id);
         Ok(handler)
@@ -503,11 +589,12 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _addr: &Multiaddr,
+        addr: &Multiaddr,
         _role_override: Endpoint,
         _port_use: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
-        let mut handler = Handler::new(Arc::clone(&self.inbound_protocols));
+        let in_flight = self.conn_use.open(connection_id, is_circuit(addr));
+        let mut handler = Handler::new(Arc::clone(&self.inbound_protocols), in_flight);
         self.preload_new_handler(&mut handler, peer);
         self.connected.entry(peer).or_default().push(connection_id);
         Ok(handler)
@@ -534,6 +621,7 @@ impl NetworkBehaviour for Behaviour {
         self.own_addrs.on_swarm_event(&event);
         match event {
             FromSwarm::ConnectionClosed(closed) => {
+                self.conn_use.close(closed.connection_id);
                 if let Some(connections) = self.connected.get_mut(&closed.peer_id) {
                     connections.retain(|&id| id != closed.connection_id);
                     if connections.is_empty() {

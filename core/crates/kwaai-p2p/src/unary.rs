@@ -66,6 +66,9 @@ use tracing::{debug, trace, warn};
 
 use kwaai_hivemind_dht::wire;
 
+use crate::addresses::is_circuit;
+use crate::conn_use::{ConnUse, InFlight};
+
 /// A hivemind unary protocol ID: the bare handler name, no leading slash.
 ///
 /// This type exists because `libp2p::StreamProtocol` refuses slash-less names;
@@ -133,6 +136,8 @@ pub struct OutboundMessage {
     proto: UnaryProtocol,
     data: Vec<u8>,
     reply: oneshot::Sender<UnaryResult>,
+    /// Set once queued on a connection, so it reads busy until the call resolves.
+    in_flight: Option<InFlight>,
 }
 
 impl fmt::Debug for OutboundMessage {
@@ -314,6 +319,8 @@ pub struct Handler {
     /// a worker parks until the handler actually forwards its request.
     inbound_rx: mpsc::Receiver<InboundStreamRequest>,
     inbound_tx: mpsc::Sender<InboundStreamRequest>,
+    /// This connection's token; see [`crate::conn_use`].
+    in_flight: InFlight,
 }
 
 /// Extra inbound worker slots reserved for writing "at capacity" refusal
@@ -326,6 +333,7 @@ impl Handler {
         remote: PeerId,
         inbound_protocols: Arc<RwLock<HashSet<UnaryProtocol>>>,
         config: Config,
+        in_flight: InFlight,
     ) -> Self {
         let (inbound_tx, inbound_rx) = mpsc::channel(0);
         Self {
@@ -341,6 +349,7 @@ impl Handler {
             waker: None,
             inbound_rx,
             inbound_tx,
+            in_flight,
         }
     }
 
@@ -380,9 +389,11 @@ impl Handler {
 
         let mut to_handler = self.inbound_tx.clone();
         let timeout = self.config.request_timeout;
+        let in_flight = Arc::clone(&self.in_flight);
 
         self.inbound_workers.push(
             async move {
+                let _in_flight = in_flight;
                 let outcome: Result<(), wire::WireError> = async {
                     let frame = wire::read_framed_futures(&mut stream).await?;
                     let (call_id, _peer, frame_proto, data) = wire::decode_unary_request(&frame)?;
@@ -452,6 +463,8 @@ impl Handler {
 
         self.outbound_workers.push(
             async move {
+                // Named so the closure captures it: the connection stays busy until this resolves.
+                let _in_flight = message.in_flight;
                 let exchange = async {
                     // 16 raw UUID bytes: Go does `uuid.FromBytes` and drops the
                     // message if that fails.
@@ -632,7 +645,8 @@ impl ConnectionHandler for Handler {
         SubstreamProtocol::new(Protocols::new(protocols), ())
     }
 
-    fn on_behaviour_event(&mut self, message: Self::FromBehaviour) {
+    fn on_behaviour_event(&mut self, mut message: Self::FromBehaviour) {
+        message.in_flight = Some(Arc::clone(&self.in_flight));
         self.pending_outbound.push_back(message);
     }
 
@@ -731,6 +745,8 @@ pub struct Behaviour {
     addresses: PeerAddresses,
     /// Our own addresses, so we never dial ourselves — see issue #108.
     own_addrs: crate::addresses::OwnAddresses,
+    /// Per-connection busy tokens and relayed flags.
+    conn_use: ConnUse,
 }
 
 impl Behaviour {
@@ -743,7 +759,13 @@ impl Behaviour {
             pending_events: VecDeque::new(),
             addresses: PeerAddresses::default(),
             own_addrs: crate::addresses::OwnAddresses::default(),
+            conn_use: ConnUse::default(),
         }
+    }
+
+    /// Whether a call is queued or in flight on `connection`, in either direction.
+    pub fn busy(&self, connection: ConnectionId) -> bool {
+        self.conn_use.busy(connection)
     }
 
     /// The per-call budget, so a loopback call can be bounded like a remote one.
@@ -784,14 +806,20 @@ impl Behaviour {
         data: Vec<u8>,
         reply: oneshot::Sender<UnaryResult>,
     ) {
-        let message = OutboundMessage { proto, data, reply };
+        let message = OutboundMessage {
+            proto,
+            data,
+            reply,
+            in_flight: None,
+        };
 
         match self.connected.get(&peer) {
             Some(connections) if !connections.is_empty() => {
-                // Streams are cheap; the first connection is fine.
+                // A direct connection when there is one, so a punched peer
+                // stops loading the relay.
                 self.pending_events.push_back(ToSwarm::NotifyHandler {
                     peer_id: peer,
-                    handler: NotifyHandler::One(connections[0]),
+                    handler: NotifyHandler::One(self.conn_use.pick(connections)),
                     event: message,
                 });
             }
@@ -827,13 +855,15 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _local_addr: &Multiaddr,
+        local_addr: &Multiaddr,
         _remote_addr: &Multiaddr,
     ) -> Result<THandler<Self>, ConnectionDenied> {
+        let in_flight = self.conn_use.open(connection_id, is_circuit(local_addr));
         let mut handler = Handler::new(
             peer,
             Arc::clone(&self.inbound_protocols),
             self.config.clone(),
+            in_flight,
         );
         self.preload_new_handler(&mut handler, peer);
         self.connected.entry(peer).or_default().push(connection_id);
@@ -844,14 +874,16 @@ impl NetworkBehaviour for Behaviour {
         &mut self,
         connection_id: ConnectionId,
         peer: PeerId,
-        _addr: &Multiaddr,
+        addr: &Multiaddr,
         _role_override: Endpoint,
         _port_use: PortUse,
     ) -> Result<THandler<Self>, ConnectionDenied> {
+        let in_flight = self.conn_use.open(connection_id, is_circuit(addr));
         let mut handler = Handler::new(
             peer,
             Arc::clone(&self.inbound_protocols),
             self.config.clone(),
+            in_flight,
         );
         self.preload_new_handler(&mut handler, peer);
         self.connected.entry(peer).or_default().push(connection_id);
@@ -879,6 +911,7 @@ impl NetworkBehaviour for Behaviour {
         self.own_addrs.on_swarm_event(&event);
         match event {
             FromSwarm::ConnectionClosed(closed) => {
+                self.conn_use.close(closed.connection_id);
                 if let Some(connections) = self.connected.get_mut(&closed.peer_id) {
                     connections.retain(|&id| id != closed.connection_id);
                     if connections.is_empty() {

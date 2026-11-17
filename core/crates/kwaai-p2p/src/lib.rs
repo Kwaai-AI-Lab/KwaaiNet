@@ -38,12 +38,15 @@
 pub mod addresses;
 pub mod behaviour;
 pub mod config;
+mod conn_use;
 pub mod dht_service;
 pub mod error;
 pub mod handle;
 pub mod identity;
+pub mod keep_alive;
 pub mod learned_addrs;
 pub mod peer_record;
+pub mod punch;
 pub mod raw_stream;
 pub mod reachability;
 pub mod relay_manager;
@@ -64,7 +67,8 @@ pub use config::{
 pub use dht_service::{remove_dht_service, spawn_dht_service};
 pub use error::{P2PError, P2PResult};
 pub use handle::{
-    Direction, InboundUnaryCall, KnownPeer, NetworkHandle, NetworkSnapshot, PeerInfo, UnaryHandler,
+    Direction, HolePunchStats, InboundUnaryCall, KnownPeer, NetworkHandle, NetworkSnapshot,
+    PeerInfo, UnaryHandler,
 };
 pub use learned_addrs::LearnedAddrs;
 pub use peer_record::verified_addrs;
