@@ -1,7 +1,33 @@
 # kwaai-platform — TODO
 
 ## Features
-- [ ] Apple code signing — Developer Program + notarization in release.yml (long-term fix for Gatekeeper)
+- [ ] **Apple application registration: Developer ID signing and notarization for the CLI and the GUI.**
+      Today neither is signed with a Developer ID or notarized, so every new Mac user
+      meets Gatekeeper. Seen on 2026-11-16 with KwaaiNetGUI v0.5.1: the app only
+      opened after System Settings → Privacy & Security → "Open Anyway". An older
+      GUI copy's bundled `kwaainet` was killed outright on macOS 26 (`Killed: 9`),
+      the same failure that makes us run `codesign -s - --force` by hand after
+      every local build.
+  - [ ] Enrol **Kwaai** in the Apple Developer Program as an organisation, not an
+        individual ($99/yr). That needs a D-U-N-S number and someone with the
+        authority to sign for the organisation, and it can take several weeks, so
+        start it first.
+  - [ ] Create a **Developer ID Application** certificate (plus Developer ID
+        Installer if we ship a .pkg) and an App Store Connect API key for
+        `notarytool`. Store them as GitHub Actions secrets in both repos.
+  - [ ] **KwaaiNet `release.yml`:** sign the `aarch64-apple-darwin` and
+        `x86_64-apple-darwin` binaries with hardened runtime, then notarize. A bare
+        binary in a tarball can't be stapled, so Gatekeeper checks online on first
+        run.
+  - [ ] **KwaaiNetGUI release:** sign the `.app`, including the bundled
+        `kwaainet` and any dylibs, inside-out with hardened runtime and the
+        entitlements the daemon needs (network client/server). Then notarize and
+        staple the `.app` or `.dmg`.
+  - [ ] **Homebrew and the updater:** confirm `brew install` and `kwaainet update`
+        keep the signature: no re-packaging, and nothing writes into the signed
+        bundle.
+  - [ ] Once signing ships, remove the ad-hoc `codesign -s - --force` step from
+        the docs (`projects/kwaai-platform/CLAUDE.md`, the workspace README).
 - [ ] `kwaainet update` — self-update command (fetch and install latest release)
 - [ ] RISCV target — complete `release-riscv.yml`
 
