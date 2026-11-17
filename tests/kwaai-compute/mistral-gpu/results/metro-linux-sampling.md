@@ -2,7 +2,27 @@
 
 2026-11-16, metro-linux (RTX A5000, no host CUDA toolkit). Every command below is logged with its UTC start time and exit code.
 
-## Result: node READY on the PR #304 build; smoke test (step 6) FAILED: the chain has no server for blocks 0–8
+## Result: metro-linux READY (sampling)
+
+Step 6 first failed at 19:31Z because the Mac (blocks 0–8) was off the DHT; that run is recorded below. It passed unchanged at 00:07Z on 2026-11-17 UTC once the Mac had rejoined:
+
+- **Text:** identical word for word to Phase 4b run 1 (retry) in `metro-linux.md`, as greedy decoding requires.
+- **This node's replies:** all 128 hop lines in `shard.log` say `reply="TokenId"`. No warnings or errors.
+- **fwd_ms on this node:** min 31.6, **median 31.9**, max 47.1 (the max is prefill), against Phase 4b's median of 30.7–31.6 ms, so sampling on the node adds at most about 1 ms.
+
+| | Phase 4b run 1 retry (logits to client) | Step 6 (sampling on last node) |
+|---|---|---|
+| Decode avg | 321 ms/tok (275–404) | **162 ms/tok** (139–533) |
+| Throughput | 3.1 tok/s | 4.0 tok/s (6.1 tok/s decode only) |
+| Prefill | 1016 ms | 11,182 ms |
+| Mac hop | 201 ms | 73 ms |
+| metro-win hop | 82 ms | 55 ms |
+| metro-linux hop | 37 ms | 33 ms |
+| Total | 41.8 s | 31.8 s |
+
+Decode is about half the time per token. Note that the Mac hop shrank most, and Phase 4b's Mac hop was itself anomalous (see 4b), so not all of the gain can be attributed to the smaller reply from this node. The 11 s prefill was the Mac's first request after rejoining; one run only.
+
+## First attempt (19:31Z): FAILED, the chain had no server for blocks 0–8
 
 - **Head:** `H=6d92149d812adb01cd5c446f1d0ff74d3944525c` (`feat/sample-on-last-node`). It is one comment-only commit after 22583ea8, which this node ran overnight.
 - **Store path:** `/nix/store/w0a93sxg9mzw4165y1psmcpvzal6asa6-kwaainet-0.7.3/bin/kwaainet`.
@@ -179,6 +199,74 @@ $ /nix/store/w0a93sxg9mzw4165y1psmcpvzal6asa6-kwaainet-0.7.3/bin/kwaainet shard 
   Blocks: [░░░░░░░░████████████████████████████████]
 
   ⚠️  Gaps detected: 8 block(s) not served
+[exit 0]
+
+--- rerun after the Mac rejoined ---
+$ /nix/store/w0a93sxg9mzw4165y1psmcpvzal6asa6-kwaainet-0.7.3/bin/kwaainet shard chain --total-blocks 40  [00:07:26Z]
+
+
+  Model prefix: Mistral-Small-24B-Instruct-2501
+  Querying 40 blocks from DHT…
+
+    3 server(s) — 40/40 blocks covered
+
+  START  END    PEER ID (prefix)   TRUST      NAME
+  ─────────────────────────────────────────────────────────────────
+      0      8  12D3KooWAourfFox…  UNKNOWN    professor_reza/v0.7.3
+      8     24  12D3KooWLMizEbVi…  UNKNOWN    metro-win-rtx-a5000/v0.…
+     24     40  12D3KooWA33TMz7s…  UNKNOWN    metro-linux/v0.7.3
+
+  Blocks: [████████████████████████████████████████]
+
+  ✅ Full model coverage — distributed inference ready
+[exit 0]
+
+$ /nix/store/w0a93sxg9mzw4165y1psmcpvzal6asa6-kwaainet-0.7.3/bin/kwaainet shard run "[INST]Summarize the critique of the standard model of physics[/INST]" --max-tokens 128 --stats  [00:07:27Z]
+
+
+  Model:        unsloth/Mistral-Small-24B-Instruct-2501
+  DHT prefix:   Mistral-Small-24B-Instruct-2501
+  Total blocks: 40
+  Prompt:       "[INST]Summarize the critique of the standard model of physics[/INST]"
+
+  Discovering block circuit from DHT…3 node(s)
+
+  [ 1] blocks   0–  7  12D3KooWAourfFox…  (professor_reza/v0.7.3)  UNKNOWN
+  [ 2] blocks   8– 23  12D3KooWLMizEbVi…  (metro-win-rtx-a5000/v0.7.3)  UNKNOWN
+  [ 3] blocks  24– 39  12D3KooWA33TMz7s…  (metro-linux/v0.7.3)  UNKNOWN
+
+2026-11-17T00:07:29.694772Z  INFO kwaai_inference::tokenizer: Loaded tokenizer.json: vocab=131072, bos=Some(1), eos=Some(2)
+  Input tokens: 14
+  Session ID:   17880260534197373523
+  Max tokens:   128
+  Pinned path:
+    [ 1] blocks   0–  7  professor_reza/v0.7.3
+    [ 2] blocks   8– 23  metro-win-rtx-a5000/v0.7.3
+    [ 3] blocks  24– 39  metro-linux/v0.7.3
+
+  Prefilling 14 input token(s)…
+  ✓ Prefill  11182 ms  (14 input token(s))
+
+  Assistant:
+  The Standard Model of particle physics is a highly successful theory that describes three of the four known fundamental forces (electromagnetic, weak, and strong interactions) and classifies all known elementary particles. However, it is not without its critiques and limitations. Here are some of the main critiques:
+
+1. **Incomplete**: The Standard Model does not include gravity, one of the four fundamental forces. Incorporating gravity into a consistent quantum framework remains a major challenge.
+
+2. **Fine-Tuning Problem**: The model requires precise tuning of parameters (such as the Higgs boson mass) to match experimental observations. This fine-tuning is seen
+
+  ✅ Generated 128 tok  •  6.1 tok/s  •  31.8s
+
+  ── Timing ────────────────────────────────────────────────
+  Prefill:          11182ms  (14 input tokens)
+  Decode avg:         162ms/tok  (min 139, max 533)
+  Total:             31.8s
+  Throughput:         4.0 tok/s
+  Hops:                 3
+
+  ── Per-hop (decode avg) ──────────────────────────────────
+  [0] professor_reza/v0.7.3               blocks   0–  8 ( 8 blks)  avg     73ms  min 60  max 451
+  [1] metro-win-rtx-a5000/v0.7.3          blocks   8– 24 (16 blks)  avg     55ms  min 40  max 66
+  [2] metro-linux/v0.7.3                  blocks  24– 40 (16 blks)  avg     33ms  min 32  max 36
 [exit 0]
 
 ```
