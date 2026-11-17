@@ -219,6 +219,14 @@ targets = [
     "x86_64-unknown-linux-musl",   # Linux x64 static (Alpine, containers)
     "aarch64-unknown-linux-musl",  # Linux ARM64 static
 ]
+
+# cargo-dist 0.31 defaults Apple Silicon to macos-14, which GitHub no longer
+# accepts ("The configuration 'macos-14-arm64-us-default' is not supported";
+# the v0.7.4 release run, 2026-11-17). v0.7.3 still built on macos-14 on
+# 2026-11-05.
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
+
 [profile.dist]
 inherits = "release"
 
