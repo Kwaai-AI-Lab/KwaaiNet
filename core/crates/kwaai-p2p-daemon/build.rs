@@ -96,9 +96,11 @@ fn ensure_protoc(out_dir: &Path) {
 
         // Extract based on platform
         let extract_success = if cfg!(windows) {
-            // Windows: Use PowerShell Expand-Archive
+            // Workaround: not Expand-Archive. Under a pwsh 7.6.10 parent, 5.1 loads
+            // PS7's Archive 1.2.7, which throws yet exits 0. ZipFile loads no module.
             let extract_cmd = format!(
-                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                "Add-Type -AssemblyName System.IO.Compression.FileSystem; \
+                 [System.IO.Compression.ZipFile]::ExtractToDirectory('{}', '{}')",
                 archive_path.display(),
                 protoc_dir.display()
             );
@@ -120,9 +122,11 @@ fn ensure_protoc(out_dir: &Path) {
                 .unwrap_or(false)
         };
 
-        if !extract_success {
+        // An extractor can exit 0 without writing anything, so check the result.
+        if !extract_success || !protoc_bin.exists() {
             eprintln!("\n==========================================================");
             eprintln!("ERROR: Failed to extract protoc archive!");
+            eprintln!("Expected: {}", protoc_bin.display());
             eprintln!("==========================================================");
             if !cfg!(windows) {
                 eprintln!("Make sure 'unzip' is installed:");
