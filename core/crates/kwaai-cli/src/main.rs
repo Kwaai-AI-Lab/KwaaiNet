@@ -149,7 +149,8 @@ async fn launch_daemon(
 fn stop_orphaned_children(daemon_just_stopped: bool) -> bool {
     // A child of a daemon that just died is on its way out by itself (it
     // watches its parent). Give it a moment before calling it an orphan —
-    // on Windows `stop` is a hard kill, so this is the normal path there.
+    // it is the normal path wherever `stop` had to fall back to a hard kill,
+    // as on Windows against a daemon that predates the stop request.
     let mut grace = if daemon_just_stopped { 0 } else { 20 };
     while grace < 20 && (ShardManager::new().is_running() || StorageApiManager::new().is_running())
     {
@@ -367,14 +368,25 @@ async fn main() -> Result<()> {
             print_box_header("🛑 Stopping KwaaiNet Node");
             // The daemon stops its own children on the way down. Stopping
             // them first would only have the supervisor restart them.
-            let daemon = mgr.stop_process();
-            if daemon.is_ok() {
-                print_success("KwaaiNet daemon stopped");
+            let daemon = mgr.stop();
+            match daemon {
+                Ok(true) => print_success("KwaaiNet daemon stopped"),
+                Ok(false) => {
+                    print_info("The PID file named a node that is not running — removed it")
+                }
+                Err(_) => {}
+            }
+            // A failure that kept the PID file is a daemon still running:
+            // its children are not orphans, and its start args still apply.
+            if daemon.is_err() && mgr.read_pid().is_some() {
+                return daemon.map(|_| ());
             }
             DaemonManager::remove_start_args();
             // Orphans can outlive the daemon's PID file, so "no daemon" is
-            // an error only when there was nothing else to stop either.
-            if !stop_orphaned_children(daemon.is_ok()) {
+            // an error only when there was nothing else to stop either. A
+            // stale PID file, now removed, is not one: `stop && start` must
+            // still start.
+            if !stop_orphaned_children(matches!(daemon, Ok(true))) {
                 daemon?;
             }
             print_separator();

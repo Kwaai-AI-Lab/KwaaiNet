@@ -34,6 +34,85 @@ pub struct NodeStatus {
 // DaemonManager
 // ---------------------------------------------------------------------------
 
+/// Name of the stop-request file under `run/`. See
+/// [`DaemonManager::stop_request_file`].
+pub const STOP_REQUEST_FILE: &str = "stop.request";
+
+/// How long `stop` gives the node's own shutdown before killing it. The node
+/// sizes its last-moment work to fit (`UPDATE_STOP_GRACE` in `node_native`).
+pub const DAEMON_STOP_GRACE: Duration = Duration::from_secs(10);
+
+/// How often a Windows node checks for a stop request.
+#[cfg(any(not(unix), test))]
+pub const STOP_REQUEST_POLL: Duration = Duration::from_millis(250);
+
+/// How long `stop` waits for a forced daemon to be gone, so a restart does
+/// not race its predecessor for the instance lock and ports.
+#[cfg(windows)]
+const KILL_WAIT: Duration = Duration::from_secs(5);
+
+/// Resolve once a stop request naming `pid` appears at `path`. The node's
+/// Windows stand-in for waiting on SIGTERM; a file because the request has
+/// to cross from an unrelated process to a detached one, and `run/` already
+/// carries `reannounce.flag` the same way. Unix waits on SIGTERM itself, so
+/// it has no caller there.
+///
+/// A request naming another PID is stale — `stop` read an old PID file —
+/// and is removed rather than obeyed. An empty or unreadable one is left
+/// alone and read again: the writer renames a finished file into place, so
+/// that is a transient, not a stale request.
+#[cfg(any(not(unix), test))]
+pub async fn wait_for_stop_request(path: &std::path::Path, pid: u32) {
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            match text.trim().parse::<u32>() {
+                Ok(p) if p == pid => return,
+                Ok(other) => {
+                    warn!("Ignoring a stop request for PID {other} (this node is PID {pid})");
+                    let _ = std::fs::remove_file(path);
+                }
+                Err(_) => {}
+            }
+        }
+        tokio::time::sleep(STOP_REQUEST_POLL).await;
+    }
+}
+
+/// What [`DaemonManager::request_stop_and_wait`] found.
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+enum StopOutcome {
+    /// It was running and has exited, asked or forced.
+    Stopped,
+    /// Nothing to stop: no such process, already exited, or the PID belongs
+    /// to another program now. The PID file is stale.
+    NotRunning,
+    /// Asked and forced, and still there.
+    StillRunning,
+}
+
+/// Whether `pid` is running a `kwaainet` executable — the guard against
+/// waiting on, or force-killing, whatever reused the PID a stale PID file
+/// names.
+#[cfg(windows)]
+fn is_kwaainet_process(pid: u32) -> bool {
+    let mut sys = System::new();
+    let pid = Pid::from_u32(pid);
+    sys.refresh_process(pid);
+    sys.process(pid)
+        .is_some_and(|p| is_kwaainet_image(p.name()))
+}
+
+/// `kwaainet.exe`, or a copy renamed from it (`kwaainet-cuda.exe`, a dev
+/// build kept beside the installed one), but not the GUI, which shares the
+/// prefix. A daemon run from some unrelated name is indistinguishable from a
+/// reused PID, and is treated as one.
+#[cfg(any(windows, test))]
+fn is_kwaainet_image(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.starts_with("kwaainet") && name.ends_with(".exe") && !name.starts_with("kwaainet_gui")
+}
+
 pub struct DaemonManager {
     pub pid_file: PathBuf,
     pub lock_file: PathBuf,
@@ -68,6 +147,28 @@ impl DaemonManager {
 
     pub fn remove_pid(&self) {
         let _ = std::fs::remove_file(&self.pid_file);
+    }
+
+    // -----------------------------------------------------------------------
+    // Stop request (Windows' SIGTERM)
+    // -----------------------------------------------------------------------
+
+    /// The file `stop` writes on Windows to ask the node to shut down
+    /// cleanly. Windows has no SIGTERM to deliver to a detached process,
+    /// and a hard kill skips the shutdown path, which is what writes the
+    /// `state = -1` tombstone. Without it, the node's last record reads
+    /// online. It sits beside the PID file, so it is per `KWAAINET_HOME`.
+    pub fn stop_request_file(&self) -> PathBuf {
+        self.pid_file.with_file_name(STOP_REQUEST_FILE)
+    }
+
+    /// Drop a stop request nobody consumed — one written to a daemon that
+    /// predates it and was force-killed, say — so it cannot stop the next
+    /// node the moment it starts. The node calls this before writing its PID
+    /// file, which is what `stop` reads before writing a request, so a
+    /// request aimed at *this* node cannot be the one cleared.
+    pub fn clear_stop_request(&self) {
+        let _ = std::fs::remove_file(self.stop_request_file());
     }
 
     /// Signal the running daemon to re-read config and re-announce its block
@@ -218,14 +319,167 @@ impl DaemonManager {
     // Stop
     // -----------------------------------------------------------------------
 
-    /// SIGTERM, up to 10 s for the node's own shutdown (DHT unannounce, its
-    /// children), then SIGKILL. On Windows a hard kill: see [`stop_pid`].
+    /// Ask the node to shut down, give it up to 10 s for its own shutdown
+    /// (DHT unannounce, its children), then kill it. On Unix the request is
+    /// SIGTERM; on Windows, the stop-request file (see
+    /// [`Self::request_stop_and_wait`]).
     pub fn stop_process(&self) -> Result<()> {
+        self.stop().map(|_| ())
+    }
+
+    /// [`Self::stop_process`], reporting whether a daemon was actually
+    /// running: `Ok(false)` is a PID file left by a node that is gone, which
+    /// is removed. Only Windows can tell; Unix reports `true` as before.
+    ///
+    /// On Windows, a daemon still running after being asked *and* forced is
+    /// an error, and its PID file is kept: removing it would leave a live,
+    /// announced node that `status` and `stop` can no longer find.
+    pub fn stop(&self) -> Result<bool> {
         let pid = self.read_pid().context("No daemon is running")?;
         info!("Stopping daemon PID {}", pid);
-        stop_pid(pid, Duration::from_secs(10));
+        #[cfg(windows)]
+        let was_running = match self.request_stop_and_wait(pid, DAEMON_STOP_GRACE) {
+            StopOutcome::Stopped => true,
+            StopOutcome::NotRunning => false,
+            StopOutcome::StillRunning => bail!(
+                "Daemon PID {pid} is still running: it did not answer the stop request and \
+                 could not be killed (does it run as another user?)"
+            ),
+        };
+        #[cfg(not(windows))]
+        let was_running = {
+            stop_pid(pid, DAEMON_STOP_GRACE);
+            true
+        };
         self.remove_pid();
+        Ok(was_running)
+    }
+
+    /// Windows: write the stop request, wait for the daemon to exit for up
+    /// to `grace`, and force it only if it is still there.
+    ///
+    /// The wait is on a process handle (`WaitForSingleObject`), not a PID
+    /// probe: a PID probe reads a dead process as alive while anyone holds a
+    /// handle to it. When the handle cannot be opened — the daemon runs as
+    /// another user, say — the request is still written, since it is only a
+    /// file, and the wait falls back to the instance lock. The lock is not
+    /// the first choice because a v0.7.3 daemon, which predates it, never
+    /// takes it. Such a daemon also never answers the request, and is forced
+    /// after `grace` as before.
+    ///
+    /// The PID is identified first. A PID file whose PID now belongs to some
+    /// other program is stale and costs no wait; only a `kwaainet` process
+    /// (see [`is_kwaainet_process`]) is ever asked, waited on or forced.
+    #[cfg(windows)]
+    fn request_stop_and_wait(&self, pid: u32, grace: Duration) -> StopOutcome {
+        let process = match win::Process::open(pid) {
+            Ok(p) => Some(p),
+            Err(win::OpenError::NoSuchProcess) => {
+                info!("Daemon PID {pid} is not running — removing its PID file");
+                self.clear_stop_request();
+                return StopOutcome::NotRunning;
+            }
+            Err(win::OpenError::Other(code)) => {
+                warn!("Cannot open daemon PID {pid} (OpenProcess error {code}) — asking it to stop anyway");
+                None
+            }
+        };
+        // Exited, with a handle still held somewhere — the case a PID probe misreads.
+        if process.as_ref().is_some_and(|p| p.wait(Duration::ZERO)) {
+            info!("Daemon PID {pid} has already exited — removing its PID file");
+            self.clear_stop_request();
+            return StopOutcome::NotRunning;
+        }
+        if !is_kwaainet_process(pid) {
+            info!("PID {pid} now belongs to another program — the PID file is stale; removing it");
+            self.clear_stop_request();
+            return StopOutcome::NotRunning;
+        }
+        // Taken before the request: a lock already free now proves nothing
+        // about a daemon that never held it.
+        let lock_was_held = process.is_none() && !self.instance_lock_free();
+
+        let asked = match self.write_stop_request(pid) {
+            Ok(()) => true,
+            Err(e) => {
+                warn!("Writing {}: {e:#}", self.stop_request_file().display());
+                false
+            }
+        };
+        let exited = asked
+            && match &process {
+                Some(p) => p.wait(grace),
+                None => lock_was_held && self.wait_for_instance_lock(grace),
+            };
+        self.clear_stop_request();
+        if exited {
+            info!("Daemon PID {pid} shut down cleanly");
+            return StopOutcome::Stopped;
+        }
+
+        if !asked {
+            warn!("Could not ask daemon PID {pid} to stop — forcing it");
+        } else if process.is_none() && !lock_was_held {
+            warn!(
+                "Cannot wait on daemon PID {pid}: no process handle, and it holds no instance \
+                 lock (a daemon older than the stop request) — forcing it"
+            );
+        } else {
+            warn!(
+                "Daemon PID {pid} did not exit within {grace:?} of the stop request — forcing it. \
+                 A daemon older than the request never answers it; a newer one may have \
+                 unannounced and still be stopping its children"
+            );
+        }
+        let gone = match &process {
+            Some(p) if p.terminate() => p.wait(KILL_WAIT),
+            Some(p) => {
+                stop_pid(pid, grace);
+                p.wait(KILL_WAIT)
+            }
+            None => {
+                stop_pid(pid, grace);
+                !is_kwaainet_process(pid)
+            }
+        };
+        if gone {
+            StopOutcome::Stopped
+        } else {
+            warn!("Daemon PID {pid} is still running after being forced");
+            StopOutcome::StillRunning
+        }
+    }
+
+    /// Write the request atomically, naming the PID it is for: the node
+    /// ignores one meant for another process, and must never read a
+    /// half-written file.
+    #[cfg(windows)]
+    fn write_stop_request(&self, pid: u32) -> Result<()> {
+        let request = self.stop_request_file();
+        let tmp = request.with_extension("request.tmp");
+        std::fs::write(&tmp, pid.to_string())?;
+        std::fs::rename(&tmp, &request)?;
         Ok(())
+    }
+
+    /// Whether nobody holds the instance lock. Takes it and lets go at once.
+    #[cfg(windows)]
+    fn instance_lock_free(&self) -> bool {
+        matches!(self.acquire_instance_lock(), Ok(Some(_)))
+    }
+
+    /// Wait up to `grace` for the instance lock to come free, which the
+    /// node lets go of only after unannouncing and stopping its children.
+    #[cfg(windows)]
+    fn wait_for_instance_lock(&self, grace: Duration) -> bool {
+        let deadline = std::time::Instant::now() + grace;
+        while std::time::Instant::now() < deadline {
+            if self.instance_lock_free() {
+                return true;
+            }
+            std::thread::sleep(STOP_REQUEST_POLL);
+        }
+        false
     }
 
     // -----------------------------------------------------------------------
@@ -503,7 +757,10 @@ fn stop_pid(pid: u32, grace: Duration) {
     // `taskkill` is a Windows program, so this is `windows`, not `not(unix)`.
     #[cfg(windows)]
     {
-        let _ = grace; // a hard kill: there is no graceful signal to wait out
+        // A hard kill: there is no signal to wait out. The daemon is asked
+        // first, by `DaemonManager::request_stop_and_wait`; this is its
+        // fallback, and the whole stop for the children's PID files.
+        let _ = grace;
         let _ = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/F"])
             .output();
@@ -539,6 +796,71 @@ fn pid_alive(pid: u32) -> bool {
     sys.refresh_process(pid);
     sys.process(pid)
         .is_some_and(|p| p.status() != sysinfo::ProcessStatus::Zombie)
+}
+
+/// A waitable handle on a Windows process: what tells `stop` the daemon has
+/// really gone, rather than merely that its PID still resolves.
+#[cfg(windows)]
+mod win {
+    use std::time::Duration;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, HANDLE, WAIT_OBJECT_0,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    };
+
+    pub enum OpenError {
+        /// No process has this PID (`ERROR_INVALID_PARAMETER`).
+        NoSuchProcess,
+        /// Anything else, such as access denied: the process may well be
+        /// alive, so the caller must not treat this as stopped.
+        Other(u32),
+    }
+
+    pub struct Process(HANDLE);
+
+    impl Process {
+        /// Open for waiting and, where allowed, terminating. Killing through
+        /// this handle cannot hit a process that reused the PID since.
+        pub fn open(pid: u32) -> Result<Self, OpenError> {
+            for access in [PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, PROCESS_SYNCHRONIZE] {
+                // SAFETY: plain FFI call; a null return is the documented failure.
+                let handle = unsafe { OpenProcess(access, 0, pid) };
+                if !handle.is_null() {
+                    return Ok(Self(handle));
+                }
+            }
+            // SAFETY: reads this thread's last-error value.
+            match unsafe { GetLastError() } {
+                ERROR_INVALID_PARAMETER => Err(OpenError::NoSuchProcess),
+                code => Err(OpenError::Other(code)),
+            }
+        }
+
+        /// Whether the process exited within `timeout`. A process that has
+        /// already exited is signalled even while handles to it stay open,
+        /// which is exactly the case a PID probe gets wrong.
+        pub fn wait(&self, timeout: Duration) -> bool {
+            let ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX - 1);
+            // SAFETY: `self.0` is a live handle opened with SYNCHRONIZE.
+            unsafe { WaitForSingleObject(self.0, ms) == WAIT_OBJECT_0 }
+        }
+
+        /// Force the process down. False when the handle lacks
+        /// PROCESS_TERMINATE, and the caller falls back to `taskkill`.
+        pub fn terminate(&self) -> bool {
+            // SAFETY: `self.0` is a live process handle.
+            unsafe { TerminateProcess(self.0, 1) != 0 }
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from OpenProcess and is closed once, here.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
 }
 
 /// Returns true if something is already listening on `<port>`, on every
@@ -578,6 +900,160 @@ mod own_pid_file_tests {
         assert!(!remove_pid_file_if_ours(
             &dir.path().join("missing.pid"),
             4242
+        ));
+    }
+}
+
+#[cfg(test)]
+mod stop_request_tests {
+    use super::*;
+
+    fn mgr(dir: &std::path::Path) -> DaemonManager {
+        DaemonManager {
+            pid_file: dir.join("kwaainet.pid"),
+            lock_file: dir.join("kwaainet.lock"),
+            status_file: dir.join("kwaainet.status"),
+        }
+    }
+
+    /// The CLI under its own name or a renamed copy is a node; the GUI and
+    /// anything else (a reused PID) is not.
+    #[test]
+    fn only_kwaainet_executables_count_as_the_daemon() {
+        for yes in [
+            "kwaainet.exe",
+            "KWAAINET.EXE",
+            "kwaainet-cuda.exe",
+            "kwaainet-fix.exe",
+        ] {
+            assert!(is_kwaainet_image(yes), "{yes}");
+        }
+        for no in [
+            "kwaainet_gui.exe",
+            "explorer.exe",
+            "kwaainet",
+            "svchost.exe",
+        ] {
+            assert!(!is_kwaainet_image(no), "{no}");
+        }
+    }
+
+    /// Per home: beside the PID file, under the name the node polls for.
+    #[test]
+    fn the_request_sits_beside_the_pid_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            mgr(tmp.path()).stop_request_file(),
+            tmp.path().join(STOP_REQUEST_FILE)
+        );
+    }
+
+    /// A request left by a force-killed old daemon must not stop the next
+    /// node on arrival; clearing when there is none is not an error.
+    #[test]
+    fn a_leftover_request_is_cleared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let m = mgr(tmp.path());
+        m.clear_stop_request();
+        std::fs::write(m.stop_request_file(), "4242").unwrap();
+        m.clear_stop_request();
+        assert!(!m.stop_request_file().exists());
+    }
+
+    const ME: u32 = 4242;
+
+    async fn waits_out(request: &std::path::Path, polls: u32) -> bool {
+        tokio::time::timeout(
+            STOP_REQUEST_POLL * polls,
+            wait_for_stop_request(request, ME),
+        )
+        .await
+        .is_err()
+    }
+
+    #[tokio::test]
+    async fn the_node_waits_until_a_request_for_it_appears() {
+        let tmp = tempfile::tempdir().unwrap();
+        let request = tmp.path().join(STOP_REQUEST_FILE);
+
+        assert!(waits_out(&request, 3).await, "no request, no stop");
+
+        let writer = {
+            let request = request.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(STOP_REQUEST_POLL).await;
+                std::fs::write(request, ME.to_string()).unwrap();
+            })
+        };
+        let answered = !waits_out(&request, 20).await;
+        writer.await.unwrap();
+        assert!(
+            answered,
+            "a request naming this PID is seen within a few polls"
+        );
+    }
+
+    /// `stop` read a stale PID file: its request is for some other PID. It
+    /// must not stop this node, and is cleared so it cannot linger.
+    #[tokio::test]
+    async fn a_request_for_another_pid_is_ignored_and_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let request = tmp.path().join(STOP_REQUEST_FILE);
+        std::fs::write(&request, (ME + 4).to_string()).unwrap();
+
+        assert!(waits_out(&request, 3).await, "not ours, no stop");
+        assert!(!request.exists(), "the stale request is removed");
+    }
+
+    /// An empty file is a write in progress, not a stale request: left in
+    /// place, and obeyed once it names this PID.
+    #[tokio::test]
+    async fn an_empty_request_is_read_again_not_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let request = tmp.path().join(STOP_REQUEST_FILE);
+        std::fs::write(&request, "").unwrap();
+
+        assert!(waits_out(&request, 3).await, "empty, no stop");
+        assert!(request.exists(), "an empty request is left alone");
+        std::fs::write(&request, ME.to_string()).unwrap();
+        assert!(!waits_out(&request, 20).await, "then obeyed");
+    }
+
+    /// The wait `stop` relies on: a live process is not signalled, and one
+    /// that has exited is, even while a handle to it is still open — the
+    /// case a PID probe reads as alive.
+    #[cfg(windows)]
+    #[test]
+    fn a_process_handle_tells_running_from_exited() {
+        use std::process::{Command, Stdio};
+
+        // `pause` blocks on stdin, so the child lives until we say otherwise
+        // and leaves nothing behind.
+        let mut child = Command::new("cmd")
+            .args(["/C", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let Ok(process) = win::Process::open(child.id()) else {
+            panic!("a live child can be opened");
+        };
+        assert!(!process.wait(Duration::from_millis(300)), "still running");
+
+        child.kill().unwrap();
+        // `child` still holds its own handle here.
+        assert!(process.wait(Duration::from_secs(10)), "exited is signalled");
+        child.wait().unwrap();
+    }
+
+    /// No process at that PID reads as gone, not as an error to force past.
+    #[cfg(windows)]
+    #[test]
+    fn an_unused_pid_is_no_such_process() {
+        // PIDs are multiples of four and nowhere near this high.
+        assert!(matches!(
+            win::Process::open(4_000_000_000),
+            Err(win::OpenError::NoSuchProcess)
         ));
     }
 }
