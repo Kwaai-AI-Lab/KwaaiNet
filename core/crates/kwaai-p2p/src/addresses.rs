@@ -302,6 +302,54 @@ pub fn is_circuit(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::P2pCircuit))
 }
 
+/// Whether `addr` names its first hop by DNS name rather than IP.
+pub fn is_dns_hosted(addr: &Multiaddr) -> bool {
+    matches!(
+        addr.iter().next(),
+        Some(Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_))
+    )
+}
+
+/// Rank of a circuit form, lower first: IPv4- or DNS-hosted on a transport
+/// dialable with `quic`, then IP-hosted over DNS-hosted.
+pub fn circuit_preference(addr: &Multiaddr, quic: bool) -> (bool, bool) {
+    let ip6 = matches!(
+        addr.iter().next(),
+        Some(Protocol::Ip6(_) | Protocol::Dns6(_))
+    );
+    (
+        ip6 || !uses_dialable_transport(addr, quic),
+        is_dns_hosted(addr),
+    )
+}
+
+/// Keeps one circuit address per relay, the best by [`circuit_preference`],
+/// since each circuit dial spends a request from that relay's rate limit.
+/// Direct addresses and the surviving order are untouched.
+pub fn one_circuit_per_relay(addrs: Vec<Multiaddr>, quic: bool) -> Vec<Multiaddr> {
+    let mut best: std::collections::HashMap<PeerId, usize> = std::collections::HashMap::new();
+    for (i, addr) in addrs.iter().enumerate() {
+        let Some(relay) = circuit_relay(addr) else {
+            continue;
+        };
+        let better =
+            |cur: usize| circuit_preference(addr, quic) < circuit_preference(&addrs[cur], quic);
+        best.entry(relay)
+            .and_modify(|cur| {
+                if better(*cur) {
+                    *cur = i;
+                }
+            })
+            .or_insert(i);
+    }
+    addrs
+        .into_iter()
+        .enumerate()
+        .filter(|(i, a)| circuit_relay(a).is_none_or(|relay| best.get(&relay) == Some(i)))
+        .map(|(_, a)| a)
+        .collect()
+}
+
 /// Whether this swarm could dial `addr` if a peer published it.
 ///
 /// The swarm is built with TCP always and QUIC only when `enable_quic` is set
@@ -827,6 +875,77 @@ mod tests {
             "/ip4/18.219.43.67/tcp/8000/p2p/{RELAY}/p2p-circuit"
         ));
         assert_eq!(dest_peer_id(&listen), None);
+    }
+
+    #[test]
+    fn one_circuit_per_relay_prefers_the_ip_form_and_keeps_direct_addrs() {
+        let a = "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc";
+        let b = "Qmd3A8N5aQBATe2SYvNikaeCS9CAKN4E86jdCPacZ6RZJY";
+        let dest = "12D3KooWLMizEbViSoL4WGJUMsLVRyLccyymosX36MDKdbYgGFzE";
+        let input = vec![
+            ma(&format!(
+                "/dnsaddr/bootstrap.kwaai.ai/p2p/{a}/p2p-circuit/p2p/{dest}"
+            )),
+            ma("/ip4/203.0.113.9/tcp/8080"),
+            ma(&format!(
+                "/ip4/198.51.100.1/tcp/8000/p2p/{b}/p2p-circuit/p2p/{dest}"
+            )),
+            ma(&format!(
+                "/ip4/198.51.100.2/tcp/8000/p2p/{a}/p2p-circuit/p2p/{dest}"
+            )),
+            ma(&format!(
+                "/dnsaddr/bootstrap.kwaai.ai/p2p/{b}/p2p-circuit/p2p/{dest}"
+            )),
+            ma("/ip6/2001:db8::9/tcp/8080"),
+        ];
+        let kept: Vec<String> = one_circuit_per_relay(input, false)
+            .iter()
+            .map(|a| a.to_string())
+            .collect();
+        assert_eq!(
+            kept,
+            vec![
+                "/ip4/203.0.113.9/tcp/8080".to_string(),
+                format!("/ip4/198.51.100.1/tcp/8000/p2p/{b}/p2p-circuit/p2p/{dest}"),
+                format!("/ip4/198.51.100.2/tcp/8000/p2p/{a}/p2p-circuit/p2p/{dest}"),
+                "/ip6/2001:db8::9/tcp/8080".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_circuit_per_relay_keeps_a_dns_circuit_when_it_is_the_only_one() {
+        let a = "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc";
+        let only = ma(&format!("/dnsaddr/bootstrap.kwaai.ai/p2p/{a}/p2p-circuit"));
+        assert_eq!(one_circuit_per_relay(vec![only.clone()], false), vec![only]);
+    }
+
+    #[test]
+    fn one_circuit_per_relay_skips_a_quic_circuit_this_swarm_cannot_dial() {
+        let r = "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc";
+        let quic = ma(&format!(
+            "/ip4/198.51.100.2/udp/4001/quic-v1/p2p/{r}/p2p-circuit"
+        ));
+        let dns = ma(&format!("/dnsaddr/bootstrap.kwaai.ai/p2p/{r}/p2p-circuit"));
+        let both = vec![quic.clone(), dns.clone()];
+        assert_eq!(one_circuit_per_relay(both.clone(), false), vec![dns]);
+        assert_eq!(one_circuit_per_relay(both, true), vec![quic]);
+    }
+
+    #[test]
+    fn one_circuit_per_relay_prefers_ipv4_tcp_then_dns_over_ipv6() {
+        let r = "QmQhRuheeCLEsVD3RsnknM75gPDDqxAb8DhnWgro7KhaJc";
+        let v6 = ma(&format!("/ip6/2001:db8::2/tcp/4001/p2p/{r}/p2p-circuit"));
+        let dns = ma(&format!("/dnsaddr/bootstrap.kwaai.ai/p2p/{r}/p2p-circuit"));
+        let v4 = ma(&format!("/ip4/198.51.100.2/tcp/4001/p2p/{r}/p2p-circuit"));
+        assert_eq!(
+            one_circuit_per_relay(vec![v6.clone(), dns.clone()], true),
+            vec![dns.clone()]
+        );
+        assert_eq!(
+            one_circuit_per_relay(vec![v6, dns, v4.clone()], true),
+            vec![v4]
+        );
     }
 
     #[test]

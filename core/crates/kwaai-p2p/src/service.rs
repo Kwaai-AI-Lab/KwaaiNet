@@ -1509,7 +1509,7 @@ impl NetworkService {
         let mut seen: HashSet<Multiaddr> = HashSet::new();
         addrs.retain(|a| seen.insert(a.clone()));
 
-        addrs
+        crate::addresses::one_circuit_per_relay(addrs, self.dials_quic)
     }
 
     /// Remember an address the operator supplied for `peer`; see `pinned_addrs`.
