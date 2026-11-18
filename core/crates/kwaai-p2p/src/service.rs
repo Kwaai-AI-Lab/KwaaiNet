@@ -925,6 +925,7 @@ impl NetworkService {
                     let _ = reply.send(Ok(known));
                     return;
                 }
+                self.swarm.behaviour_mut().dial_backoff.seek(peer);
                 let query_id = self.swarm.behaviour_mut().kad.get_closest_peers(peer);
                 self.pending_kad.insert(
                     query_id,
@@ -1228,7 +1229,8 @@ impl NetworkService {
             _ => DialOpts::unknown_peer_id().address(addr.clone()).build(),
         };
         let connection_id = opts.connection_id();
-        match self.swarm.dial(opts) {
+        let relays = circuit_relay(&addr).into_iter().collect();
+        match self.dial_exempt(opts, relays) {
             Ok(()) => {
                 debug!(%addr, ?connection_id, "dialing");
                 Ok(connection_id)
@@ -1540,6 +1542,26 @@ impl NetworkService {
         own
     }
 
+    /// Dial past the backoff gate: the service's own dials carry their own policy.
+    /// `relays` stay dialable until the dial resolves, for the relay client's hop dial.
+    fn dial_exempt(
+        &mut self,
+        opts: libp2p::swarm::dial_opts::DialOpts,
+        relays: Vec<PeerId>,
+    ) -> Result<(), DialError> {
+        let id = opts.connection_id();
+        let gate = &mut self.swarm.behaviour_mut().dial_backoff;
+        gate.exempt(id);
+        gate.hold_relays(id, relays);
+        let result = self.swarm.dial(opts);
+        let gate = &mut self.swarm.behaviour_mut().dial_backoff;
+        gate.clear_exempt(id);
+        if result.is_err() {
+            gate.release_relays(id);
+        }
+        result
+    }
+
     /// Route a stream request to `peer`, looking its addresses up in the DHT
     /// first when we have none — Go's routed-host semantics (see
     /// [`RoutedRequest`]). With a live connection, dispatch is immediate.
@@ -1559,6 +1581,28 @@ impl NetworkService {
         let first = parked.is_empty();
         parked.push(request);
         if !first {
+            return;
+        }
+
+        // In backoff: one dial on known addresses, and a lookup only if this
+        // window has not had one (a peer that moved relays must stay findable).
+        let backoff = self.swarm.behaviour().dial_backoff.remaining(&peer);
+        let lookup_ok =
+            backoff.is_none() || self.swarm.behaviour_mut().dial_backoff.take_lookup(&peer);
+        if let (Some(remaining), false) = (backoff, lookup_ok) {
+            let attempt = self.routed_attempts.entry(peer).or_default();
+            attempt.lookup_spent = true;
+            attempt.learned_retry_spent = true;
+            debug!(%peer, secs = remaining.as_secs(), "routed request to a peer in dial backoff — one dial, no lookup");
+            if !self.dial_routed(peer) {
+                self.fail_routed(
+                    peer,
+                    format!(
+                        "{peer}: no known address, and the DHT lookup is suppressed for another {}s after failed dials",
+                        remaining.as_secs()
+                    ),
+                );
+            }
             return;
         }
 
@@ -1631,6 +1675,7 @@ impl NetworkService {
             .map(|a| a.with(libp2p::multiaddr::Protocol::P2p(peer)))
             .collect();
         debug!(%peer, seeded = addrs.len(), "routed request — dialing");
+        let relays = addrs_relays(&addrs);
 
         let opts = DialOpts::peer_id(peer)
             .addresses(addrs)
@@ -1638,7 +1683,7 @@ impl NetworkService {
             .build();
         let connection_id = opts.connection_id();
 
-        let dial = match self.swarm.dial(opts) {
+        let dial = match self.dial_exempt(opts, relays) {
             Ok(()) => RoutedDial::Ours(connection_id),
             Err(DialError::DialPeerConditionFalse(_)) => RoutedDial::Shared,
             Err(e) => {
@@ -1714,6 +1759,7 @@ impl NetworkService {
     /// Walk the DHT for `peer`'s addresses on behalf of parked requests.
     fn start_routed_lookup(&mut self, peer: PeerId) {
         self.routed_attempts.entry(peer).or_default().lookup_spent = true;
+        self.swarm.behaviour_mut().dial_backoff.seek(peer);
         let query_id = self.swarm.behaviour_mut().kad.get_closest_peers(peer);
         self.pending_kad
             .insert(query_id, PendingKad::RoutedDial { target: peer });
@@ -1777,7 +1823,8 @@ impl NetworkService {
                 }
                 let opts = DialOpts::peer_id(peer).build();
                 let connection_id = opts.connection_id();
-                match self.swarm.dial(opts) {
+                let relays = addrs_relays(&self.dial_candidates(&peer));
+                match self.dial_exempt(opts, relays) {
                     Ok(()) => {
                         self.pending_dials.insert(connection_id, reply);
                     }
@@ -1807,11 +1854,18 @@ impl NetworkService {
         }
 
         // Not connected after the walk: dial once more from whatever it learned.
+        let found_nothing = self.dial_candidates(&peer).is_empty();
         if self.dial_routed(peer) {
             return;
         }
 
         debug!(%peer, "find_peer produced no usable addresses — failing parked requests");
+        if found_nothing {
+            self.swarm
+                .behaviour_mut()
+                .dial_backoff
+                .record_lookup_failure(peer);
+        }
         self.fail_routed(
             peer,
             format!("{peer}: peer not found in DHT (no addresses)"),
@@ -2769,7 +2823,14 @@ impl NetworkService {
                 if !step.last {
                     return;
                 }
-                match (self.pending_kad.remove(&id), result) {
+                let pending = self.pending_kad.remove(&id);
+                if let Some(
+                    PendingKad::FindPeer { target, .. } | PendingKad::RoutedDial { target },
+                ) = &pending
+                {
+                    self.swarm.behaviour_mut().dial_backoff.unseek(target);
+                }
+                match (pending, result) {
                     (
                         Some(PendingKad::FindPeer { target, reply }),
                         kad::QueryResult::GetClosestPeers(result),
@@ -2832,6 +2893,11 @@ impl NetworkService {
             other => trace!(?other, "kad event"),
         }
     }
+}
+
+/// The relays named in `addrs`' circuit addresses.
+fn addrs_relays(addrs: &[Multiaddr]) -> Vec<PeerId> {
+    addrs.iter().filter_map(circuit_relay).collect()
 }
 
 /// The addresses a failed dial actually tried, bare, or nothing.
