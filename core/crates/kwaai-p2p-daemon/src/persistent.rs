@@ -31,9 +31,13 @@ use uuid::Uuid;
 /// may be written.
 pub const MAX_FRAME_SIZE: usize = 10 * 1024 * 1024;
 
-/// Type alias for unary handler functions (use Arc for cloning)
+/// Type alias for unary handler functions (use Arc for cloning). The first
+/// argument is the caller's peer id, empty if the daemon did not say.
 pub type UnaryHandlerFn = Arc<
-    dyn Fn(Vec<u8>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>
+    dyn Fn(
+            Vec<u8>,
+            Vec<u8>,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send>>
         + Send
         + Sync,
 >;
@@ -169,6 +173,7 @@ impl PersistentConnection {
 
                         let proto = req.proto.clone();
                         let data = req.data.clone();
+                        let caller = req.peer.clone();
                         let call_id_bytes = response.call_id.clone();
 
                         // Look up handler
@@ -181,7 +186,7 @@ impl PersistentConnection {
 
                             // Execute handler in background
                             tokio::spawn(async move {
-                                let result = handler(data).await;
+                                let result = handler(caller, data).await;
 
                                 // Send response back
                                 let response = match result {
@@ -400,6 +405,22 @@ impl PersistentConnection {
         F: Fn(Vec<u8>) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = Result<Vec<u8>>> + Send + 'static,
     {
+        self.add_unary_handler_with_caller(proto, move |_, data| handler(data), balanced)
+            .await
+    }
+
+    /// [`Self::add_unary_handler`] for a handler that is also given the
+    /// caller's peer id (empty if the daemon did not say).
+    pub async fn add_unary_handler_with_caller<F, Fut>(
+        &self,
+        proto: &str,
+        handler: F,
+        balanced: bool,
+    ) -> Result<()>
+    where
+        F: Fn(Vec<u8>, Vec<u8>) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Vec<u8>>> + Send + 'static,
+    {
         let call_id = Uuid::new_v4();
         debug!("Adding unary handler for protocol: {}", proto);
 
@@ -448,7 +469,7 @@ impl PersistentConnection {
             let mut handlers = self.unary_handlers.lock().await;
             handlers.insert(
                 proto.to_string(),
-                Arc::new(move |data| Box::pin(handler(data))),
+                Arc::new(move |caller, data| Box::pin(handler(caller, data))),
             );
         }
 

@@ -40,6 +40,7 @@ mod rag_cmd;
 mod rebalancer;
 mod reputation;
 mod reputation_cmd;
+mod routing;
 mod service;
 mod shard_api;
 mod shard_cmd;

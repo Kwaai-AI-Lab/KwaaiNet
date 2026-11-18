@@ -1397,7 +1397,7 @@ impl ConnState {
         if let Err(e) = self
             .shared
             .handle
-            .add_unary_handler_boxed(proto, dispatcher)
+            .add_unary_handler_with_caller(proto, dispatcher)
             .await
         {
             self.shared.handler_owners.lock().await.remove(proto);
@@ -1416,12 +1416,12 @@ impl ConnState {
     /// generated** call ID. The ID is ours, not the remote caller's: two remote
     /// peers calling us concurrently could otherwise present the same ID, and
     /// the resulting cross-talk would be invisible.
-    fn inbound_dispatcher(&self, proto: String) -> kwaai_p2p::UnaryHandler {
+    fn inbound_dispatcher(&self, proto: String) -> kwaai_p2p::CallerUnaryHandler {
         let writer = Arc::clone(&self.writer);
         let waiters = Arc::clone(&self.waiters);
         let conn_id = self.id;
 
-        Box::new(move |data: Vec<u8>| {
+        Box::new(move |caller: libp2p::PeerId, data: Vec<u8>| {
             let writer = Arc::clone(&writer);
             let waiters = Arc::clone(&waiters);
             let proto = proto.clone();
@@ -1431,17 +1431,12 @@ impl ConnState {
                 waiters.lock().await.insert(call_id, tx);
 
                 // `peer` carries the *caller's* ID on this path, matching Go's
-                // rewrite in `persistent_stream.go:298`. We do not have it here
-                // — `UnaryHandler` receives only the payload — so it is left
-                // empty; proto2 `required` means the field is still encoded.
-                // TODO(phase3-caller-id): thread `InboundUnaryCall::peer`
-                // through `add_unary_handler_boxed` so handlers that
-                // authenticate the caller can see it.
+                // rewrite in `persistent_stream.go:298`.
                 let frame = PersistentConnectionResponse {
                     call_id: call_id.as_bytes().to_vec(),
                     message: Some(persistent_connection_response::Message::RequestHandling(
                         crate::protocol::p2pd::CallUnaryRequest {
-                            peer: Vec::new(),
+                            peer: caller.to_bytes(),
                             proto: proto.clone(),
                             data,
                         },

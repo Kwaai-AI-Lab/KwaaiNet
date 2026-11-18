@@ -389,6 +389,7 @@ pub enum ConfigAction {
     /// Valid keys:
     ///   model, blocks, start_block, port, grpc_port, use_gpu, log_level,
     ///   shard.backend (auto | candle | mlx),
+    ///   shard.forward_chain.serve, shard.forward_chain.originate,
     ///   contribute.storage, contribute.shards, contribute.auto_update,
     ///   public_name, public_ip, announce_addr, no_relay,
     ///   announce_self, enable_upnp, enable_quic, ipv6, only_global_ips,
@@ -959,7 +960,10 @@ pub struct ShardRunArgs {
     #[arg(long, default_value = "200")]
     pub max_tokens: usize,
 
-    /// Explicit session ID (randomly generated if not set)
+    /// Explicit session ID (randomly generated if not set). Servers keep a
+    /// session's KV for 600 s after its last step, so reusing an ID within
+    /// that window is refused and the run moves to a fresh ID, as it does
+    /// after any failed hop.
     #[arg(long)]
     pub session_id: Option<u64>,
 
@@ -996,6 +1000,12 @@ pub struct ShardRunArgs {
     /// Print per-token timing stats after generation
     #[arg(long)]
     pub stats: bool,
+
+    /// How each decode step travels the path: `star` returns to this node
+    /// after every hop; `chain` goes hop to hop and returns once. Defaults
+    /// to `shard.forward_chain.originate`.
+    #[arg(long, value_enum)]
+    pub route: Option<crate::routing::RouteMode>,
 
     /// Use an existing circuit instead of discovering the chain fresh.
     /// Create one with: kwaainet shard circuit create

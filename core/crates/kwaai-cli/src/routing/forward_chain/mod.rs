@@ -1,0 +1,683 @@
+//! Forward-chain routing, originator side: the step is sent to the first hop
+//! with the rest of the route, each server forwards to the next, and the last
+//! delivers the step's result back here — N+1 network legs instead of star's 2N.
+//!
+//! Phase 1 is optimistic and originator-planned. Prefill stays star; any
+//! failure finishes the step in star where provably safe, and the rest of
+//! the run uses star.
+
+pub mod serve;
+pub mod wire;
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, Context, Result};
+use kwaai_p2p_daemon::P2PClient;
+use libp2p::PeerId;
+use tokio::sync::oneshot;
+
+use self::serve::send_chain;
+use self::wire::*;
+use super::hop::{hidden_states_request, ChainPositionError};
+use super::star::forward_from;
+use crate::block_rpc::{InferenceRequest, InferenceResponse, ResponseType};
+use crate::display::print_warning;
+use crate::reputation::ReputationStore;
+use crate::shard_cmd::{
+    daemon_socket, emit_progress, BlockServerEntry, InferenceProgress, ProgressPhase, ProgressSink,
+    TokenContext,
+};
+
+/// How long one hop of a decode step may take before the originator stops
+/// waiting for the result. Decode only, so generous.
+const HOP_BUDGET: Duration = Duration::from_secs(30);
+
+/// A step waiting for its result.
+struct Waiting {
+    /// The session it was sent under: a retry restarts the session mid-run.
+    session_id: u64,
+    /// The route's peers in order; only they may answer.
+    route: Vec<Vec<u8>>,
+    tx: oneshot::Sender<ChainResult>,
+}
+
+type Pending = Arc<Mutex<HashMap<u64, Waiting>>>;
+
+/// One run's forward-chain state. Its own daemon connection owns the return
+/// handler, so dropping this releases it.
+pub struct ChainOriginator {
+    _returns: P2PClient,
+    return_proto: String,
+    origin: Vec<u8>,
+    nonce: [u8; 16],
+    pending: Pending,
+    next_step: u64,
+    /// Steps that completed as a forward chain.
+    pub steps: usize,
+    /// Why the run went back to star, once it has.
+    pub fallback: Option<String>,
+}
+
+impl ChainOriginator {
+    pub async fn open(origin: &PeerId) -> Result<Self> {
+        let client = P2PClient::connect(&daemon_socket())
+            .await
+            .context("connect forward-chain return client")?;
+        let pending = Pending::default();
+        let mut tag = [0u8; 8];
+        let mut nonce = [0u8; 16];
+        getrandom::getrandom(&mut tag).context("forward-chain return tag")?;
+        getrandom::getrandom(&mut nonce).context("forward-chain nonce")?;
+        let return_proto = result_proto(u64::from_le_bytes(tag));
+        let p = pending.clone();
+        client
+            .add_unary_handler_with_caller(
+                &return_proto,
+                move |caller: Vec<u8>, data: Vec<u8>| {
+                    let ack = accept_result(&p, &nonce, &caller, &data);
+                    async move {
+                        rmp_serde::to_vec_named(&ack).map_err(|e| {
+                            kwaai_p2p_daemon::error::Error::Protocol(format!(
+                                "serialise ChainAck: {e}"
+                            ))
+                        })
+                    }
+                },
+                false,
+            )
+            .await
+            .context("register forward-chain return handler")?;
+        Ok(Self {
+            _returns: client,
+            return_proto,
+            origin: origin.to_bytes(),
+            nonce,
+            pending,
+            next_step: 0,
+            steps: 0,
+            fallback: None,
+        })
+    }
+
+    fn fall_back(&mut self, why: String) {
+        if self.fallback.is_none() {
+            print_warning(&format!("forward chain: {why} — rest of the run uses star"));
+            self.fallback = Some(why);
+        }
+    }
+
+    /// One decode step as a forward chain along `chain`, the pinned path.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn step(
+        &mut self,
+        client: &mut P2PClient,
+        chain: &[BlockServerEntry],
+        total_blocks: usize,
+        session_id: u64,
+        seq_pos: u32,
+        request: InferenceRequest,
+        our_peer_id: Option<&PeerId>,
+        failed_peers: &mut HashSet<PeerId>,
+        unreached: &HashSet<PeerId>,
+        sink: Option<&dyn ProgressSink>,
+        reputation: Option<Arc<Mutex<ReputationStore>>>,
+        token_ctx: TokenContext,
+    ) -> Result<InferenceResponse> {
+        let step = self.next_step;
+        self.next_step += 1;
+        let route: Vec<RouteHop> = chain[1..]
+            .iter()
+            .map(|e| RouteHop {
+                peer_id: e.peer_id.to_bytes(),
+                start_block: e.start_block as u32,
+                end_block: e.end_block as u32,
+            })
+            .collect();
+        let (tx, rx) = oneshot::channel();
+        lock(&self.pending).insert(
+            step,
+            Waiting {
+                session_id,
+                route: chain.iter().map(|e| e.peer_id.to_bytes()).collect(),
+                tx,
+            },
+        );
+        let req = ChainRequest {
+            start_block: chain[0].start_block as u32,
+            inner: request,
+            route,
+            origin: self.origin.clone(),
+            return_proto: self.return_proto.clone(),
+            step,
+            nonce: self.nonce,
+            trace: Vec::new(),
+        };
+
+        let started = Instant::now();
+        if let Err(e) = send_chain(&*client, &chain[0].peer_id.to_bytes(), &req).await {
+            lock(&self.pending).remove(&step);
+            let msg = format!("{e:#}");
+            self.fall_back(format!("first hop {}: {msg}", chain[0].public_name));
+            if classify_forward_error(&msg) == ForwardErrorKind::Failed {
+                return Err(self.hop_failed(
+                    chain,
+                    failed_peers,
+                    &chain[0].peer_id.to_bytes(),
+                    chain[0].start_block as u32,
+                    &msg,
+                ));
+            }
+            return forward_from(
+                client,
+                chain,
+                total_blocks,
+                session_id,
+                seq_pos,
+                req.inner,
+                0,
+                our_peer_id,
+                failed_peers,
+                unreached,
+                sink,
+                reputation,
+                token_ctx,
+            )
+            .await;
+        }
+
+        let deadline = HOP_BUDGET * chain.len() as u32;
+        let result = match tokio::time::timeout(deadline, rx).await {
+            Ok(Ok(r)) => r,
+            _ => {
+                lock(&self.pending).remove(&step);
+                self.fall_back(format!("no result within {}s", deadline.as_secs()));
+                return Err(anyhow!(
+                    "forward chain: no result within {}s (a hop may have run — KV state unknown)",
+                    deadline.as_secs()
+                ));
+            }
+        };
+        emit_trace(sink, chain, our_peer_id, &result.trace, token_ctx);
+
+        match result.outcome {
+            ChainOutcome::Done {
+                response_type,
+                shape,
+                data,
+            } => {
+                self.steps += 1;
+                tracing::debug!(
+                    step,
+                    total_ms = started.elapsed().as_secs_f64() * 1000.0,
+                    "forward chain step"
+                );
+                Ok(done_reply(session_id, response_type, shape, data))
+            }
+            ChainOutcome::Partial {
+                end_block,
+                shape,
+                data,
+                error,
+            } if error.kind != ForwardErrorKind::Failed => {
+                let resume_at = match partial_resume_block(chain, &error.peer_id, end_block) {
+                    Ok(b) => b,
+                    Err(reporter) => {
+                        let msg =
+                            format!("reported its blocks ending at {end_block}, not as planned");
+                        return Err(self.hop_failed(
+                            chain,
+                            failed_peers,
+                            &reporter,
+                            end_block,
+                            &msg,
+                        ));
+                    }
+                };
+                self.fall_back(format!(
+                    "{:?} at block {} ({}): {}",
+                    error.kind,
+                    error.block,
+                    name_of(chain, &error.peer_id),
+                    error.msg
+                ));
+                let resume =
+                    hidden_states_request(session_id, seq_pos, shape, data, req.inner.sample);
+                forward_from(
+                    client,
+                    chain,
+                    total_blocks,
+                    session_id,
+                    seq_pos,
+                    resume,
+                    resume_at,
+                    our_peer_id,
+                    failed_peers,
+                    unreached,
+                    sink,
+                    reputation,
+                    token_ctx,
+                )
+                .await
+            }
+            ChainOutcome::Partial { error, .. } => {
+                Err(self.hop_failed(chain, failed_peers, &error.peer_id, error.block, &error.msg))
+            }
+            ChainOutcome::HopFailed {
+                peer_id,
+                block,
+                msg,
+            } => Err(self.hop_failed(chain, failed_peers, &peer_id, block, &msg)),
+        }
+    }
+
+    /// A hop that may have touched its KV: blacklist it and let the caller
+    /// rebuild the path, exactly as a failed star hop does.
+    fn hop_failed(
+        &mut self,
+        chain: &[BlockServerEntry],
+        failed_peers: &mut HashSet<PeerId>,
+        peer: &[u8],
+        block: u32,
+        msg: &str,
+    ) -> anyhow::Error {
+        let name = name_of(chain, peer);
+        self.fall_back(format!("hop {name} at block {block} failed: {msg}"));
+        if let Ok(id) = PeerId::from_bytes(peer) {
+            failed_peers.insert(id);
+        }
+        ChainPositionError {
+            block: block as usize,
+            message: format!("forward chain: hop {name} at block {block} failed: {msg}"),
+        }
+        .into()
+    }
+}
+
+/// Where star resumes after a `Partial` that blames `next`: the reporter is
+/// the hop planned before it, and its `end_block` must be the one planned.
+/// `Err` names the reporter to blame instead.
+fn partial_resume_block(
+    chain: &[BlockServerEntry],
+    next: &[u8],
+    end_block: u32,
+) -> Result<usize, Vec<u8>> {
+    let i = chain.iter().position(|e| e.peer_id.to_bytes() == next);
+    match i.and_then(|i| Some((&chain[i.checked_sub(1)?], &chain[i]))) {
+        Some((reporter, next)) if reporter.end_block == end_block as usize => Ok(next.start_block),
+        Some((reporter, _)) => Err(reporter.peer_id.to_bytes()),
+        None => Err(next.to_vec()),
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// A completed step's reply, typed as the last hop typed it: the same
+/// response star would return, so `next_token` reads either alike.
+fn done_reply(
+    session_id: u64,
+    response_type: ResponseType,
+    shape: Vec<u32>,
+    data: Vec<u8>,
+) -> InferenceResponse {
+    InferenceResponse {
+        session_id,
+        response_type,
+        shape,
+        data,
+        error: None,
+    }
+}
+
+/// Constant-time, so a forger learns nothing from how fast a guess fails.
+fn same_nonce(a: &[u8; 16], b: &[u8; 16]) -> bool {
+    std::hint::black_box(a.iter().zip(b).fold(0u8, |d, (x, y)| d | (x ^ y))) == 0
+}
+
+/// Whether `caller` may send this outcome for a step routed along `route`:
+/// a result only from the last hop, a failure only about itself or the hop
+/// after it.
+fn may_answer(route: &[Vec<u8>], caller: &[u8], outcome: &ChainOutcome) -> bool {
+    let Some(at) = route.iter().position(|p| p == caller) else {
+        return false;
+    };
+    match outcome {
+        ChainOutcome::Done { .. } => at + 1 == route.len(),
+        ChainOutcome::Partial { error, .. } => route.get(at + 1) == Some(&error.peer_id),
+        ChainOutcome::HopFailed { peer_id, .. } => peer_id == caller,
+    }
+}
+
+/// Hand a delivered result to the step waiting for it.
+fn accept_result(pending: &Pending, nonce: &[u8; 16], caller: &[u8], data: &[u8]) -> ChainAck {
+    let nack = |e: String| ChainAck {
+        accepted: false,
+        error: Some(e),
+    };
+    let r: ChainResult = match rmp_serde::from_slice(data) {
+        Ok(r) => r,
+        Err(e) => return nack(format!("deserialise ChainResult: {e}")),
+    };
+    if !same_nonce(&r.nonce, nonce) {
+        return nack("not this run's result".into());
+    }
+    let mut waiting = lock(pending);
+    match waiting.get(&r.step) {
+        None => return nack(format!("step {} is not waiting", r.step)),
+        Some(w) if w.session_id != r.session_id => {
+            return nack(format!("session {} is not step {}'s", r.session_id, r.step))
+        }
+        Some(w) if !may_answer(&w.route, caller, &r.outcome) => {
+            return nack(format!(
+                "step {} was not routed to answer from here",
+                r.step
+            ))
+        }
+        Some(_) => {}
+    }
+    let Waiting { tx, .. } = waiting
+        .remove(&r.step)
+        .expect("checked above under this lock");
+    let step = r.step;
+    match tx.send(r) {
+        Ok(()) => ChainAck {
+            accepted: true,
+            error: None,
+        },
+        Err(_) => nack(format!("step {step} no longer waiting")),
+    }
+}
+
+fn name_of(chain: &[BlockServerEntry], peer: &[u8]) -> String {
+    chain
+        .iter()
+        .find(|e| e.peer_id.to_bytes() == peer)
+        .map(|e| e.public_name.clone())
+        .unwrap_or_else(|| {
+            PeerId::from_bytes(peer)
+                .map(|p| p.to_base58())
+                .unwrap_or_else(|_| "?".into())
+        })
+}
+
+/// One `HopOk` per hop the step passed through. `ms` is that hop's compute:
+/// in a forward chain the originator times only the whole step.
+fn emit_trace(
+    sink: Option<&dyn ProgressSink>,
+    chain: &[BlockServerEntry],
+    our_peer_id: Option<&PeerId>,
+    trace: &[HopTrace],
+    token_ctx: TokenContext,
+) {
+    for (i, h) in trace.iter().enumerate() {
+        let Some(entry) = chain.iter().find(|e| e.peer_id.to_bytes() == h.peer_id) else {
+            continue;
+        };
+        emit_progress(sink, || {
+            InferenceProgress::new(token_ctx.started, ProgressPhase::HopOk)
+                .peer(entry, our_peer_id == Some(&entry.peer_id))
+                .blocks(h.start_block as usize, h.end_block as usize)
+                .token(token_ctx)
+                .candidate(i)
+                .ms(h.fwd_ms as f64)
+                .ok(true)
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NONCE: [u8; 16] = [5; 16];
+    const ROUTE: [&[u8]; 3] = [&[1], &[2], &[3]];
+
+    fn result(step: u64, session_id: u64, nonce: [u8; 16], outcome: ChainOutcome) -> Vec<u8> {
+        rmp_serde::to_vec_named(&ChainResult {
+            session_id,
+            step,
+            nonce,
+            outcome,
+            trace: vec![],
+        })
+        .unwrap()
+    }
+
+    fn logits() -> ChainOutcome {
+        ChainOutcome::Done {
+            response_type: ResponseType::Logits,
+            shape: vec![1, 1, 1],
+            data: vec![0, 0],
+        }
+    }
+
+    fn wait(pending: &Pending, step: u64, session_id: u64) -> oneshot::Receiver<ChainResult> {
+        let (tx, rx) = oneshot::channel();
+        let route = ROUTE.iter().map(|p| p.to_vec()).collect();
+        lock(pending).insert(
+            step,
+            Waiting {
+                session_id,
+                route,
+                tx,
+            },
+        );
+        rx
+    }
+
+    fn accepted(pending: &Pending, caller: &[u8], data: Vec<u8>) -> bool {
+        accept_result(pending, &NONCE, caller, &data).accepted
+    }
+
+    #[test]
+    fn a_result_reaches_only_the_step_waiting_for_it() {
+        let pending = Pending::default();
+        let mut rx = wait(&pending, 4, 7);
+        let last = ROUTE[2];
+
+        assert!(
+            !accepted(&pending, last, result(4, 8, NONCE, logits())),
+            "another session's"
+        );
+        assert!(
+            !accepted(&pending, last, result(5, 7, NONCE, logits())),
+            "unknown step"
+        );
+        assert!(rx.try_recv().is_err());
+
+        assert!(accepted(&pending, last, result(4, 7, NONCE, logits())));
+        assert_eq!(rx.try_recv().unwrap().step, 4);
+        assert!(
+            !accepted(&pending, last, result(4, 7, NONCE, logits())),
+            "a replay"
+        );
+
+        let mut rx = wait(&pending, 5, 9);
+        assert!(
+            accepted(&pending, last, result(5, 9, NONCE, logits())),
+            "a retry's fresh session"
+        );
+        assert_eq!(rx.try_recv().unwrap().step, 5);
+    }
+
+    /// Keeps what the last hop delivers home; accepts it.
+    struct Home(Mutex<Vec<Vec<u8>>>);
+
+    impl serve::Unary for Home {
+        fn call<'a>(
+            &'a self,
+            _peer: &'a [u8],
+            _proto: &'a str,
+            data: Vec<u8>,
+        ) -> futures::future::BoxFuture<'a, Result<Vec<u8>>> {
+            lock(&self.0).push(data);
+            Box::pin(async {
+                Ok(rmp_serde::to_vec_named(&ChainAck {
+                    accepted: true,
+                    error: None,
+                })?)
+            })
+        }
+    }
+
+    const GREEDY: crate::block_rpc::SamplingParams = crate::block_rpc::SamplingParams {
+        temperature: 1.0,
+        top_k: 0,
+        top_p: 1.0,
+    };
+
+    /// A sampling decode step's last hop replies `reply`; what the originator
+    /// returns for it, as `step` does.
+    async fn chained_home(reply: InferenceResponse) -> InferenceResponse {
+        let origin = PeerId::random().to_bytes();
+        let req = ChainRequest {
+            inner: InferenceRequest {
+                session_id: 7,
+                seq_pos: 5,
+                payload_type: crate::block_rpc::PayloadType::HiddenStates,
+                shape: vec![1, 1, 2],
+                data: vec![0; 4],
+                sample: Some(GREEDY),
+            },
+            start_block: 16,
+            route: vec![],
+            origin,
+            return_proto: result_proto(1),
+            step: 4,
+            nonce: NONCE,
+            trace: vec![],
+        };
+        let home = Home(Mutex::default());
+        serve::finish_hop(&home, ROUTE[2], (16, 32), req, Ok(reply), 1.0).await;
+        let pending = Pending::default();
+        let mut rx = wait(&pending, 4, 7);
+        let delivered = lock(&home.0).pop().expect("a result was delivered");
+        assert!(accepted(&pending, ROUTE[2], delivered));
+        match rx.try_recv().unwrap().outcome {
+            ChainOutcome::Done {
+                response_type,
+                shape,
+                data,
+            } => done_reply(7, response_type, shape, data),
+            o => panic!("{o:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sampled_token_comes_home_as_a_token_id() {
+        let (shape, data) = crate::block_rpc::token_ids_to_bytes(&[42]);
+        let resp = chained_home(InferenceResponse {
+            session_id: 7,
+            response_type: ResponseType::TokenId,
+            shape,
+            data,
+            error: None,
+        })
+        .await;
+        assert_eq!(resp.response_type, ResponseType::TokenId);
+        assert_eq!(crate::block_rpc::next_token(&resp, GREEDY).unwrap(), 42);
+    }
+
+    /// A last hop may ignore `sample` (an older server, or a synthetic shard)
+    /// and reply logits; the originator then samples them itself.
+    #[tokio::test]
+    async fn logits_still_come_home_when_sample_was_asked() {
+        let mut v = vec![0f32; 16];
+        v[9] = 9.0;
+        let t = candle_core::Tensor::from_vec(v, (1, 1, 16), &candle_core::Device::Cpu).unwrap();
+        let (shape, data) = crate::block_rpc::tensor_to_f16_bytes(&t).unwrap();
+        let resp = chained_home(InferenceResponse {
+            session_id: 7,
+            response_type: ResponseType::Logits,
+            shape,
+            data,
+            error: None,
+        })
+        .await;
+        assert_eq!(resp.response_type, ResponseType::Logits);
+        assert_eq!(crate::block_rpc::next_token(&resp, GREEDY).unwrap(), 9);
+    }
+
+    fn entry(start: usize, end: usize) -> BlockServerEntry {
+        BlockServerEntry {
+            peer_id: PeerId::random(),
+            start_block: start,
+            end_block: end,
+            public_name: String::new(),
+            throughput: 1.0,
+            trust_score: None,
+            lease_v1: false,
+            dial_addrs: Vec::new(),
+        }
+    }
+
+    /// A `Partial`'s `end_block` comes from the reporter; star must not
+    /// resume anywhere but where the plan has the next hop start.
+    #[test]
+    fn a_partial_resumes_only_at_the_planned_block() {
+        let chain = [entry(0, 8), entry(8, 16), entry(16, 32)];
+        let id = |i: usize| chain[i].peer_id.to_bytes();
+        assert_eq!(partial_resume_block(&chain, &id(2), 16), Ok(16));
+        assert_eq!(
+            partial_resume_block(&chain, &id(2), 24),
+            Err(id(1)),
+            "skipping blocks blames the reporter"
+        );
+        assert_eq!(partial_resume_block(&chain, &id(2), 8), Err(id(1)));
+        assert_eq!(partial_resume_block(&chain, &id(0), 0), Err(id(0)));
+    }
+
+    #[test]
+    fn only_the_route_with_the_runs_nonce_may_answer() {
+        let pending = Pending::default();
+        let mut rx = wait(&pending, 0, 7);
+
+        assert!(
+            !accepted(&pending, ROUTE[2], result(0, 7, [6; 16], logits())),
+            "wrong nonce"
+        );
+        assert!(
+            !accepted(&pending, &[9], result(0, 7, NONCE, logits())),
+            "a peer off the route"
+        );
+        assert!(
+            !accepted(&pending, ROUTE[1], result(0, 7, NONCE, logits())),
+            "logits from a middle hop"
+        );
+        let blame = |peer: &[u8]| ChainOutcome::Partial {
+            end_block: 8,
+            shape: vec![],
+            data: vec![],
+            error: ForwardError {
+                peer_id: peer.to_vec(),
+                block: 8,
+                kind: ForwardErrorKind::Failed,
+                msg: String::new(),
+            },
+        };
+        assert!(
+            !accepted(&pending, ROUTE[0], result(0, 7, NONCE, blame(ROUTE[2]))),
+            "blaming a hop that is not next"
+        );
+        let failed = |peer: &[u8]| ChainOutcome::HopFailed {
+            peer_id: peer.to_vec(),
+            block: 0,
+            msg: String::new(),
+        };
+        assert!(
+            !accepted(&pending, ROUTE[0], result(0, 7, NONCE, failed(ROUTE[1]))),
+            "a hop failure reported by another"
+        );
+        assert!(rx.try_recv().is_err());
+
+        assert!(accepted(
+            &pending,
+            ROUTE[0],
+            result(0, 7, NONCE, blame(ROUTE[1]))
+        ));
+        assert!(rx.try_recv().is_ok());
+    }
+}

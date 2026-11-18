@@ -434,6 +434,8 @@ impl ShardBlock {
 struct Session {
     /// One `Option<(k_cache, v_cache)>` per block in the shard.
     kv: Vec<Option<(Tensor, Tensor)>>,
+    /// The position after the last step taken.
+    next_pos: usize,
     last_access: Instant,
 }
 
@@ -441,9 +443,40 @@ impl Session {
     fn new(num_blocks: usize) -> Self {
         Self {
             kv: vec![None; num_blocks],
+            next_pos: 0,
             last_access: Instant::now(),
         }
     }
+
+    fn advance(&mut self, seq_pos: usize, seq_len: usize) -> InferenceResult<()> {
+        advance_kv(&mut self.next_pos, seq_pos, seq_len)
+    }
+}
+
+/// In the refusal of a step the session's KV already holds. A client that
+/// sees it knows this server ran the step, e.g. a resend after a lost reply.
+pub const STEP_ALREADY_IN_KV: &str = "is already in this session's KV";
+
+/// Take a step of `seq_len` tokens at `seq_pos`, refusing one the cache
+/// already holds (its KV would be appended twice) and, once the session holds
+/// anything, one past its end (every later real step would then be refused).
+pub(crate) fn advance_kv(
+    next_pos: &mut usize,
+    seq_pos: usize,
+    seq_len: usize,
+) -> InferenceResult<()> {
+    if seq_pos < *next_pos {
+        return Err(InferenceError::InferenceFailed(format!(
+            "step at position {seq_pos} {STEP_ALREADY_IN_KV} (next is {next_pos})"
+        )));
+    }
+    if *next_pos > 0 && seq_pos > *next_pos {
+        return Err(InferenceError::InferenceFailed(format!(
+            "step at position {seq_pos} is past the end of this session's KV (next is {next_pos})"
+        )));
+    }
+    *next_pos = seq_pos + seq_len;
+    Ok(())
 }
 
 // ── TransformerShard ──────────────────────────────────────────────────────────
@@ -653,6 +686,7 @@ impl TransformerShard {
             .entry(session_id)
             .or_insert_with(|| Session::new(self.blocks.len()));
         session.last_access = Instant::now();
+        session.advance(seq_pos, x.dim(1)?)?;
 
         for (local_idx, block) in self.blocks.iter().enumerate() {
             x = block.forward(&x, seq_pos, &mut session.kv[local_idx], &self.rope)?;
@@ -832,6 +866,34 @@ impl TransformerShard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_step_the_kv_already_holds_is_refused() {
+        let mut s = Session::new(1);
+        s.advance(0, 5).unwrap();
+        s.advance(5, 1).unwrap();
+        let replay = s.advance(5, 1).unwrap_err().to_string();
+        assert!(
+            replay.contains(STEP_ALREADY_IN_KV),
+            "a replayed decode step: {replay}"
+        );
+        assert!(s.advance(0, 7).is_err(), "a replayed prefill");
+        s.advance(6, 1).unwrap();
+        // A gap in a new session is not a double-apply: a server that lost
+        // the session keeps serving it, as it always has.
+        Session::new(1).advance(9, 1).unwrap();
+    }
+
+    /// A step past the end of a session that holds KV would push its next
+    /// position ahead, so every later real step would be refused.
+    #[test]
+    fn a_step_past_the_end_of_the_kv_is_refused() {
+        let mut s = Session::new(1);
+        s.advance(0, 5).unwrap();
+        assert!(s.advance(1_000_000, 1).is_err(), "far past the end");
+        assert!(s.advance(6, 1).is_err(), "one past the end");
+        s.advance(5, 1).unwrap();
+    }
 
     #[test]
     fn rope_cache_shape() {

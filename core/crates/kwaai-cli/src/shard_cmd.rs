@@ -32,8 +32,8 @@ use tokio::sync::RwLock;
 
 use crate::announce::decode_server_info_ext;
 use crate::block_rpc::{
-    call_block_forward, f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes,
-    InferenceRequest, LoadedShard, PayloadType, ShardCell,
+    f16_bytes_to_tensor, make_block_rpc_handler, token_ids_to_bytes, InferenceRequest, LoadedShard,
+    PayloadType, ShardCell,
 };
 use crate::cli::{
     CircuitAction, CircuitCloseArgs, CircuitCreateArgs, ShardAction, ShardArgs, ShardChainArgs,
@@ -42,7 +42,9 @@ use crate::cli::{
 use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
-use crate::reputation::{now_secs, PeerObservation, ReputationStore};
+use crate::reputation::ReputationStore;
+pub use crate::routing::{ChainPositionError, HopTiming};
+use crate::routing::{RouteMode, Router};
 
 // ── Entrypoint ────────────────────────────────────────────────────────────────
 
@@ -530,6 +532,19 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         .add_unary_handler(crate::block_rpc::INFERENCE_PROTO, handler, false)
         .await
         .context("Failed to register inference handler with p2pd")?;
+    // Not fatal: without it, chain originators fall back to star.
+    if cfg.shard.forward_chain.serve {
+        if let Err(e) = crate::routing::forward_chain::serve::register_chain_handler(
+            &client,
+            &daemon_addr,
+            shard_cell.clone(),
+            device.clone(),
+        )
+        .await
+        {
+            print_warning(&format!("Forward chain not served: {e:#}"));
+        }
+    }
 
     // Capacity Lease admission gate for this shard-server process — see the
     // matching construction in node.rs's run_node() for the full rationale
@@ -1471,6 +1486,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
+    let mut router = Router::open(RouteMode::resolve(args.route, &cfg), &our_peer_id).await;
     let max_tokens = args.max_tokens;
     let sampling = crate::block_rpc::SamplingParams {
         temperature: args.temperature,
@@ -1520,6 +1536,9 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
 
     let show_stats = args.stats;
     let mut token_times_ms: Vec<f64> = Vec::new();
+    // Decode steps that re-prefilled after a failed hop: kept out of decode stats.
+    let mut reprefill_ms: Vec<f64> = Vec::new();
+    let mut session_replaced = false;
     // Per-token hop breakdowns: outer index = token, inner = hops for that token.
     let mut all_hop_timings: Vec<Vec<HopTiming>> = Vec::new();
     let generation_start = std::time::Instant::now();
@@ -1536,11 +1555,12 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let hop_sink = HopTimingSink::new();
     let sink_ref: Option<&dyn ProgressSink> = show_stats.then_some(&hop_sink as &dyn ProgressSink);
     let mut token_start = std::time::Instant::now();
+    let mut reprefilled = false;
 
     loop {
         // While prefilling, a step is one chunk of the prompt (#301); a token
         // is sampled only once the whole prompt is in every hop's KV.
-        let mut step = cur.step();
+        let step = cur.step();
         let (shape, data) = token_ids_to_bytes(&step);
         let request = InferenceRequest {
             session_id: cur.session_id,
@@ -1554,42 +1574,41 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         };
 
         // Forward through the pinned path.
-        let mut token_ctx = TokenContext::new(
+        let token_ctx = TokenContext::new(
             generated_ids.len(),
-            generated_ids.is_empty(),
+            cur.prefilling(),
             generation_start,
             cur.session_id,
             cur.seq_pos as u32,
         );
-        let logits_bytes = match forward_through_chain(
-            &mut client,
-            &pinned_path,
-            total_blocks,
-            cur.session_id,
-            cur.seq_pos as u32,
-            request,
-            Some(&our_peer_id),
-            &mut failed_peers,
-            &unreached,
-            sink_ref,
-            reputation.clone(),
-            token_ctx,
-        )
-        .await
+        let logits_bytes = match router
+            .forward(
+                &mut client,
+                &pinned_path,
+                total_blocks,
+                cur.session_id,
+                cur.seq_pos as u32,
+                request,
+                Some(&our_peer_id),
+                &mut failed_peers,
+                &unreached,
+                sink_ref,
+                reputation.clone(),
+                token_ctx,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
                 // Move to a clean line before printing the warning so it doesn't
                 // appear inline with the last-printed token.
-                let prefilling = generated_ids.is_empty();
-                if !prefilling {
+                if !generated_ids.is_empty() {
                     println!();
                 }
-                print_warning(&if prefilling {
-                    format!("{e:#} — rebuilding path and restarting the prompt")
-                } else {
-                    format!("{e:#} — rebuilding path (KV-cache lost, output may degrade)")
-                });
+                print_warning(&format!(
+                    "{e:#} — rebuilding path and re-prefilling {} token(s) in a new session",
+                    token_ids.len() + generated_ids.len()
+                ));
                 unreached = unreached_peers(&mut client, &chain, &our_peer_id).await;
                 pinned_path =
                     build_pinned_path_ranked(&chain, total_blocks, &failed_peers, &unreached)?;
@@ -1597,51 +1616,29 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 // stats table reports only the path that actually produced the
                 // token — matching the pre-sink `token_hops.clear()`.
                 let _ = hop_sink.take();
-                if prefilling {
-                    cur.restart().map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
+                cur.restart(&generated_ids)
+                    .map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
+                reprefilled = !generated_ids.is_empty();
+                if args.session_id.is_some() && !session_replaced {
+                    print_warning(&format!("--session-id replaced by {}", cur.session_id));
+                    session_replaced = true;
+                } else {
                     print_info(&format!("Session ID:   {}", cur.session_id));
-                    step = cur.step();
-                    token_ctx = TokenContext::new(0, true, generation_start, cur.session_id, 0);
                 }
-                // Retry this step with the new path
-                let (shape2, data2) = token_ids_to_bytes(&step);
-                let retry_req = InferenceRequest {
-                    session_id: cur.session_id,
-                    seq_pos: cur.seq_pos as u32,
-                    payload_type: PayloadType::TokenIds,
-                    shape: shape2,
-                    data: data2,
-                    sample: Some(sampling),
-                };
-                let result = forward_through_chain(
-                    &mut client,
-                    &pinned_path,
-                    total_blocks,
-                    cur.session_id,
-                    cur.seq_pos as u32,
-                    retry_req,
-                    Some(&our_peer_id),
-                    &mut failed_peers,
-                    &unreached,
-                    sink_ref,
-                    reputation.clone(),
-                    token_ctx,
-                )
-                .await?;
                 // Re-indent so the resumed token stream starts cleanly.
                 if !generated_ids.is_empty() {
                     use std::io::Write as _;
                     print!("  ");
                     std::io::stdout().flush().ok();
                 }
-                result
+                continue;
             }
         };
         if !cur.advance(step.len()) {
             continue; // more of the prompt to prefill
         }
 
-        if show_stats {
+        if show_stats && !reprefilled {
             let token_hops = hop_sink.take();
             if !token_hops.is_empty() {
                 all_hop_timings.push(token_hops);
@@ -1675,7 +1672,11 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         }
 
         let token_ms = token_start.elapsed().as_secs_f64() * 1000.0;
-        token_times_ms.push(token_ms);
+        if reprefilled {
+            reprefill_ms.push(token_ms);
+        } else {
+            token_times_ms.push(token_ms);
+        }
 
         generated_ids.push(next_id);
 
@@ -1691,6 +1692,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
         // Next decode step: send just the new token
         cur.push(next_id);
         token_start = std::time::Instant::now();
+        reprefilled = false;
     }
 
     let total_secs = generation_start.elapsed().as_secs_f64();
@@ -1740,9 +1742,17 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
                 decode_avg_ms, decode_min, decode_max
             );
         }
+        if !reprefill_ms.is_empty() {
+            println!(
+                "  Re-prefills:   {:>8}  ({:.0}ms, not in decode avg)",
+                reprefill_ms.len(),
+                reprefill_ms.iter().sum::<f64>()
+            );
+        }
         println!("  Total:         {:>8.1}s", total_secs);
         println!("  Throughput:    {:>8.1} tok/s", tps);
         println!("  Hops:          {:>8}", pinned_path.len());
+        println!("  Route:         {}", router.summary());
 
         // Per-hop breakdown: average elapsed across all decode tokens (skip prefill at index 0).
         if !all_hop_timings.is_empty() {
@@ -1861,8 +1871,8 @@ pub enum ProgressPhase {
 pub enum HopFailureKind {
     /// Peer has no inference handler registered. Blacklisted for the run.
     NoHandler,
-    /// Stream reset / early eof / connection closed. Not blacklisted — the
-    /// peer may recover and is retried on the next token.
+    /// Stream reset / early eof / connection closed, or a resent step the
+    /// peer already ran. Not blacklisted — the peer stays eligible for the rebuilt path.
     Transient,
     /// Exceeded the per-hop deadline. Blacklisted for the run.
     Timeout,
@@ -2450,6 +2460,7 @@ async fn run_streaming_inner(
     }
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = rand_session_id();
+    let mut router = Router::open(RouteMode::resolve(None, &cfg), &our_peer_id).await;
 
     // Best-effort dial of every server in the chain (matches CLI).
     for entry in &chain {
@@ -2505,10 +2516,10 @@ async fn run_streaming_inner(
     loop {
         // While prefilling, a step is one chunk of the prompt (#301); a token
         // is sampled only once the whole prompt is in every hop's KV.
-        let mut step = cur.step();
-        let mut token_ctx = TokenContext::new(
+        let step = cur.step();
+        let token_ctx = TokenContext::new(
             generated_ids.len(),
-            generated_ids.is_empty(),
+            cur.prefilling(),
             run_started,
             cur.session_id,
             cur.seq_pos as u32,
@@ -2525,36 +2536,35 @@ async fn run_streaming_inner(
             sample: Some(sampling),
         };
 
-        let logits_bytes = match forward_through_chain(
-            &mut client,
-            &pinned_path,
-            total_blocks,
-            cur.session_id,
-            cur.seq_pos as u32,
-            request,
-            Some(&our_peer_id),
-            &mut failed_peers,
-            &unreached,
-            sink,
-            reputation.clone(),
-            token_ctx,
-        )
-        .await
+        let logits_bytes = match router
+            .forward(
+                &mut client,
+                &pinned_path,
+                total_blocks,
+                cur.session_id,
+                cur.seq_pos as u32,
+                request,
+                Some(&our_peer_id),
+                &mut failed_peers,
+                &unreached,
+                sink,
+                reputation.clone(),
+                token_ctx,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
-                // Rebuild path on transient failure and retry once,
-                // matching cmd_shard_run's recovery behaviour.
-                let prefilling = generated_ids.is_empty();
+                // Rebuild the path and re-prefill in a fresh session, matching
+                // cmd_shard_run's recovery behaviour.
                 emit_progress(sink, || {
                     let mut ev = InferenceProgress::new(run_started, ProgressPhase::PathRebuild)
                         .token(token_ctx)
                         .attempt(path_attempt + 1)
-                        .msg(if prefilling {
-                            format!("{e:#} — rebuilding path and restarting the prompt")
-                        } else {
-                            format!("{e:#} — rebuilding path (KV-cache lost, output may degrade)")
-                        });
+                        .msg(format!(
+                            "{e:#} — rebuilding path and re-prefilling {} token(s) in a new session",
+                            token_ids.len() + generated_ids.len()
+                        ));
                     ev.block_start = e.downcast_ref::<ChainPositionError>().map(|c| c.block);
                     ev
                 });
@@ -2569,35 +2579,9 @@ async fn run_streaming_inner(
                         .attempt(path_attempt)
                         .msg(format!("{} hop(s)", pinned_path.len()))
                 });
-                if prefilling {
-                    cur.restart().map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
-                    step = cur.step();
-                    token_ctx = TokenContext::new(0, true, run_started, cur.session_id, 0);
-                }
-                let (shape2, data2) = token_ids_to_bytes(&step);
-                let retry_req = InferenceRequest {
-                    session_id: cur.session_id,
-                    seq_pos: cur.seq_pos as u32,
-                    payload_type: PayloadType::TokenIds,
-                    shape: shape2,
-                    data: data2,
-                    sample: Some(sampling),
-                };
-                forward_through_chain(
-                    &mut client,
-                    &pinned_path,
-                    total_blocks,
-                    cur.session_id,
-                    cur.seq_pos as u32,
-                    retry_req,
-                    Some(&our_peer_id),
-                    &mut failed_peers,
-                    &unreached,
-                    sink,
-                    reputation.clone(),
-                    token_ctx,
-                )
-                .await?
+                cur.restart(&generated_ids)
+                    .map_err(|r| anyhow::anyhow!("{e:#}; {r}"))?;
+                continue;
             }
         };
         if !cur.advance(step.len()) {
@@ -3927,293 +3911,6 @@ async fn cmd_circuit_close(args: CircuitCloseArgs) -> Result<()> {
     Ok(())
 }
 
-// ── Forward through chain ─────────────────────────────────────────────────────
-
-/// Per-hop timing record: (peer display name, start_block, end_block, elapsed_ms).
-pub type HopTiming = (String, usize, usize, f64);
-
-/// Marker in the error a hop timeout produces, so the failure classifier can
-/// tell it apart from an error the peer itself reported.
-const HOP_TIMEOUT_MARKER: &str = "hop timeout after";
-
-/// Classify a hop failure from its error text.
-///
-/// Split out of the dispatch loop so the policy — which failures blacklist a
-/// peer for the rest of the run and which leave it eligible — is testable
-/// without a live peer.
-pub fn classify_hop_failure(err: &str) -> HopFailureKind {
-    if err.contains("protocols not supported") {
-        HopFailureKind::NoHandler
-    } else if err.contains(HOP_TIMEOUT_MARKER) {
-        HopFailureKind::Timeout
-    } else if err.contains("stream reset")
-        || err.contains("early eof")
-        || err.contains("connection closed")
-    {
-        HopFailureKind::Transient
-    } else {
-        HopFailureKind::Other
-    }
-}
-
-/// The entries of `chain` that may serve the hop at `pos`, most preferred
-/// first. Only entries starting exactly at `pos` qualify — one starting
-/// earlier would re-apply layers, since a request carries no block range.
-/// Handed a pinned path that is the planned entry alone; a wider chain ranks
-/// its alternatives reached-first, then by span, trust, and self-dispatch.
-pub fn hop_candidates<'a>(
-    chain: &'a [BlockServerEntry],
-    pos: usize,
-    failed_peers: &std::collections::HashSet<PeerId>,
-    unreached: &std::collections::HashSet<PeerId>,
-    our_peer_id: Option<&PeerId>,
-) -> Vec<&'a BlockServerEntry> {
-    let mut candidates: Vec<&BlockServerEntry> = chain
-        .iter()
-        .filter(|e| e.start_block == pos && e.end_block > pos)
-        .filter(|e| !failed_peers.contains(&e.peer_id))
-        .collect();
-    candidates.sort_by(|a, b| {
-        unreached
-            .contains(&a.peer_id)
-            .cmp(&unreached.contains(&b.peer_id))
-            .then_with(|| b.end_block.cmp(&a.end_block))
-            .then_with(|| {
-                b.trust_score
-                    .partial_cmp(&a.trust_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .then_with(|| {
-                let a_self = our_peer_id == Some(&a.peer_id);
-                let b_self = our_peer_id == Some(&b.peer_id);
-                b_self.cmp(&a_self)
-            })
-    });
-    candidates
-}
-
-/// A [`forward_through_chain`] failure at a block position no candidate could
-/// serve. Displays as its message, so callers formatting the error see no change.
-#[derive(Debug)]
-pub struct ChainPositionError {
-    pub block: usize,
-    message: String,
-}
-
-impl std::fmt::Display for ChainPositionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ChainPositionError {}
-
-/// Send an `InferenceRequest` to the first peer in `chain`, routing the
-/// activation tensor through each subsequent hop until the last returns
-/// logits. `chain` is normally a pinned path, which is followed as planned;
-/// see [`hop_candidates`] for how a hop is chosen and why a failed hop makes
-/// the caller rebuild the path rather than this loop skipping ahead.
-#[allow(clippy::too_many_arguments)]
-pub async fn forward_through_chain(
-    client: &mut P2PClient,
-    chain: &[BlockServerEntry],
-    total_blocks: usize,
-    session_id: u64,
-    seq_pos: u32,
-    first_request: InferenceRequest,
-    our_peer_id: Option<&PeerId>,
-    failed_peers: &mut std::collections::HashSet<PeerId>,
-    unreached: &std::collections::HashSet<PeerId>,
-    sink: Option<&dyn ProgressSink>,
-    reputation: Option<Arc<std::sync::Mutex<ReputationStore>>>,
-    token_ctx: TokenContext,
-) -> Result<crate::block_rpc::InferenceResponse> {
-    use crate::block_rpc::InferenceResponse;
-
-    let mut request = first_request;
-    let mut response: Option<InferenceResponse> = None;
-    let mut pos = 0;
-
-    while pos < total_blocks {
-        let candidates = hop_candidates(chain, pos, failed_peers, unreached, our_peer_id);
-
-        if candidates.is_empty() {
-            return Err(ChainPositionError {
-                block: pos,
-                message: format!("No server covers block {pos} — chain has a gap (all candidates failed or blacklisted)"),
-            }
-            .into());
-        }
-
-        // Per-hop deadline: 5 minutes is generous enough for slow CPU prefill of
-        // large models while still eventually unblocking a hung/crashed peer.
-        const HOP_TIMEOUT: Duration = Duration::from_secs(300);
-
-        let mut succeeded = false;
-        for (cand_idx, candidate) in candidates.iter().enumerate() {
-            // Our own shard is called like any other: the daemon loops a
-            // call to its own peer id back to the local handler.
-            let is_self = our_peer_id == Some(&candidate.peer_id);
-            emit_progress(sink, || {
-                InferenceProgress::new(token_ctx.started, ProgressPhase::HopStart)
-                    .peer(candidate, is_self)
-                    .blocks(candidate.start_block, candidate.end_block)
-                    .token(token_ctx)
-                    .candidate(cand_idx)
-            });
-            let hop_start = std::time::Instant::now();
-            let result = tokio::time::timeout(HOP_TIMEOUT, async {
-                call_block_forward(client, &candidate.peer_id, &request).await
-            })
-            .await
-            .unwrap_or_else(|_| {
-                Err(anyhow::anyhow!(
-                    "{HOP_TIMEOUT_MARKER} {}s — peer unresponsive or compute too slow",
-                    HOP_TIMEOUT.as_secs()
-                ))
-            });
-            let hop_ms = hop_start.elapsed().as_secs_f64() * 1000.0;
-
-            match result {
-                Ok(resp) => {
-                    // Record successful hop in local reputation store.
-                    if let Some(ref rep) = reputation {
-                        if let Ok(mut store) = rep.lock() {
-                            store.record(
-                                &candidate.peer_id.to_base58(),
-                                &candidate.public_name,
-                                PeerObservation {
-                                    timestamp_secs: now_secs(),
-                                    latency_ms: hop_ms,
-                                    success: true,
-                                    observed_tps: None,
-                                    claimed_tps: None,
-                                    lease_outcome: None,
-                                },
-                            );
-                        }
-                    }
-                    emit_progress(sink, || {
-                        InferenceProgress::new(token_ctx.started, ProgressPhase::HopOk)
-                            .peer(candidate, is_self)
-                            .blocks(candidate.start_block, candidate.end_block)
-                            .token(token_ctx)
-                            .candidate(cand_idx)
-                            .ms(hop_ms)
-                            .ok(true)
-                    });
-                    pos = candidate.end_block;
-                    if pos < total_blocks {
-                        request = InferenceRequest {
-                            session_id,
-                            seq_pos,
-                            payload_type: PayloadType::HiddenStates,
-                            shape: resp.shape.clone(),
-                            data: resp.data.clone(),
-                            // Only the last node acts on it; middle nodes ignore it.
-                            sample: request.sample,
-                        };
-                    }
-                    response = Some(resp);
-                    succeeded = true;
-                    break;
-                }
-                Err(e) => {
-                    // Record failed hop in local reputation store.
-                    if let Some(ref rep) = reputation {
-                        if let Ok(mut store) = rep.lock() {
-                            store.record(
-                                &candidate.peer_id.to_base58(),
-                                &candidate.public_name,
-                                PeerObservation {
-                                    timestamp_secs: now_secs(),
-                                    latency_ms: hop_ms,
-                                    success: false,
-                                    observed_tps: None,
-                                    claimed_tps: None,
-                                    lease_outcome: None,
-                                },
-                            );
-                        }
-                    }
-                    let err_str = format!("{e:#}");
-                    let kind = classify_hop_failure(&err_str);
-                    emit_progress(sink, || {
-                        InferenceProgress::new(token_ctx.started, ProgressPhase::HopFailed)
-                            .peer(candidate, is_self)
-                            .blocks(candidate.start_block, candidate.end_block)
-                            .token(token_ctx)
-                            .candidate(cand_idx)
-                            .ms(hop_ms)
-                            .failure(kind)
-                            .msg(err_str.clone())
-                    });
-                    // Protocol negotiation failures mean the peer has no inference
-                    // handler registered — blacklist for the session.
-                    // Transient stream errors are NOT blacklisted: the peer may recover.
-                    match kind {
-                        HopFailureKind::NoHandler => {
-                            failed_peers.insert(candidate.peer_id);
-                            print_warning(&format!(
-                                "Peer {} ({}) has no inference handler — skipping for this session",
-                                candidate
-                                    .peer_id
-                                    .to_base58()
-                                    .chars()
-                                    .take(12)
-                                    .collect::<String>(),
-                                candidate.public_name,
-                            ));
-                        }
-                        HopFailureKind::Transient => {
-                            // Transient: warn but keep peer eligible for future tokens.
-                            print_warning(&format!(
-                                "Peer {} ({}) transient error (not blacklisted): {e:#}",
-                                candidate
-                                    .peer_id
-                                    .to_base58()
-                                    .chars()
-                                    .take(12)
-                                    .collect::<String>(),
-                                candidate.public_name,
-                            ));
-                        }
-                        // A timeout is a peer that never answered, so it is
-                        // blacklisted like any other hard failure — it is split
-                        // out only so telemetry can name it.
-                        HopFailureKind::Timeout | HopFailureKind::Other => {
-                            failed_peers.insert(candidate.peer_id);
-                            print_warning(&format!(
-                                "Peer {} ({}) failed: {e:#}",
-                                candidate
-                                    .peer_id
-                                    .to_base58()
-                                    .chars()
-                                    .take(12)
-                                    .collect::<String>(),
-                                candidate.public_name,
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-
-        if !succeeded {
-            return Err(ChainPositionError {
-                block: pos,
-                message: format!(
-                    "All {} candidate(s) for block {pos} failed",
-                    candidates.len()
-                ),
-            }
-            .into());
-        }
-    }
-
-    response.ok_or_else(|| anyhow::anyhow!("Empty chain — no peers to forward through"))
-}
-
 // ── Bypass generation loop (reuse shard serve's loaded model) ────────────────
 
 /// Run the `--local` generation loop through the running `shard serve` TCP bypass
@@ -4658,7 +4355,7 @@ pub(crate) fn prefill_chunk_tokens_for_model(model_dir: &Path) -> usize {
     prefill_chunk_tokens(hidden)
 }
 
-/// Times a generation loop may start its prompt over before giving up.
+/// Times a generation loop may start over without sampling a token in between.
 const MAX_PREFILL_RESTARTS: usize = 2;
 
 /// A generation loop's place in its token stream, shared by the three chain
@@ -4673,7 +4370,9 @@ pub(crate) struct PrefillCursor {
     pub(crate) session_id: u64,
     /// Position of the first pending token.
     pub(crate) seq_pos: usize,
+    /// Restarts since a token was last sampled.
     restarts: usize,
+    decoding: bool,
 }
 
 impl PrefillCursor {
@@ -4685,6 +4384,7 @@ impl PrefillCursor {
             session_id,
             seq_pos: 0,
             restarts: 0,
+            decoding: false,
         }
     }
 
@@ -4694,42 +4394,54 @@ impl PrefillCursor {
         self.pending[..self.pending.len().min(self.chunk)].to_vec()
     }
 
+    /// Whether the next step is part of a (re-)prefill rather than a decode step.
+    pub(crate) fn prefilling(&self) -> bool {
+        !self.decoding
+    }
+
     /// Record that the first `sent` pending tokens reached every hop. Returns
     /// whether a token can be sampled now, i.e. nothing is left to send.
     pub(crate) fn advance(&mut self, sent: usize) -> bool {
         self.pending.drain(..sent);
         self.seq_pos += sent;
+        if self.pending.is_empty() {
+            self.restarts = 0;
+        }
         self.pending.is_empty()
     }
 
     /// Queue a sampled token for the next decode step.
     pub(crate) fn push(&mut self, token: u32) {
         self.pending = vec![token];
+        self.decoding = true;
     }
 
-    /// Start the prompt over in a new session after a hop failed mid-prefill.
-    /// Hops that survived the path rebuild already hold the chunks sent so
-    /// far, and resending them in the same session would append them twice.
-    /// A transient failure does not blacklist its peer, so the same hop can
-    /// fail again: after [`MAX_PREFILL_RESTARTS`] this gives up.
-    pub(crate) fn restart(&mut self) -> Result<()> {
+    /// Start over in a new session after a hop failed: re-prefill the prompt
+    /// plus every token `generated` so far. Hops that survived the path
+    /// rebuild already hold what was sent, and a replacement holds none of it,
+    /// so the old session's KV is unusable. A transient failure does not
+    /// blacklist its peer, so the same hop can fail again: after
+    /// [`MAX_PREFILL_RESTARTS`] without a sampled token this gives up.
+    pub(crate) fn restart(&mut self, generated: &[u32]) -> Result<()> {
         if self.restarts == MAX_PREFILL_RESTARTS {
-            bail!("prompt failed to prefill after {MAX_PREFILL_RESTARTS} restarts");
+            bail!("gave up after {MAX_PREFILL_RESTARTS} restarts without a token");
         }
         self.restarts += 1;
         self.session_id = rand_session_id();
         self.seq_pos = 0;
-        self.pending = self.prompt.clone();
+        self.pending = self.prompt.iter().chain(generated).copied().collect();
+        self.decoding = false;
         Ok(())
     }
 }
 
-/// Generate a random u64 session ID using splitmix64 over (nanos ⊕ pid).
-///
-/// Using raw `as_nanos() as u64` truncates a u128 and collides if called
-/// twice within the same nanosecond. Mixing in the process ID + splitmix64
-/// gives adequate entropy without adding a dependency.
+/// A random session ID. Servers key KV by it, so it comes from the OS CSPRNG;
+/// splitmix64 over (nanos ⊕ pid) only if that fails.
 pub(crate) fn rand_session_id() -> u64 {
+    let mut b = [0u8; 8];
+    if getrandom::getrandom(&mut b).is_ok() {
+        return u64::from_le_bytes(b);
+    }
     use std::time::{SystemTime, UNIX_EPOCH};
     let ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -4824,6 +4536,7 @@ mod tests {
 
     use super::*;
     use crate::announce::DHTServerInfo;
+    use crate::routing::{classify_hop_failure, hop_candidates};
     use libp2p::Multiaddr;
 
     fn server(peer_id: PeerId, start: usize, end: usize) -> BlockServerEntry {
@@ -4906,11 +4619,23 @@ mod tests {
         for _ in 0..MAX_PREFILL_RESTARTS {
             assert!(!cur.advance(cur.step().len())); // one chunk lands, then a hop fails
             let old = cur.session_id;
-            cur.restart().unwrap();
+            cur.restart(&[]).unwrap();
             assert_ne!(cur.session_id, old);
             assert_eq!((cur.seq_pos, cur.step()), (0, prompt[..256].to_vec()));
         }
-        assert!(cur.restart().is_err());
+        assert!(cur.restart(&[]).is_err());
+    }
+
+    /// The cap counts restarts without a sampled token, so independent
+    /// failures spread over a long run don't add up to end it.
+    #[test]
+    fn a_sampled_token_resets_the_restart_cap() {
+        let mut cur = PrefillCursor::new(vec![1, 2, 3], 42, 256);
+        for t in 0..2 * MAX_PREFILL_RESTARTS as u32 {
+            cur.restart(&[]).unwrap();
+            assert!(cur.advance(cur.step().len()));
+            cur.push(t);
+        }
     }
 
     #[test]
@@ -5326,6 +5051,26 @@ mod tests {
         InferenceProgress::new(std::time::Instant::now(), phase)
     }
 
+    #[test]
+    fn a_retry_re_prefills_everything_in_a_new_session() {
+        let mut cur = PrefillCursor::new(vec![1, 2, 3], 42, 2);
+        assert!(!cur.advance(2));
+        assert!(cur.advance(1));
+        cur.push(7);
+        assert!(!cur.prefilling());
+        assert!(cur.advance(1));
+        cur.push(8);
+        cur.restart(&[7, 8]).unwrap();
+        assert!(cur.prefilling());
+        assert_ne!(cur.session_id, 42);
+        assert_eq!((cur.seq_pos, cur.step()), (0, vec![1, 2]));
+        assert!(!cur.advance(2));
+        assert_eq!((cur.seq_pos, cur.step()), (2, vec![3, 7]));
+        assert!(!cur.advance(2));
+        assert_eq!((cur.seq_pos, cur.step()), (4, vec![8]));
+        assert!(cur.advance(1), "the in-flight token is re-sent once");
+    }
+
     /// The `--stats` table is fed by this sink, so a HopOk must still produce
     /// exactly the tuple the pre-sink code pushed. This is the regression
     /// guard for the CLI output.
@@ -5450,6 +5195,12 @@ mod tests {
             HopFailureKind::NoHandler
         );
         assert_eq!(
+            classify_hop_failure(
+                "Protocol error: remote does not support protocol /kwaai/inference/1.0.0"
+            ),
+            HopFailureKind::NoHandler
+        );
+        assert_eq!(
             classify_hop_failure("hop timeout after 300s — peer unresponsive"),
             HopFailureKind::Timeout
         );
@@ -5464,6 +5215,18 @@ mod tests {
             classify_hop_failure("something else entirely"),
             HopFailureKind::Other
         );
+    }
+
+    /// A reply lost after the hop ran the step makes `call_block_forward`
+    /// resend it, and the hop refuses the replay. That hop did nothing wrong,
+    /// so it must not be blacklisted: it may be the only server for its range.
+    #[test]
+    fn a_refused_replay_does_not_blacklist_the_hop() {
+        let msg = format!(
+            "Remote inference error: Inference failed: step at position 5 {} (next is 6)",
+            kwaai_inference::shard::STEP_ALREADY_IN_KV
+        );
+        assert_eq!(classify_hop_failure(&msg), HopFailureKind::Transient);
     }
 
     /// A timeout must classify as Timeout rather than Transient, even though

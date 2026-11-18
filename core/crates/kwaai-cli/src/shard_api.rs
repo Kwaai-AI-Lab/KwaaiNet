@@ -32,8 +32,7 @@ use crate::config::KwaaiNetConfig;
 use crate::display::*;
 use crate::hf;
 use crate::shard_cmd::{
-    daemon_socket, discover_chain, forward_through_chain, load_circuit_by_id,
-    refresh_circuit_addrs, BlockServerEntry,
+    daemon_socket, discover_chain, load_circuit_by_id, refresh_circuit_addrs, BlockServerEntry,
 };
 
 // ── llama.cpp fast path (macOS Metal acceleration) ──────────────────────────
@@ -66,6 +65,7 @@ struct AppState {
     /// Prompt tokens per prefill step (#301).
     prefill_chunk: usize,
     our_peer_id: PeerId,
+    route: crate::routing::RouteMode,
     /// When set, use llama.cpp GPU inference instead of P2P chain.
     /// Only populated when: llama-cpp feature + all blocks local + GGUF available.
     #[cfg(feature = "llama-cpp")]
@@ -232,12 +232,13 @@ async fn run_inference(
         top_k: top_k as u32,
         top_p,
     };
-    let mut generated = 0usize;
+    let mut generated_ids: Vec<u32> = Vec::new();
     let mut cur = crate::shard_cmd::PrefillCursor::new(
         token_ids,
         crate::shard_cmd::rand_session_id(),
         state.prefill_chunk,
     );
+    let mut router = crate::routing::Router::open(state.route, &state.our_peer_id).await;
     let mut client_guard = state.client.lock().await;
     let mut failed_peers: std::collections::HashSet<libp2p::PeerId> =
         std::collections::HashSet::new();
@@ -267,10 +268,10 @@ async fn run_inference(
     loop {
         // While prefilling, a step is one chunk of the prompt (#301); a token
         // is sampled only once the whole prompt is in every hop's KV.
-        let mut step = cur.step();
-        let mut token_ctx = crate::shard_cmd::TokenContext::new(
-            generated,
-            generated == 0,
+        let step = cur.step();
+        let token_ctx = crate::shard_cmd::TokenContext::new(
+            generated_ids.len(),
+            cur.prefilling(),
             run_started,
             cur.session_id,
             cur.seq_pos as u32,
@@ -287,21 +288,22 @@ async fn run_inference(
             sample: Some(sampling),
         };
 
-        let logits_bytes = match forward_through_chain(
-            &mut client_guard,
-            &pinned_path,
-            state.total_blocks,
-            cur.session_id,
-            cur.seq_pos as u32,
-            request,
-            Some(&state.our_peer_id),
-            &mut failed_peers,
-            &unreached,
-            None,
-            None,
-            token_ctx,
-        )
-        .await
+        let logits_bytes = match router
+            .forward(
+                &mut client_guard,
+                &pinned_path,
+                state.total_blocks,
+                cur.session_id,
+                cur.seq_pos as u32,
+                request,
+                Some(&state.our_peer_id),
+                &mut failed_peers,
+                &unreached,
+                None,
+                None,
+                token_ctx,
+            )
+            .await
         {
             Ok(r) => r,
             Err(e) => {
@@ -320,58 +322,14 @@ async fn run_inference(
                 ) {
                     Ok(new_path) => {
                         pinned_path = new_path;
-                        if generated == 0 {
-                            if let Err(e2) = cur.restart() {
-                                let _ = tx
-                                    .send(Piece::Error(format!("inference error: {e}; {e2}")))
-                                    .await;
-                                break;
-                            }
-                            step = cur.step();
-                            token_ctx = crate::shard_cmd::TokenContext::new(
-                                0,
-                                true,
-                                run_started,
-                                cur.session_id,
-                                0,
-                            );
+                        // Re-prefill everything so far in a fresh session.
+                        if let Err(e2) = cur.restart(&generated_ids) {
+                            let _ = tx
+                                .send(Piece::Error(format!("inference error: {e}; {e2}")))
+                                .await;
+                            break;
                         }
-                        // Retry once with rebuilt path
-                        let (s2, d2) = token_ids_to_bytes(&step);
-                        let retry = InferenceRequest {
-                            session_id: cur.session_id,
-                            seq_pos: cur.seq_pos as u32,
-                            payload_type: PayloadType::TokenIds,
-                            shape: s2,
-                            data: d2,
-                            sample: Some(sampling),
-                        };
-                        match forward_through_chain(
-                            &mut client_guard,
-                            &pinned_path,
-                            state.total_blocks,
-                            cur.session_id,
-                            cur.seq_pos as u32,
-                            retry,
-                            Some(&state.our_peer_id),
-                            &mut failed_peers,
-                            &unreached,
-                            None,
-                            None,
-                            token_ctx,
-                        )
-                        .await
-                        {
-                            Ok(r) => r,
-                            Err(e2) => {
-                                let _ = tx
-                                    .send(Piece::Error(format!(
-                                        "inference error after retry: {e2}"
-                                    )))
-                                    .await;
-                                break;
-                            }
-                        }
+                        continue;
                     }
                     Err(_) => {
                         let _ = tx.send(Piece::Error(format!("inference error: {e}"))).await;
@@ -398,9 +356,9 @@ async fn run_inference(
             }
         }
 
-        generated += 1;
+        generated_ids.push(next_id);
 
-        if next_id == state.eos_id || generated >= max_tokens {
+        if next_id == state.eos_id || generated_ids.len() >= max_tokens {
             break;
         }
         cur.push(next_id);
@@ -1005,6 +963,7 @@ pub async fn run(args: ShardApiArgs) -> Result<()> {
         bos_id,
         prefill_chunk: crate::shard_cmd::prefill_chunk_tokens_for_model(&model_dir),
         our_peer_id,
+        route: crate::routing::RouteMode::resolve(None, &cfg),
         #[cfg(feature = "llama-cpp")]
         llama_model,
     });
