@@ -49,6 +49,9 @@
 //!   nothing to drive from the service loop beyond logging the outcome.
 //! - `upnp` behind a `Toggle` — port mapping via the local gateway. Off in
 //!   tests, where an SSDP broadcast would be noise at best.
+//! - `mdns` behind a `Toggle` — local-network discovery, so peers behind one
+//!   router dial each other directly (see [`crate::lan`]). Off in tests, and
+//!   absent when the host refuses it: a node without it still runs.
 
 use std::time::Duration;
 
@@ -92,6 +95,7 @@ pub struct KwaaiBehaviour {
     pub relay_server: Toggle<relay::Behaviour>,
     pub dcutr: dcutr::Behaviour,
     pub upnp: Toggle<upnp::tokio::Behaviour>,
+    pub mdns: Toggle<crate::lan::Discovery>,
 }
 
 impl KwaaiBehaviour {
@@ -256,6 +260,20 @@ impl KwaaiBehaviour {
         // has no business talking to whatever gateway happens to answer.
         let upnp = Toggle::from(config.enable_upnp.then(upnp::tokio::Behaviour::default));
 
+        // IPv4 only: libp2p-mdns joins the v6 group on interface 0 alone.
+        let mdns = Toggle::from(
+            config
+                .enable_mdns
+                .then(|| {
+                    crate::lan::Discovery::new(local_peer_id)
+                        .inspect_err(|e| {
+                            tracing::warn!(error = %e, "mDNS unavailable; LAN peers will be reached via the DHT")
+                        })
+                        .ok()
+                })
+                .flatten(),
+        );
+
         Self {
             connection_limits,
             ping,
@@ -268,6 +286,7 @@ impl KwaaiBehaviour {
             relay_server,
             dcutr,
             upnp,
+            mdns,
         }
     }
 }
@@ -300,5 +319,18 @@ mod tests {
             }));
         assert_eq!(b.kad.mode(), kad::Mode::Client);
         assert_eq!(behaviour(true).kad.mode(), kad::Mode::Server);
+    }
+
+    /// Off unless asked for; on, it builds or degrades to off, never panics.
+    #[tokio::test]
+    async fn mdns_follows_its_switch() {
+        assert!(!behaviour(true).mdns.is_enabled());
+        let keypair = identity::Keypair::generate_ed25519();
+        let (_transport, relay_client) = relay::client::new(PeerId::from(keypair.public()));
+        let config = NetworkConfig {
+            enable_mdns: true,
+            ..NetworkConfig::for_tests()
+        };
+        let _ = KwaaiBehaviour::new(&keypair, &config, relay_client);
     }
 }

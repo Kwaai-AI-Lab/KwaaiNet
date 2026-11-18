@@ -3093,6 +3093,7 @@ dependencies = [
  "async-trait",
  "bincode",
  "futures",
+ "if-addrs",
  "kwaai-hivemind-dht",
  "libp2p",
  "prost 0.12.6",
