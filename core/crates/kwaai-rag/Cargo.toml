@@ -5,6 +5,10 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 description = "RAG library for KwaaiNet — chunking, embedding, retrieval, and prompting"
+# Not published to crates.io: its sources and test fixtures hold private
+# material that must not be distributed. Only kwaainet (also unpublished)
+# depends on it.
+publish = false
 
 [dependencies]
 anyhow = { workspace = true }
