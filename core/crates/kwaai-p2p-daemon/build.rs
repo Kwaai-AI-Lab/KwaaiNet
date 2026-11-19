@@ -47,6 +47,9 @@ fn ensure_protoc(out_dir: &Path) {
     if !protoc_bin.exists() {
         println!("cargo:warning=Downloading protoc for {}...", platform);
 
+        // Start clean: without protoc, whatever is here is a failed extraction,
+        // and Windows' ZipFile extraction refuses to overwrite it.
+        let _ = std::fs::remove_dir_all(&protoc_dir);
         std::fs::create_dir_all(&protoc_dir).expect("Failed to create protoc directory");
 
         let version = "28.3";
