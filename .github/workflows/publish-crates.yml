@@ -39,6 +39,9 @@ jobs:
           # Dependency order, leaves first. `kwaai-p2p` needs
           # `kwaai-hivemind-dht` published before it; see the fuller note in
           # release.yml. Keep the two lists in step.
+          # kwaai-rag and kwaainet are `publish = false` and deliberately not
+          # listed: kwaai-rag holds private material, and kwaainet ships through
+          # the installers and Homebrew. Do not add either back.
           for crate in \
             kwaai-compression \
             kwaai-inference \
@@ -49,9 +52,7 @@ jobs:
             kwaai-distributed \
             kwaai-wasm \
             kwaai-rpc \
-            kwaai-storage \
-            kwaai-rag \
-            kwaainet; do
+            kwaai-storage; do
             echo "=== publishing ${crate} ==="
             out=$(cargo publish -p "${crate}" ${DRY_RUN_FLAG} 2>&1) && echo "$out" && { echo "waiting for crates.io index..."; sleep 30; } || {
               if echo "$out" | grep -qE "already uploaded|already exists on crates|cannot be published"; then
