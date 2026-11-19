@@ -43,6 +43,9 @@ fn ensure_protoc(out_dir: &Path) {
     };
 
     if !protoc_bin.exists() {
+        // Start clean: without protoc, whatever is here is a failed extraction,
+        // and Windows' ZipFile extraction refuses to overwrite it.
+        let _ = std::fs::remove_dir_all(&protoc_dir);
         std::fs::create_dir_all(&protoc_dir).expect("create protoc dir");
 
         let version = "28.3";
@@ -77,8 +80,11 @@ fn ensure_protoc(out_dir: &Path) {
         }
 
         let extract_ok = if cfg!(windows) {
+            // Workaround: not Expand-Archive. Under a pwsh 7.6.10 parent, 5.1 loads
+            // PS7's Archive 1.2.7, which throws yet exits 0. ZipFile loads no module.
             let cmd = format!(
-                "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
+                "Add-Type -AssemblyName System.IO.Compression.FileSystem; \
+                 [System.IO.Compression.ZipFile]::ExtractToDirectory('{}', '{}')",
                 archive_path.display(),
                 protoc_dir.display()
             );
@@ -97,8 +103,12 @@ fn ensure_protoc(out_dir: &Path) {
                 .map(|s| s.success())
                 .unwrap_or(false)
         };
-        if !extract_ok {
-            panic!("kwaai-rpc build: failed to extract protoc archive");
+        // An extractor can exit 0 without writing anything, so check the result.
+        if !extract_ok || !protoc_bin.exists() {
+            panic!(
+                "kwaai-rpc build: failed to extract protoc archive (expected {})",
+                protoc_bin.display()
+            );
         }
 
         #[cfg(unix)]
