@@ -927,6 +927,37 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
 // ── run --local (in-process, no networking) ───────────────────────────────────
 
+/// Wrap a single user message in the model's chat template, detected from
+/// the special tokens its tokenizer defines.
+///
+/// `has_token` reports whether the tokenizer has a given special token. The
+/// BOS token is not added here; callers prepend it after encoding.
+///
+/// - Llama 3: `<|start_header_id|>user<|end_header_id|>…`
+/// - ChatML (Qwen and others): `<|im_start|>user…`
+/// - Mistral (`[INST]` and `[/INST]` tokens; Nemo, Small 3 and later):
+///   `[INST]{prompt}[/INST]`, with no spaces, as their `chat_template`
+///   renders one user turn. A prompt that already starts with `[INST]` is
+///   left alone, so callers that wrap it by hand are not wrapped twice.
+/// - Anything else is sent unchanged.
+pub(crate) fn format_user_turn(has_token: impl Fn(&str) -> bool, prompt: &str) -> String {
+    if has_token("<|start_header_id|>") {
+        format!(
+            "<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
+    } else if has_token("<|im_start|>") {
+        format!("<|im_start|>user\n{prompt}\n<|im_end|>\n<|im_start|>assistant\n")
+    } else if has_token("[INST]") && has_token("[/INST]") {
+        if prompt.trim_start().starts_with("[INST]") {
+            prompt.to_string()
+        } else {
+            format!("[INST]{prompt}[/INST]")
+        }
+    } else {
+        prompt.to_string()
+    }
+}
+
 /// Load the model in-process and run inference without any P2P or TCP overhead.
 /// Used by `shard run --local` for single-machine testing.
 async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
@@ -954,19 +985,7 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
         .context("Failed to load tokenizer")?;
 
     // Apply chat template
-    let formatted_prompt = if tokenizer.token_to_id("<|start_header_id|>").is_some() {
-        format!(
-            "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
-            args.prompt
-        )
-    } else if tokenizer.token_to_id("<|im_start|>").is_some() {
-        format!(
-            "<|im_start|>user\n{}\n<|im_end|>\n<|im_start|>assistant\n",
-            args.prompt
-        )
-    } else {
-        args.prompt.clone()
-    };
+    let formatted_prompt = format_user_turn(|t| tokenizer.token_to_id(t).is_some(), &args.prompt);
 
     let mut token_ids: Vec<u32> = tokenizer
         .encode(&formatted_prompt)
@@ -1457,23 +1476,8 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     use kwaai_inference::tokenizer::Tokenizer as _;
 
     // Apply chat template based on tokenizer vocab, then tokenize.
-    // Instruct models require special header tokens around the user turn.
-    let formatted_prompt = if tokenizer.token_to_id("<|start_header_id|>").is_some() {
-        // Llama-3 instruct format
-        format!(
-            "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
-            args.prompt
-        )
-    } else if tokenizer.token_to_id("<|im_start|>").is_some() {
-        // ChatML format (Mistral-Instruct, Qwen, etc.)
-        format!(
-            "<|im_start|>user\n{}\n<|im_end|>\n<|im_start|>assistant\n",
-            args.prompt
-        )
-    } else {
-        // Base models / Llama-2: raw prompt
-        args.prompt.clone()
-    };
+    // Instruct models require special tokens around the user turn.
+    let formatted_prompt = format_user_turn(|t| tokenizer.token_to_id(t).is_some(), &args.prompt);
 
     let mut token_ids: Vec<u32> = tokenizer
         .encode(&formatted_prompt)
@@ -2438,19 +2442,7 @@ async fn run_streaming_inner(
         .context("Failed to load tokenizer")?;
     use kwaai_inference::tokenizer::Tokenizer as _;
 
-    let formatted_prompt = if tokenizer.token_to_id("<|start_header_id|>").is_some() {
-        format!(
-            "<|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n",
-            opts.prompt
-        )
-    } else if tokenizer.token_to_id("<|im_start|>").is_some() {
-        format!(
-            "<|im_start|>user\n{}\n<|im_end|>\n<|im_start|>assistant\n",
-            opts.prompt
-        )
-    } else {
-        opts.prompt.clone()
-    };
+    let formatted_prompt = format_user_turn(|t| tokenizer.token_to_id(t).is_some(), &opts.prompt);
 
     let mut token_ids: Vec<u32> = tokenizer
         .encode(&formatted_prompt)
@@ -4511,6 +4503,50 @@ mod assigned_range_is_persisted_whole {
 
 #[cfg(test)]
 mod tests {
+
+    /// A tokenizer vocabulary, as `format_user_turn` sees it.
+    fn vocab(tokens: &'static [&'static str]) -> impl Fn(&str) -> bool {
+        move |t| tokens.contains(&t)
+    }
+
+    // #293: Mistral prompts went out with no chat template, so the GUI's
+    // answers looped and rambled until the token cap.
+    #[test]
+    fn format_user_turn_wraps_mistral_in_inst() {
+        let mistral = vocab(&["<s>", "</s>", "[INST]", "[/INST]"]);
+        assert_eq!(format_user_turn(&mistral, "Hi"), "[INST]Hi[/INST]");
+    }
+
+    #[test]
+    fn format_user_turn_does_not_rewrap_an_inst_prompt() {
+        let mistral = vocab(&["[INST]", "[/INST]"]);
+        assert_eq!(
+            format_user_turn(&mistral, "[INST]Hi[/INST]"),
+            "[INST]Hi[/INST]"
+        );
+    }
+
+    #[test]
+    fn format_user_turn_keeps_llama3_and_chatml() {
+        let llama = vocab(&["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"]);
+        assert_eq!(
+            format_user_turn(&llama, "Hi"),
+            "<|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        );
+        let chatml = vocab(&["<|im_start|>", "<|im_end|>"]);
+        assert_eq!(
+            format_user_turn(&chatml, "Hi"),
+            "<|im_start|>user\nHi\n<|im_end|>\n<|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
+    fn format_user_turn_passes_base_models_through() {
+        assert_eq!(format_user_turn(vocab(&["<s>"]), "Hi"), "Hi");
+        // [INST] alone, without its closing token, is not the Mistral template.
+        assert_eq!(format_user_turn(vocab(&["[INST]"]), "Hi"), "Hi");
+    }
+
     #[test]
     fn range_is_pinned_only_by_the_operator() {
         use super::range_is_pinned;

@@ -2116,13 +2116,12 @@ async fn spawn_session_shard_run(
                         }
                         Some(crate::shard_cmd::ShardRunEvent::Error(e)) => {
                             let msg = format!("{e:#}");
-                            let _ = out_tx
-                                .send(Ok(error_frame(
-                                    id,
-                                    classify_shard_error(&msg),
-                                    &msg,
-                                )))
-                                .await;
+                            let code = classify_shard_error(&msg);
+                            // The client is the only other place this is
+                            // reported; log it so a failure seen in the GUI
+                            // can be traced afterwards.
+                            warn!(op_id = id, code = ?code, "Session shard_run failed: {msg}");
+                            let _ = out_tx.send(Ok(error_frame(id, code, &msg))).await;
                             break;
                         }
                         None => {
