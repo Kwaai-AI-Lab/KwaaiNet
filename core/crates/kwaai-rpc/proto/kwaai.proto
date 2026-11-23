@@ -338,8 +338,20 @@ message ShardRunRequest {
     // before it means an old daemon.
     bool events = 5;
 
-    // 6-15 reserved for high-frequency metadata.
+    // The whole conversation, oldest first, ending on the user turn to answer;
+    // when set, role/content are ignored. The client owns the transcript.
+    // Also set role/content to that last turn: an older daemon answers it alone.
+    repeated ChatTurn messages = 6;
+
+    // 7-15 reserved for high-frequency metadata.
     // 16+ reserved for sampling controls / routing hints.
+}
+
+// One turn of a ShardRunRequest conversation.
+message ChatTurn {
+    // "system" (first turn only), "user" or "assistant".
+    string role = 1;
+    string content = 2;
 }
 
 // `kwaainet status` — daemon-side state snapshot.
