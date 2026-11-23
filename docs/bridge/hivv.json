@@ -1,0 +1,34 @@
+{
+  "hive": "kwaai",
+  "protocol": "open-hives/0.1",
+  "display_name": "KwaaiNet — decentralized AI infrastructure",
+  "human": "https://github.com/Kwaai-AI-Lab/KwaaiNet",
+  "ai": "https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/main/README.md",
+  "endpoints": {
+    "map": "https://map.kwaai.ai/",
+    "state": "https://map.kwaai.ai/api/v1/state",
+    "chat": "dynamic: each node serves OpenAI-compatible /v1/chat/completions - discover nodes via map.kwaai.ai or the libp2p hivemind DHT",
+    "docs": "https://github.com/Kwaai-AI-Lab/KwaaiNet/tree/main/docs"
+  },
+  "auth": {
+    "scheme": "per-node bearer (OpenAI-compatible)",
+    "docs": "https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/main/docs/api-quickstart.md"
+  },
+  "limits": {
+    "rate_per_min": "per node",
+    "allowance_max_percent": 20,
+    "max_hops": 3
+  },
+  "loop_policy": "origin-hive-never-recipient",
+  "connect": [
+    "hivv connect kwaai",
+    "hivv connect kwaai.ai"
+  ],
+  "discovery": {
+    "canonical": "/.bridge/hivv.json",
+    "standard": "/.well-known/hivv.json",
+    "git": "docs/bridge/hivv.json in the KwaaiNet repo"
+  },
+  "note": "Ships in-git because www.kwaai.ai is Google Sites and cannot serve /.well-known files. Copy to kwaai.ai/.bridge/hivv.json when a file-serving host fronts the domain.",
+  "status": "accepting"
+}
