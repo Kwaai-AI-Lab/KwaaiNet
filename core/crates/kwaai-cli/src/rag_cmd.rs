@@ -8740,6 +8740,22 @@ struct EvalQuestion {
 /// too, so the recorded manifest is the plan the generator actually saw.
 const EVAL_CONTEXT_CHARS: usize = 24_000;
 
+/// Seed for eval answer generation, so a rerun of the same prompt gives the same answer.
+const EVAL_SEED: u64 = 42;
+
+/// The Ollama `/api/chat` request for an eval answer. Ollama reads sampling settings only
+/// from `options`; a top-level `"temperature"` is silently ignored, which is how answers
+/// were sampled at Ollama's default temperature (0.8) until 2026-11-23, making repeat
+/// evals of one graph disagree by whole questions.
+fn eval_answer_payload<M: serde::Serialize>(model: &str, messages: &M) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "stream": false,
+        "options": { "temperature": 0, "seed": EVAL_SEED, "num_ctx": 8192 },
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn cmd_eval(
     questions_path: std::path::PathBuf,
@@ -9286,13 +9302,7 @@ async fn cmd_eval(
                 EVAL_CONTEXT_CHARS,
                 eval_doc_context.as_deref(),
             );
-            let payload = serde_json::json!({
-                "model": model,
-                "messages": messages,
-                "stream": false,
-                "temperature": 0,
-                "options": { "num_ctx": 8192 },
-            });
+            let payload = eval_answer_payload(&model, &messages);
             let answer = match http
                 .post(format!("{inference_url}/api/chat"))
                 .json(&payload)
@@ -11373,6 +11383,22 @@ fn judge_digit(content: Option<&str>) -> Option<u8> {
         .next()
         .and_then(|c| c.to_digit(10))
         .map(|d| d.min(2) as u8)
+}
+
+#[cfg(test)]
+mod eval_answer_payload_tests {
+    use super::{eval_answer_payload, EVAL_SEED};
+
+    #[test]
+    fn sampling_settings_are_inside_options_where_ollama_reads_them() {
+        let p = eval_answer_payload("llama3.1:8b", &serde_json::json!([]));
+        assert_eq!(p["options"]["temperature"], 0, "{p}");
+        assert_eq!(p["options"]["seed"], EVAL_SEED, "{p}");
+        assert_eq!(p["options"]["num_ctx"], 8192, "{p}");
+        // Ollama's /api/chat ignores these at the top level.
+        assert!(p.get("temperature").is_none(), "{p}");
+        assert!(p.get("seed").is_none(), "{p}");
+    }
 }
 
 #[cfg(test)]
