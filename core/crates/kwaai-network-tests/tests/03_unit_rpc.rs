@@ -73,12 +73,14 @@ fn client_frame_shard_run_roundtrip() {
         conversation_id: None,
         events: false,
         messages: vec![],
+        max_tokens: None,
     };
     let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
     if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
         assert_eq!(s.role, "user");
         assert_eq!(s.model.as_deref(), Some("llama3.2:3b"));
         assert!(s.conversation_id.is_none());
+        assert!(s.max_tokens.is_none(), "unset stays unset, not 0");
         assert!(!s.events, "telemetry stays opt-in");
     } else {
         panic!("wrong variant");
@@ -101,6 +103,7 @@ fn client_frame_shard_run_events_flag_roundtrip() {
         conversation_id: None,
         events: true,
         messages: vec![],
+        max_tokens: None,
     };
     let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
     if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
@@ -134,10 +137,12 @@ fn client_frame_shard_run_messages_roundtrip() {
         conversation_id: None,
         events: false,
         messages: messages.clone(),
+        max_tokens: Some(512),
     };
     let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
     if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
         assert_eq!(s.messages, messages);
+        assert_eq!(s.max_tokens, Some(512));
     } else {
         panic!("wrong variant");
     }

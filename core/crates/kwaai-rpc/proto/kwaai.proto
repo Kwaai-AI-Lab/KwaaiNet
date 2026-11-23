@@ -343,7 +343,10 @@ message ShardRunRequest {
     // Also set role/content to that last turn: an older daemon answers it alone.
     repeated ChatTurn messages = 6;
 
-    // 7-15 reserved for high-frequency metadata.
+    // Most tokens to generate; unset is the daemon's default (200). 0 is refused.
+    optional uint32 max_tokens = 7;
+
+    // 8-15 reserved for high-frequency metadata.
     // 16+ reserved for sampling controls / routing hints.
 }
 

@@ -2033,6 +2033,25 @@ fn shard_run_turns(req: &ShardRunRequest) -> Result<Vec<crate::shard_cmd::Turn>,
     )
 }
 
+/// The run a ShardRun asks for, or why it can't be made.
+fn shard_run_options(req: ShardRunRequest) -> Result<crate::shard_cmd::ShardRunOptions, String> {
+    let turns = shard_run_turns(&req)?;
+    if req.max_tokens == Some(0) {
+        return Err("max_tokens must be at least 1".into());
+    }
+    Ok(crate::shard_cmd::ShardRunOptions {
+        turns,
+        model: req.model,
+        // Unset falls through to run_streaming's default.
+        max_tokens: req.max_tokens.map(|n| n as usize),
+        // No circuit id on the wire yet; the tag space is reserved.
+        circuit_id: None,
+        // Opt-in per request: the client asks for routing telemetry only when
+        // it has somewhere to show it.
+        events: req.events,
+    })
+}
+
 /// Drive a distributed `shard run` within a Session. Pipes events from
 /// `shard_cmd::run_streaming` onto the Session output channel.
 ///
@@ -2045,13 +2064,10 @@ async fn spawn_session_shard_run(
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
     cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
 ) {
-    let turns = match shard_run_turns(&req) {
-        Ok(turns) => turns,
+    let opts = match shard_run_options(req) {
+        Ok(opts) => opts,
         Err(msg) => {
-            warn!(
-                op_id = id,
-                "Session shard_run rejected its conversation: {msg}"
-            );
+            warn!(op_id = id, "Session shard_run rejected its request: {msg}");
             let _ = out_tx
                 .send(Ok(error_frame(id, ErrorCode::InvalidArgument, &msg)))
                 .await;
@@ -2063,19 +2079,6 @@ async fn spawn_session_shard_run(
     // after this frame still finds an entry to fire.
     let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
     cancels.lock().await.insert(id, cancel_tx);
-
-    let opts = crate::shard_cmd::ShardRunOptions {
-        turns,
-        model: req.model,
-        // Today the proto carries neither max_tokens nor a circuit id; we
-        // fall through to run_streaming's defaults. Both fields are reserved
-        // tag-space so they can be added without a breaking change.
-        max_tokens: None,
-        circuit_id: None,
-        // Opt-in per request: the client asks for routing telemetry only when
-        // it has somewhere to show it.
-        events: req.events,
-    };
 
     let cancels_for_cleanup = cancels.clone();
     tokio::spawn(async move {
@@ -4961,6 +4964,7 @@ mod tests {
                 conversation_id: None,
                 events: true,
                 messages: vec![],
+                max_tokens: None,
             })),
         })
         .await
@@ -5031,6 +5035,7 @@ mod tests {
                 conversation_id: None,
                 events: false,
                 messages: vec![],
+                max_tokens: None,
             })),
         })
         .await
@@ -5083,6 +5088,7 @@ mod tests {
             conversation_id: None,
             events: false,
             messages,
+            max_tokens: None,
         }
     }
 
@@ -5105,6 +5111,23 @@ mod tests {
         let turns = shard_run_turns(&req).unwrap();
         assert_eq!(turns.len(), 3);
         assert_eq!(turns[1].role, crate::shard_cmd::Role::Assistant);
+    }
+
+    #[test]
+    fn shard_run_max_tokens_is_passed_through_or_left_to_the_default() {
+        let with = |max_tokens| ShardRunRequest {
+            max_tokens,
+            ..shard_run("hi", vec![])
+        };
+        assert_eq!(shard_run_options(with(None)).unwrap().max_tokens, None);
+        assert_eq!(
+            shard_run_options(with(Some(512))).unwrap().max_tokens,
+            Some(512)
+        );
+        let err = shard_run_options(with(Some(0)))
+            .err()
+            .expect("0 is refused");
+        assert!(err.contains("max_tokens"), "{err}");
     }
 
     /// A conversation no template can render is refused before any routing.
