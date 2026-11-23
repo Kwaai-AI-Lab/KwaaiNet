@@ -7,8 +7,9 @@
   "endpoints": {
     "map": "https://map.kwaai.ai/",
     "state": "https://map.kwaai.ai/api/v1/state",
-    "chat": "dynamic: each node serves OpenAI-compatible /v1/chat/completions - discover nodes via map.kwaai.ai or the libp2p hivemind DHT",
-    "docs": "https://github.com/Kwaai-AI-Lab/KwaaiNet/tree/main/docs"
+    "chat": "http://192.168.1.209:8080/v1/chat/completions",
+    "docs": "https://github.com/Kwaai-AI-Lab/KwaaiNet/tree/main/docs",
+    "chat_note": "LAN door: yalla's llama.cpp (OpenAI-compatible). Offline-first per open-hives 12.2; swap for a public URL when the hive wants the world to knock."
   },
   "auth": {
     "scheme": "per-node bearer (OpenAI-compatible)",
