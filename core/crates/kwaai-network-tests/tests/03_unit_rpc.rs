@@ -72,6 +72,7 @@ fn client_frame_shard_run_roundtrip() {
         model: Some("llama3.2:3b".to_string()),
         conversation_id: None,
         events: false,
+        messages: vec![],
     };
     let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
     if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
@@ -99,10 +100,44 @@ fn client_frame_shard_run_events_flag_roundtrip() {
         model: None,
         conversation_id: None,
         events: true,
+        messages: vec![],
     };
     let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
     if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
         assert!(s.events);
+    } else {
+        panic!("wrong variant");
+    }
+    rec.finish(true);
+}
+
+/// The conversation keeps its order and roles across the wire.
+#[test]
+fn client_frame_shard_run_messages_roundtrip() {
+    let rec = MetricsRecorder::start(
+        "unit::rpc::client_frame_shard_run_messages_roundtrip",
+        "unit",
+    );
+    let turn = |role: &str, content: &str| kwaai_rpc::v1::ChatTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+    };
+    let messages = vec![
+        turn("user", "Hi"),
+        turn("assistant", "Hello."),
+        turn("user", "Bye"),
+    ];
+    let req = ShardRunRequest {
+        role: "user".to_string(),
+        content: "Bye".to_string(),
+        model: None,
+        conversation_id: None,
+        events: false,
+        messages: messages.clone(),
+    };
+    let decoded = encode_decode_client_frame(client_frame::Body::ShardRun(req));
+    if let Some(client_frame::Body::ShardRun(s)) = decoded.body {
+        assert_eq!(s.messages, messages);
     } else {
         panic!("wrong variant");
     }
