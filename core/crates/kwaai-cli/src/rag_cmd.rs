@@ -8743,6 +8743,11 @@ const EVAL_CONTEXT_CHARS: usize = 24_000;
 /// Seed for eval answer generation, so a rerun of the same prompt gives the same answer.
 const EVAL_SEED: u64 = 42;
 
+/// Cap on an eval answer's tokens. At temperature 0 some prompts fall into a loop that
+/// repeats one sentence until the context is full (thousands of tokens, past the p2p
+/// request timeout every time); the longest real Legal answer is ~1,150 tokens.
+const EVAL_MAX_ANSWER_TOKENS: u32 = 1536;
+
 /// The Ollama `/api/chat` request for an eval answer. Ollama reads sampling settings only
 /// from `options`; a top-level `"temperature"` is silently ignored, which is how answers
 /// were sampled at Ollama's default temperature (0.8) until 2026-11-23, making repeat
@@ -8752,7 +8757,12 @@ fn eval_answer_payload<M: serde::Serialize>(model: &str, messages: &M) -> serde_
         "model": model,
         "messages": messages,
         "stream": false,
-        "options": { "temperature": 0, "seed": EVAL_SEED, "num_ctx": 8192 },
+        "options": {
+            "temperature": 0,
+            "seed": EVAL_SEED,
+            "num_ctx": 8192,
+            "num_predict": EVAL_MAX_ANSWER_TOKENS,
+        },
     })
 }
 
@@ -11387,7 +11397,7 @@ fn judge_digit(content: Option<&str>) -> Option<u8> {
 
 #[cfg(test)]
 mod eval_answer_payload_tests {
-    use super::{eval_answer_payload, EVAL_SEED};
+    use super::{eval_answer_payload, EVAL_MAX_ANSWER_TOKENS, EVAL_SEED};
 
     #[test]
     fn sampling_settings_are_inside_options_where_ollama_reads_them() {
@@ -11395,6 +11405,7 @@ mod eval_answer_payload_tests {
         assert_eq!(p["options"]["temperature"], 0, "{p}");
         assert_eq!(p["options"]["seed"], EVAL_SEED, "{p}");
         assert_eq!(p["options"]["num_ctx"], 8192, "{p}");
+        assert_eq!(p["options"]["num_predict"], EVAL_MAX_ANSWER_TOKENS, "{p}");
         // Ollama's /api/chat ignores these at the top level.
         assert!(p.get("temperature").is_none(), "{p}");
         assert!(p.get("seed").is_none(), "{p}");
