@@ -828,7 +828,11 @@ fn build_entity_fact_card_min_evidence(
 
     // Structured metadata fields (dateEnacted, jurisdiction, founded year, etc.)
     // Map internal snake_case keys to human-readable labels for LLM clarity.
-    for (key, field) in &entity.fields {
+    // Sorted: `fields` is a HashMap, whose order is random per process, so an unsorted
+    // card gave the same entity a different prompt on every run.
+    let mut fields: Vec<_> = entity.fields.iter().collect();
+    fields.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, field) in fields {
         let v = field.value.trim();
         if v.is_empty() {
             continue;
@@ -1196,6 +1200,57 @@ mod tests {
     use super::*;
     use crate::graph::{EntityNode, GraphStore};
     use tempfile::tempdir;
+
+    #[test]
+    fn fact_card_lists_fields_in_key_order() {
+        // `fields` is a HashMap: iterated directly, the same entity got a differently
+        // ordered card, and so a different eval prompt, in every process.
+        let dir = tempdir().unwrap();
+        let mut store = GraphStore::open(dir.path(), uuid::Uuid::new_v4()).unwrap();
+        let id = crate::graph::entity_id("Plessy", "Person");
+        let keys = [
+            "occupation",
+            "name",
+            "nationality",
+            "birthPlace",
+            "affiliation",
+            "text",
+        ];
+        let fields = keys
+            .iter()
+            .map(|k| {
+                (
+                    k.to_string(),
+                    crate::graph::FieldValue::new(format!("v-{k}"), 0),
+                )
+            })
+            .collect();
+        let node = EntityNode {
+            id,
+            name: "Plessy".to_string(),
+            entity_type: "Person".to_string(),
+            description: String::new(),
+            embedding: vec![],
+            mention_count: 1,
+            first_chunk_id: 0,
+            aliases: vec![],
+            schema_type: None,
+            evidence: Vec::new(),
+            gender: None,
+            fields,
+            confidence: 0.0,
+            extraction_confidence: 0.0,
+        };
+        store.upsert_entity(node.clone()).unwrap();
+        let (card, _) = build_entity_fact_card_min_evidence(&node, id, &store, 1);
+        let seen: Vec<&str> = card
+            .lines()
+            .filter_map(|l| l.split_once(": v-").map(|(k, _)| k))
+            .collect();
+        let mut sorted = keys.to_vec();
+        sorted.sort();
+        assert_eq!(seen, sorted, "{card}");
+    }
 
     fn make_store_with_alias(name: &str, alias: &str) -> (GraphStore, tempfile::TempDir) {
         let dir = tempdir().unwrap();
