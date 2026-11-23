@@ -123,6 +123,51 @@ pub struct ModelConfig {
     pub layer_norm_eps: f32,
 }
 
+/// Parse HuggingFace `config.json` text into candle's `LlamaConfig`.
+///
+/// Llama-family configs keep every field at the top level; Gemma-2/3/4 (and
+/// friends) nest the whole text model under `text_config`. Flatten first so
+/// one struct serves both. Without this, a Gemma shard dies with
+/// `missing field hidden_size` — the exact error `hivv.org-gemma4` hit on
+/// Linux (2026-11-23). Nested values win over top-level duplicates; top-level
+/// keys only fill gaps (architectures/model_type are ignored by the struct).
+pub fn hf_config_from_json(
+    config_str: &str,
+) -> Result<candle_transformers::models::llama::LlamaConfig, serde_json::Error> {
+    let value: serde_json::Value = serde_json::from_str(config_str)?;
+    let mut merged = match value.get("hidden_size") {
+        Some(_) => value,
+        None => match value.get("text_config").and_then(|t| t.as_object()) {
+            Some(text) => {
+                let mut flat: serde_json::Map<String, serde_json::Value> = text.clone();
+                if let Some(top) = value.as_object() {
+                    for (k, v) in top {
+                        flat.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                serde_json::Value::Object(flat)
+            }
+            None => value,
+        },
+    };
+    // Gemma names the rotary base rope_parameters.{theta,base}; candle's
+    // LlamaConfig reads rope_theta (default 10000 — wrong for Gemma, whose
+    // real base is 1000000). Copy it across when present so long-context
+    // rotation stays honest.
+    if merged.get("rope_theta").is_none() {
+        let theta = merged
+            .get("rope_parameters")
+            .and_then(|rp| rp.get("theta").or_else(|| rp.get("base")))
+            .cloned();
+        if let Some(t) = theta {
+            if let Some(obj) = merged.as_object_mut() {
+                obj.insert("rope_theta".to_string(), t);
+            }
+        }
+    }
+    serde_json::from_value(merged)
+}
+
 impl Default for ModelConfig {
     fn default() -> Self {
         Self {

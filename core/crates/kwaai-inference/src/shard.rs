@@ -519,7 +519,7 @@ impl TransformerShard {
         let config_str = std::fs::read_to_string(config_path).map_err(|e| {
             InferenceError::ModelLoadError(format!("Cannot read {}: {e}", config_path.display()))
         })?;
-        let hf_config: LlamaConfig = serde_json::from_str(&config_str).map_err(|e| {
+        let hf_config: LlamaConfig = crate::hf_config_from_json(&config_str).map_err(|e| {
             InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}"))
         })?;
 
@@ -1031,6 +1031,52 @@ mod tests {
             v1.iter().zip(v2.iter()).any(|(a, b)| (a - b).abs() > 1e-4),
             "RoPE caches with different theta should differ"
         );
+    }
+
+    #[test]
+    fn hf_config_flattens_gemma_nested_text_config() {
+        // Gemma-2/3/4: everything lives under text_config. This is what made
+        // the hivv.org-gemma4 shard fail with "missing field hidden_size".
+        let gemma = r#"{
+            "architectures": ["Gemma4ForCausalLM"],
+            "model_type": "gemma4",
+            "text_config": {
+                "hidden_size": 1152,
+                "num_hidden_layers": 26,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 1,
+                "intermediate_size": 6144,
+                "vocab_size": 262144,
+                "rope_theta": 10000.0,
+                "rms_norm_eps": 1e-06,
+                "head_dim": 256,
+                "max_position_embeddings": 8192,
+                "bos_token_id": 2,
+                "eos_token_id": 1
+            }
+        }"#;
+        let cfg = crate::hf_config_from_json(gemma).expect("nested text_config parses");
+        assert_eq!(cfg.hidden_size, 1152);
+        assert_eq!(cfg.num_hidden_layers, 26);
+        assert_eq!(cfg.num_attention_heads, 4);
+        assert_eq!(cfg.max_position_embeddings, 8192);
+
+        // Gemma-style rope_parameters.theta must reach candle's rope_theta
+        // (the default 10000 is wrong for Gemma's 1000000).
+        let rope = r#"{"text_config": {"hidden_size": 1152, "num_hidden_layers": 2,
+            "num_attention_heads": 4, "intermediate_size": 6144, "vocab_size": 262144,
+            "rms_norm_eps": 1e-06, "max_position_embeddings": 8192,
+            "rope_parameters": {"theta": 1000000.0, "factor": 1.0}}}"#;
+        let cfg3 = crate::hf_config_from_json(rope).expect("rope_parameters map");
+        assert_eq!(cfg3.rope_theta, 1000000.0);
+
+        // Flat Llama-style configs keep working unchanged.
+        let llama = r#"{"hidden_size":4096,"num_hidden_layers":32,"num_attention_heads":32,
+                        "num_key_value_heads":8,"intermediate_size":11008,"vocab_size":32000,
+                        "rms_norm_eps":1e-5,"max_position_embeddings":4096}"#;
+        let cfg2 = crate::hf_config_from_json(llama).expect("flat config parses");
+        assert_eq!(cfg2.hidden_size, 4096);
+        assert_eq!(cfg2.num_hidden_layers, 32);
     }
 
     #[test]
