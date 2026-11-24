@@ -39,7 +39,7 @@ use crate::cli::{
     CircuitAction, CircuitCloseArgs, CircuitCreateArgs, ShardAction, ShardArgs, ShardChainArgs,
     ShardDownloadArgs, ShardRunArgs, ShardServeArgs,
 };
-use crate::config::KwaaiNetConfig;
+use crate::config::{KwaaiNetConfig, DEFAULT_MAX_TOKENS};
 use crate::display::*;
 use crate::hf;
 use crate::reputation::ReputationStore;
@@ -996,7 +996,7 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
             token_ids,
             eos_id,
             args.session_id.unwrap_or_else(rand_session_id),
-            args.max_tokens,
+            args.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
             args.temperature,
             args.top_k,
             args.top_p,
@@ -1062,7 +1062,7 @@ async fn cmd_shard_run_local(args: ShardRunArgs) -> Result<()> {
     println!();
 
     let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
-    let max_tokens = args.max_tokens;
+    let max_tokens = args.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
     let temperature = args.temperature;
     let top_k = args.top_k;
     let top_p = args.top_p;
@@ -1214,7 +1214,10 @@ async fn cmd_shard_run_via_ollama(args: &ShardRunArgs, raw_url: &str) -> Result<
     if args.top_k > 0 {
         opts.insert("top_k".into(), (args.top_k as i64).into());
     }
-    opts.insert("num_predict".into(), (args.max_tokens as i64).into());
+    opts.insert(
+        "num_predict".into(),
+        (args.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS) as i64).into(),
+    );
     body["options"] = serde_json::Value::Object(opts);
 
     let wall_start = std::time::Instant::now();
@@ -1265,7 +1268,11 @@ async fn cmd_shard_run_via_ollama(args: &ShardRunArgs, raw_url: &str) -> Result<
 
 // ── run ───────────────────────────────────────────────────────────────────────
 
-pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
+pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
+    // An explicit --max-tokens wins; otherwise the node's shard.max_tokens.
+    if args.max_tokens.is_none() {
+        args.max_tokens = Some(KwaaiNetConfig::load_or_create()?.shard.max_tokens());
+    }
     // --local: bypass all networking, load model in-process and infer directly.
     if args.local {
         return cmd_shard_run_local(args).await;
@@ -1487,7 +1494,7 @@ pub async fn cmd_shard_run(args: ShardRunArgs) -> Result<()> {
     let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
     let mut router = Router::open(RouteMode::resolve(args.route, &cfg), &our_peer_id).await;
-    let max_tokens = args.max_tokens;
+    let max_tokens = args.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
     let sampling = crate::block_rpc::SamplingParams {
         temperature: args.temperature,
         top_k: args.top_k as u32,
@@ -2314,8 +2321,8 @@ async fn run_streaming_inner(
             .msg(format!("{model_ref} · {total_blocks} blocks"))
     });
 
-    // Default max_tokens matches the CLI's clap default (see ShardRunArgs).
-    let max_tokens = opts.max_tokens.unwrap_or(200);
+    // An explicit length wins; otherwise shard.max_tokens, read per run.
+    let max_tokens = opts.max_tokens.unwrap_or_else(|| cfg.shard.max_tokens());
     // Sampling defaults also mirror ShardRunArgs.
     let sampling = crate::block_rpc::SamplingParams {
         temperature: 1.0,

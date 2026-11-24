@@ -460,6 +460,22 @@ pub struct ShardConfig {
     pub backend: ShardBackend,
     #[serde(default, skip_serializing_if = "forward_chain_is_default")]
     pub forward_chain: ForwardChainConfig,
+    /// Most tokens a run generates unless it names a length. Read per run,
+    /// so a change applies to the next one. Read it through [`Self::max_tokens`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+}
+
+/// A run's length when neither the run nor `shard.max_tokens` names one.
+pub const DEFAULT_MAX_TOKENS: usize = 200;
+
+impl ShardConfig {
+    /// `shard.max_tokens`, or [`DEFAULT_MAX_TOKENS`] when unset or 0.
+    pub fn max_tokens(&self) -> usize {
+        self.max_tokens
+            .filter(|&n| n > 0)
+            .map_or(DEFAULT_MAX_TOKENS, |n| n as usize)
+    }
 }
 
 fn shard_config_is_default(s: &ShardConfig) -> bool {
@@ -1361,6 +1377,14 @@ impl KwaaiNetConfig {
             "shard.forward_chain.originate" => {
                 self.shard.forward_chain.originate = parse_bool(value)?
             }
+            "shard.max_tokens" => {
+                let n: u32 = value
+                    .parse()
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .context("shard.max_tokens must be a whole number of at least 1")?;
+                self.shard.max_tokens = Some(n)
+            }
             "use_gpu" => self.use_gpu = parse_bool(value)?,
             "log_level" => {
                 self.log_level = parse_log_level(value)
@@ -2162,6 +2186,27 @@ mod shard_backend_and_grpc_port_keys {
         let back: KwaaiNetConfig = serde_yaml::from_str(&y).expect("reload");
         assert_eq!(back.grpc_port, Some(0));
         assert_eq!(back.shard.backend, ShardBackend::Mlx);
+    }
+
+    #[test]
+    fn shard_max_tokens_defaults_sets_and_round_trips() {
+        let mut cfg = KwaaiNetConfig::default();
+        assert_eq!(cfg.shard.max_tokens(), DEFAULT_MAX_TOKENS);
+        let y = serde_yaml::to_string(&cfg).expect("serialise");
+        assert!(!y.contains("max_tokens"), "unset stays out of the file");
+
+        cfg.set_key("shard.max_tokens", "512")
+            .expect("512 is valid");
+        let y = serde_yaml::to_string(&cfg).expect("serialise");
+        let back: KwaaiNetConfig = serde_yaml::from_str(&y).expect("reload");
+        assert_eq!(back.shard.max_tokens(), 512);
+
+        for bad in ["0", "-1", "x"] {
+            assert!(cfg.set_key("shard.max_tokens", bad).is_err(), "{bad}");
+        }
+        // A hand-written 0 reads as the default rather than an empty answer.
+        let zero: KwaaiNetConfig = serde_yaml::from_str("shard:\n  max_tokens: 0\n").unwrap();
+        assert_eq!(zero.shard.max_tokens(), DEFAULT_MAX_TOKENS);
     }
 
     #[test]
