@@ -24,6 +24,7 @@ Number sources (feat/dream-forgetting worktree, tests/kwaai-knowledge/results/dr
                           forgot counts from <run>/snapshots/F_c16.dream.json chunks_processed_total;
                           probe-check cost: plans/DreamRAG-Forgetting-plan.md, amendment 7
   Table 3, fact audit     {NIST,Legal}_p10_b40000_pairs/fact_audit/report.json
+                          (next steps: inexpressible_share_of_relational 0.342 NIST, 0.641 Legal)
   F out of material       plans/DreamRAG-Forgetting-plan.md, amendment 5
 Private corpora are never named here, and their results stay out of this text.
 References added 2026-11-25 (Edge, Grattafiori, Kumaran, Laurer, Nussbaum, Packer, Robertson,
@@ -205,12 +206,24 @@ structure, stayed below proportional loss, while NIST and Manhattan, whose docum
 format, did not (Figure 2). Consistently structured text may benefit most from dreaming, but three
 corpora cannot separate format from redundancy or from how questions spread over documents.
 
+**Next steps.** *Better graph representations*: attach each fact to the entities it names, and give
+non-relational facts (requirements, conditions, numbers, definitions) a place on the card, since the
+audit locates the loss there. *Per-corpus ontologies*: the curated ontologies left a third of NIST's
+relational facts and two-thirds of Legal's without a declared predicate; ontologies refined or
+induced from each corpus should close that gap. *Alternative forgetting rules*: a fact-based rule
+that forgets a chunk once its facts are held could release 20–29 chunks per hundred, against 1–9 for
+the rules that check the graph today. *Other LLMs*: every stage here used llama3.1:8b, so
+extraction, dreaming and answering should be repeated with larger and different models. *More
+corpora and questions*: more corpora, full corpora beyond Legal, and question sets that reach past
+document openings, enough to test whether consistent structure predicts a cheap curve. *Controls*:
+a random-forgetting baseline, to show whether a rule beats forgetting at random, and five or more
+dream runs per arm, since run-to-run variation (up to 0.31) is the largest noise here.
+
 **Conclusion.** Forgetting raw chunks after consolidation can be cheap, but whether it is depends on
 the corpus, and rules that make it safe today do so by forgetting almost nothing. The limit we find
 is the long-term representation, not the rule: dreaming writes facts to the wrong cards and has no
-place for facts that are not relations between entities. Next, we attach each fact to the entities
-it names, give non-relational facts a place on the card, and stream documents into fixed storage,
-where forgetting is forced rather than chosen.
+place for facts that are not relations between entities. The test that matters next streams
+documents into fixed storage, where forgetting is forced rather than chosen.
 
 ## References
 
