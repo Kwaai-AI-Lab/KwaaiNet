@@ -2020,6 +2020,19 @@ async fn spawn_session_generate(
     });
 }
 
+/// The conversation a ShardRun asks for: `messages` when set, else `content`
+/// as one user turn (`role` has always been ignored there).
+fn shard_run_turns(req: &ShardRunRequest) -> Result<Vec<crate::shard_cmd::Turn>, String> {
+    if req.messages.is_empty() {
+        return Ok(vec![crate::shard_cmd::Turn::user(req.content.as_str())]);
+    }
+    crate::shard_cmd::parse_conversation(
+        req.messages
+            .iter()
+            .map(|m| (m.role.as_str(), m.content.as_str())),
+    )
+}
+
 /// Drive a distributed `shard run` within a Session. Pipes events from
 /// `shard_cmd::run_streaming` onto the Session output channel.
 ///
@@ -2032,13 +2045,27 @@ async fn spawn_session_shard_run(
     out_tx: mpsc::Sender<Result<ServerFrame, Status>>,
     cancels: Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>,
 ) {
+    let turns = match shard_run_turns(&req) {
+        Ok(turns) => turns,
+        Err(msg) => {
+            warn!(
+                op_id = id,
+                "Session shard_run rejected its conversation: {msg}"
+            );
+            let _ = out_tx
+                .send(Ok(error_frame(id, ErrorCode::InvalidArgument, &msg)))
+                .await;
+            return;
+        }
+    };
+
     // Register the cancel channel up-front so a Cancel arriving immediately
     // after this frame still finds an entry to fire.
     let (cancel_tx, mut cancel_rx) = oneshot::channel::<()>();
     cancels.lock().await.insert(id, cancel_tx);
 
     let opts = crate::shard_cmd::ShardRunOptions {
-        prompt: req.content,
+        turns,
         model: req.model,
         // The length is the node's shard.max_tokens, which run_streaming
         // reads per run; no circuit id travels on the wire yet.
@@ -4932,6 +4959,7 @@ mod tests {
                 model: None,
                 conversation_id: None,
                 events: true,
+                messages: vec![],
             })),
         })
         .await
@@ -5001,6 +5029,7 @@ mod tests {
                 model: None,
                 conversation_id: None,
                 events: false,
+                messages: vec![],
             })),
         })
         .await
@@ -5028,6 +5057,100 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(45), collect).await;
 
         assert!(!saw_event, "events were emitted without being requested");
+
+        drop(inbound);
+        drop(tx);
+        drop(client);
+        drop(handle);
+        wait_for_close(port).await.unwrap_or_else(|last| {
+            panic!("TCP listener still {last:?} {LISTENER_CLOSE_BUDGET:?} after handle drop")
+        });
+    }
+
+    fn turn(role: &str, content: &str) -> kwaai_rpc::v1::ChatTurn {
+        kwaai_rpc::v1::ChatTurn {
+            role: role.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    fn shard_run(content: &str, messages: Vec<kwaai_rpc::v1::ChatTurn>) -> ShardRunRequest {
+        ShardRunRequest {
+            role: "user".to_string(),
+            content: content.to_string(),
+            model: None,
+            conversation_id: None,
+            events: false,
+            messages,
+        }
+    }
+
+    #[test]
+    fn shard_run_without_messages_is_one_user_turn() {
+        let turns = shard_run_turns(&shard_run("hello", vec![])).unwrap();
+        assert_eq!(turns, vec![crate::shard_cmd::Turn::user("hello")]);
+    }
+
+    #[test]
+    fn shard_run_messages_replace_content() {
+        let req = shard_run(
+            "second",
+            vec![
+                turn("user", "first"),
+                turn("assistant", "ok"),
+                turn("user", "second"),
+            ],
+        );
+        let turns = shard_run_turns(&req).unwrap();
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[1].role, crate::shard_cmd::Role::Assistant);
+    }
+
+    /// A conversation no template can render is refused before any routing.
+    #[tokio::test]
+    async fn shard_run_rejects_a_conversation_ending_on_the_assistant() {
+        use futures::StreamExt as _;
+        use tokio_stream::wrappers::ReceiverStream;
+
+        let _serial = TEST_LOCK.lock().await;
+
+        let tmp = tempfile::tempdir().expect("create tempdir for fake HOME");
+        let _env = EnvGuard::set(tmp.path());
+
+        let port = ephemeral_port();
+        let handle = spawn_on_tcp_port(KwaaiNetConfig::default(), port);
+        let up = wait_for(Duration::from_secs(2), || tcp_accepting(port)).await;
+        assert!(up, "gRPC TCP listener never came up on 127.0.0.1:{port}");
+
+        let mut client = authed_client(port).await;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<ClientFrame>(4);
+        let req = shard_run("hi", vec![turn("user", "hi"), turn("assistant", "hello")]);
+        tx.send(ClientFrame {
+            id: 1,
+            body: Some(client_frame::Body::ShardRun(req)),
+        })
+        .await
+        .expect("send shard_run frame");
+
+        let mut inbound = client
+            .session(ReceiverStream::new(rx))
+            .await
+            .expect("open Session")
+            .into_inner();
+
+        let first = tokio::time::timeout(Duration::from_secs(5), inbound.next())
+            .await
+            .expect("no reply within 5 s")
+            .expect("stream ended")
+            .expect("frame");
+        match first.body {
+            Some(server_frame::Body::Error(e)) => {
+                assert_eq!(e.code, ErrorCode::InvalidArgument as i32);
+                assert!(e.message.contains("last turn"), "{}", e.message);
+            }
+            other => panic!("expected an INVALID_ARGUMENT error, got {other:?}"),
+        }
 
         drop(inbound);
         drop(tx);

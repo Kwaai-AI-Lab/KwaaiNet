@@ -927,35 +927,162 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
 
 // ── run --local (in-process, no networking) ───────────────────────────────────
 
-/// Wrap a single user message in the model's chat template, detected from
-/// the special tokens its tokenizer defines.
+/// Who spoke a [`Turn`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    System,
+    User,
+    Assistant,
+}
+
+impl Role {
+    fn as_str(self) -> &'static str {
+        match self {
+            Role::System => "system",
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        }
+    }
+}
+
+impl std::str::FromStr for Role {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "system" => Ok(Role::System),
+            "user" => Ok(Role::User),
+            "assistant" => Ok(Role::Assistant),
+            other => Err(format!(
+                "unknown role {other:?} (expected system, user or assistant)"
+            )),
+        }
+    }
+}
+
+/// One turn of a conversation passed to [`format_chat`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Turn {
+    pub role: Role,
+    pub content: String,
+}
+
+impl Turn {
+    pub fn user(content: impl Into<String>) -> Self {
+        Turn {
+            role: Role::User,
+            content: content.into(),
+        }
+    }
+}
+
+/// Parse `(role, content)` pairs into a conversation [`format_chat`] can
+/// render: an optional system turn, then user and assistant turns
+/// alternating from user to user — the strictest template's rule (Mistral).
+pub fn parse_conversation<'a>(
+    turns: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<Vec<Turn>, String> {
+    let turns = turns
+        .into_iter()
+        .enumerate()
+        .map(|(i, (role, content))| {
+            let role: Role = role.parse().map_err(|e| format!("turn {i}: {e}"))?;
+            if role == Role::System && i > 0 {
+                return Err(format!("turn {i}: a system turn may only come first"));
+            }
+            Ok(Turn {
+                role,
+                content: content.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let first = usize::from(turns.first().is_some_and(|t| t.role == Role::System));
+    for (i, t) in turns.iter().enumerate().skip(first) {
+        let want = if (i - first) % 2 == 0 {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        if t.role != want {
+            return Err(format!(
+                "turn {i}: expected {}; user and assistant turns must alternate",
+                want.as_str()
+            ));
+        }
+    }
+    match turns.last() {
+        None => Err("the conversation has no turns".into()),
+        Some(t) if t.role != Role::User => Err("the last turn must be the user's".into()),
+        Some(_) => Ok(turns),
+    }
+}
+
+/// Render a conversation in the model's chat template, detected from the
+/// special tokens its tokenizer defines, ending where the assistant answers.
 ///
 /// `has_token` reports whether the tokenizer has a given special token. The
 /// BOS token is not added here; callers prepend it after encoding.
 ///
-/// - Llama 3: `<|start_header_id|>user<|end_header_id|>…`
-/// - ChatML (Qwen and others): `<|im_start|>user…`
+/// - Llama 3: `<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>`
+/// - ChatML (Qwen and others): `<|im_start|>{role}\n{content}<|im_end|>\n`
 /// - Mistral (`[INST]` and `[/INST]` tokens; Nemo, Small 3 and later):
-///   `[INST]{prompt}[/INST]`, with no spaces, as their `chat_template`
-///   renders one user turn. A prompt that already starts with `[INST]` is
-///   left alone, so callers that wrap it by hand are not wrapped twice.
-/// - Anything else is sent unchanged.
-pub(crate) fn format_user_turn(has_token: impl Fn(&str) -> bool, prompt: &str) -> String {
+///   `[INST]{user}[/INST]{assistant}</s>`, with no spaces. The system turn
+///   goes in `[SYSTEM_PROMPT]` where the tokenizer has it, else ahead of the
+///   last user turn, as their templates place it. A lone user prompt that
+///   already starts with `[INST]` is sent unchanged, so callers that wrap it
+///   by hand are not wrapped twice.
+/// - Anything else: the contents, separated by blank lines — best effort, as
+///   a base model has no turns to mark.
+pub(crate) fn format_chat(has_token: impl Fn(&str) -> bool, turns: &[Turn]) -> String {
+    let mut s = String::new();
     if has_token("<|start_header_id|>") {
-        format!(
-            "<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-        )
+        for t in turns {
+            let role = t.role.as_str();
+            s += &format!(
+                "<|start_header_id|>{role}<|end_header_id|>\n\n{}<|eot_id|>",
+                t.content
+            );
+        }
+        s += "<|start_header_id|>assistant<|end_header_id|>\n\n";
     } else if has_token("<|im_start|>") {
-        format!("<|im_start|>user\n{prompt}\n<|im_end|>\n<|im_start|>assistant\n")
+        for t in turns {
+            s += &format!("<|im_start|>{}\n{}<|im_end|>\n", t.role.as_str(), t.content);
+        }
+        s += "<|im_start|>assistant\n";
     } else if has_token("[INST]") && has_token("[/INST]") {
-        if prompt.trim_start().starts_with("[INST]") {
-            prompt.to_string()
-        } else {
-            format!("[INST]{prompt}[/INST]")
+        if let [t] = turns {
+            if t.role == Role::User && t.content.trim_start().starts_with("[INST]") {
+                return t.content.clone();
+            }
+        }
+        let sys_tokens = has_token("[SYSTEM_PROMPT]");
+        let system = turns.iter().find(|t| t.role == Role::System);
+        let last_user = turns.iter().rposition(|t| t.role == Role::User);
+        for (i, t) in turns.iter().enumerate() {
+            match t.role {
+                Role::System if sys_tokens => {
+                    s += &format!("[SYSTEM_PROMPT]{}[/SYSTEM_PROMPT]", t.content)
+                }
+                Role::System => {}
+                Role::User => match system {
+                    Some(sys) if !sys_tokens && Some(i) == last_user => {
+                        s += &format!("[INST]{}\n\n{}[/INST]", sys.content, t.content)
+                    }
+                    _ => s += &format!("[INST]{}[/INST]", t.content),
+                },
+                Role::Assistant => s += &format!("{}</s>", t.content),
+            }
         }
     } else {
-        prompt.to_string()
+        let contents: Vec<&str> = turns.iter().map(|t| t.content.as_str()).collect();
+        s = contents.join("\n\n");
     }
+    s
+}
+
+/// [`format_chat`] for a single user message.
+pub(crate) fn format_user_turn(has_token: impl Fn(&str) -> bool, prompt: &str) -> String {
+    format_chat(has_token, &[Turn::user(prompt)])
 }
 
 /// Load the model in-process and run inference without any P2P or TCP overhead.
@@ -1819,8 +1946,9 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
 
 /// Options for [`run_streaming`].
 pub struct ShardRunOptions {
-    /// User prompt to format and run inference against.
-    pub prompt: String,
+    /// Conversation to render and answer, ending on a user turn — see
+    /// [`parse_conversation`].
+    pub turns: Vec<Turn>,
     /// HF model id override. `None` means use `config.model`.
     pub model: Option<String>,
     /// Generation cap. `None` means the same default as `cmd_shard_run`
@@ -2449,7 +2577,7 @@ async fn run_streaming_inner(
         .context("Failed to load tokenizer")?;
     use kwaai_inference::tokenizer::Tokenizer as _;
 
-    let formatted_prompt = format_user_turn(|t| tokenizer.token_to_id(t).is_some(), &opts.prompt);
+    let formatted_prompt = format_chat(|t| tokenizer.token_to_id(t).is_some(), &opts.turns);
 
     let mut token_ids: Vec<u32> = tokenizer
         .encode(&formatted_prompt)
@@ -4543,7 +4671,7 @@ mod tests {
         let chatml = vocab(&["<|im_start|>", "<|im_end|>"]);
         assert_eq!(
             format_user_turn(&chatml, "Hi"),
-            "<|im_start|>user\nHi\n<|im_end|>\n<|im_start|>assistant\n"
+            "<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n"
         );
     }
 
@@ -4552,6 +4680,79 @@ mod tests {
         assert_eq!(format_user_turn(vocab(&["<s>"]), "Hi"), "Hi");
         // [INST] alone, without its closing token, is not the Mistral template.
         assert_eq!(format_user_turn(vocab(&["[INST]"]), "Hi"), "Hi");
+    }
+
+    fn convo(turns: &[(&'static str, &'static str)]) -> Vec<Turn> {
+        parse_conversation(turns.iter().copied()).expect("valid conversation")
+    }
+
+    const MULTI: &[(&str, &str)] = &[
+        ("system", "Be brief."),
+        ("user", "Hi"),
+        ("assistant", "Hello."),
+        ("user", "Bye"),
+    ];
+
+    #[test]
+    fn format_chat_renders_every_turn_in_llama3() {
+        let llama = vocab(&["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>"]);
+        assert_eq!(
+            format_chat(llama, &convo(MULTI)),
+            "<|start_header_id|>system<|end_header_id|>\n\nBe brief.<|eot_id|>\
+             <|start_header_id|>user<|end_header_id|>\n\nHi<|eot_id|>\
+             <|start_header_id|>assistant<|end_header_id|>\n\nHello.<|eot_id|>\
+             <|start_header_id|>user<|end_header_id|>\n\nBye<|eot_id|>\
+             <|start_header_id|>assistant<|end_header_id|>\n\n"
+        );
+    }
+
+    #[test]
+    fn format_chat_renders_every_turn_in_chatml() {
+        let chatml = vocab(&["<|im_start|>", "<|im_end|>"]);
+        assert_eq!(
+            format_chat(chatml, &convo(MULTI)),
+            "<|im_start|>system\nBe brief.<|im_end|>\n\
+             <|im_start|>user\nHi<|im_end|>\n\
+             <|im_start|>assistant\nHello.<|im_end|>\n\
+             <|im_start|>user\nBye<|im_end|>\n\
+             <|im_start|>assistant\n"
+        );
+    }
+
+    #[test]
+    fn format_chat_closes_mistral_answers_with_eos() {
+        let mistral = vocab(&["[INST]", "[/INST]"]);
+        assert_eq!(
+            format_chat(mistral, &convo(MULTI)),
+            "[INST]Hi[/INST]Hello.</s>[INST]Be brief.\n\nBye[/INST]"
+        );
+        let with_sys = vocab(&["[INST]", "[/INST]", "[SYSTEM_PROMPT]"]);
+        assert_eq!(
+            format_chat(with_sys, &convo(MULTI)),
+            "[SYSTEM_PROMPT]Be brief.[/SYSTEM_PROMPT][INST]Hi[/INST]Hello.</s>[INST]Bye[/INST]"
+        );
+    }
+
+    #[test]
+    fn format_chat_joins_turns_for_base_models() {
+        assert_eq!(
+            format_chat(vocab(&["<s>"]), &convo(MULTI)),
+            "Be brief.\n\nHi\n\nHello.\n\nBye"
+        );
+    }
+
+    #[test]
+    fn parse_conversation_rejects_what_no_template_can_render() {
+        let err =
+            |t: &[(&'static str, &'static str)]| parse_conversation(t.iter().copied()).unwrap_err();
+        assert!(err(&[]).contains("no turns"));
+        assert!(err(&[("tool", "x")]).contains("unknown role"));
+        assert!(err(&[("user", "a"), ("system", "b"), ("user", "c")]).contains("only come first"));
+        assert!(err(&[("user", "a"), ("assistant", "b")]).contains("last turn"));
+        assert!(err(&[("user", "a"), ("user", "b")]).contains("alternate"));
+        assert!(err(&[("assistant", "a"), ("user", "b")]).contains("alternate"));
+        assert!(err(&[("system", "s"), ("assistant", "a"), ("user", "b")]).contains("alternate"));
+        assert!(err(&[("system", "s")]).contains("last turn"));
     }
 
     #[test]
