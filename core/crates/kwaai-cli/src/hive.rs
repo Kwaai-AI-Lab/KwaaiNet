@@ -682,7 +682,11 @@ pub async fn run(args: crate::cli::HiveArgs) -> Result<()> {
                 }
             );
             println!("auth       {}", m.scheme);
-            println!("models     {}", m.models_url());
+            if m.chat.is_empty() {
+                println!("models     (none — no doorbell to derive from)");
+            } else {
+                println!("models     {}", m.models_url());
+            }
             println!("manifest   {}", m.source);
             println!("validation ok — no private addresses, https doorbell, known auth scheme");
             for w in &m.warnings {
