@@ -148,6 +148,9 @@ pub enum Command {
     /// Fetch and validate a peer hive's discovery manifest
     Manifest(ManifestArgs),
 
+    /// Execute a script on a peer hive that publishes a run door (endpoints.run)
+    Run(RunArgs),
+
     /// Manage the local storage fabric (Eve role — host opaque vectors for Bob nodes on the network)
     Storage(StorageArgs),
 
@@ -1198,6 +1201,35 @@ pub struct ManifestArgs {
     /// Print the raw manifest JSON instead of the summary
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args)]
+pub struct RunArgs {
+    /// Hive that publishes a run door (endpoints.run), e.g. blnq.org
+    pub target: String,
+
+    /// Script file to execute on the hive
+    pub file: std::path::PathBuf,
+
+    /// Language id (default: inferred from the file extension)
+    #[arg(long, value_name = "ID")]
+    pub language: Option<String>,
+
+    /// Data for the script's standard input
+    #[arg(long, value_name = "TEXT")]
+    pub stdin: Option<String>,
+
+    /// Argument passed to the script (repeatable)
+    #[arg(long = "arg", value_name = "ARG")]
+    pub args: Vec<String>,
+
+    /// Make the run publicly visible in the hive's run list
+    #[arg(long)]
+    pub public: bool,
+
+    /// Seconds to wait for the run to finish (the safety review alone can take 120)
+    #[arg(long, default_value_t = 300)]
+    pub timeout: u64,
 }
 
 // ---------------------------------------------------------------------------
