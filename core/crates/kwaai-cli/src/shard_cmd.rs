@@ -4473,10 +4473,15 @@ fn prefill_chunk_tokens(hidden_size: usize) -> usize {
 /// [`prefill_chunk_tokens`] for the model in `model_dir`, read from its
 /// `config.json`. Without one, a hidden size of 8192 (70B) keeps the steps
 /// small enough for every model the network serves today.
+///
+/// Read through [`kwaai_inference::hf_flat_config`]: a Gemma-4 nests
+/// `hidden_size` under `text_config`, so a top-level read found nothing and
+/// fell back to 8192 for a 1536-wide model — sizing every prefill step for a
+/// 70B that is not the one being served.
 pub(crate) fn prefill_chunk_tokens_for_model(model_dir: &Path) -> usize {
     let hidden = std::fs::read_to_string(model_dir.join("config.json"))
         .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|s| kwaai_inference::hf_flat_config(&s).ok())
         .and_then(|v| v.get("hidden_size")?.as_u64())
         .unwrap_or(8192) as usize;
     prefill_chunk_tokens(hidden)
@@ -4821,6 +4826,16 @@ mod tests {
         assert_eq!(prefill_chunk_tokens_for_model(&dir), 160);
         std::fs::write(dir.join("config.json"), r#"{"hidden_size": 5120}"#).unwrap();
         assert_eq!(prefill_chunk_tokens_for_model(&dir), 256);
+        // A Gemma-4 nests hidden_size under text_config. A top-level read
+        // found nothing and fell back to 8192 — 70B's size — so every prefill
+        // step was cut to 160 tokens for a 1536-wide model, three times more
+        // round trips than the 512 the frame cap allows.
+        std::fs::write(
+            dir.join("config.json"),
+            r#"{"model_type":"gemma4","text_config":{"hidden_size":1536}}"#,
+        )
+        .unwrap();
+        assert_eq!(prefill_chunk_tokens_for_model(&dir), 512);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

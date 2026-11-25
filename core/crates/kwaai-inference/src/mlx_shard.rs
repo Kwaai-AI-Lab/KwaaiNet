@@ -478,7 +478,12 @@ impl MlxTransformerShard {
             10000.0
         }
         let cfg_json = std::fs::read_to_string(cfg_path).map_err(load_err)?;
-        let hf: Hf = serde_json::from_str(&cfg_json).map_err(load_err)?;
+        // Flatten first: a Gemma-4 (and any other nested-config model) keeps
+        // every one of these fields under `text_config`, so deserialising the
+        // raw file failed outright with "missing field num_hidden_layers" —
+        // the MLX backend could not load any model the candle backend can.
+        let flat = crate::hf_flat_config(&cfg_json).map_err(load_err)?;
+        let hf: Hf = serde_json::from_value(flat).map_err(load_err)?;
         let c = MlxShardConfig {
             num_total_blocks: hf.num_hidden_layers,
             hidden_dim: hf.hidden_size,
