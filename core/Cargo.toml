@@ -237,6 +237,11 @@ lto = true
 opt-level = 3
 codegen-units = 1
 
+# rustc 1.93's strip makes proc-macro dylibs unloadable under Xcode 27 when
+# MACOSX_DEPLOYMENT_TARGET is 14.0 (E0463). Fixed by 1.99; none of these ship.
+[profile.release.build-override]
+strip = "none"
+
 # Fast CI profile: no LTO, parallel codegen, debug info stripped.
 # Used by ci.yml check/test jobs so cargo build finishes in ~3 min instead of 15.
 [profile.ci]
