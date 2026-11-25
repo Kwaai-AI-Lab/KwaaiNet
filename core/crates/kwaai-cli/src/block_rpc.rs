@@ -274,7 +274,10 @@ pub fn f16_bytes_to_array(bytes: &[u8], shape: &[u32]) -> Result<kwaai_inference
         .iter()
         .map(|&d| i32::try_from(d).with_context(|| format!("dim {d} exceeds i32")))
         .collect::<Result<_>>()?;
-    let n: usize = shape.iter().map(|&d| d as usize).product();
+    let n = shape
+        .iter()
+        .try_fold(1usize, |n, &d| n.checked_mul(d as usize))
+        .with_context(|| format!("shape {shape:?} overflows usize"))?;
     if n != f16_vec.len() {
         bail!(
             "shape {shape:?} needs {n} f16 elements, got {}",
@@ -783,6 +786,7 @@ mod tests {
         assert!(f16_bytes_to_array(&bytes, &[1, 5]).is_err());
         assert!(f16_bytes_to_array(&bytes, &[u32::MAX]).is_err());
         assert!(f16_bytes_to_array(&bytes, &[7]).is_err());
+        assert!(f16_bytes_to_array(&[], &[1 << 16; 4]).is_err());
         assert_eq!(
             f16_bytes_to_array(&bytes, &[2, 2]).unwrap().shape(),
             &[2, 2]
