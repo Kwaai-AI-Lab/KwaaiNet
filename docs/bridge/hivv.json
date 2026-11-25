@@ -7,12 +7,15 @@
   "endpoints": {
     "map": "https://map.kwaai.ai/",
     "state": "https://map.kwaai.ai/api/v1/state",
-    "chat": "http://192.168.1.209:8080/v1/chat/completions",
+    "chat": "https://map.kwaai.ai/v1/chat/completions",
+    "models": "https://map.kwaai.ai/v1/models",
     "docs": "https://github.com/Kwaai-AI-Lab/KwaaiNet/tree/main/docs",
-    "chat_note": "LAN door: yalla's llama.cpp (OpenAI-compatible). Offline-first per open-hives 12.2; swap for a public URL when the hive wants the world to knock."
+    "chat_note": "One public doorbell for the whole network. The door does not name a node: each request resolves a covering block chain through the libp2p hivemind DHT, so the answer may come from any node serving the model — and the door keeps working when individual nodes go down. Run one 'kwaainet shard api' behind TLS to serve it locally; the chain is picked per request, not per manifest."
   },
   "auth": {
-    "scheme": "per-node bearer (OpenAI-compatible)",
+    "scheme": "bearer-optional",
+    "peer_identity": "send the hive's brand as the bearer token (e.g. 'kwaai' or 'hive:kwaai') to be recorded in the peer's ledger as 'hive:kwaai'",
+    "note": "The door accepts anonymous requests; a recognised bearer identifies the calling hive for accounting and rate limiting. No secret is required to ring the doorbell.",
     "docs": "https://github.com/Kwaai-AI-Lab/KwaaiNet/blob/main/docs/api-quickstart.md"
   },
   "limits": {
@@ -28,7 +31,9 @@
   "discovery": {
     "canonical": "/.bridge/hivv.json",
     "standard": "/.well-known/hivv.json",
-    "git": "docs/bridge/hivv.json in the KwaaiNet repo"
+    "git": "docs/bridge/hivv.json in the KwaaiNet repo",
+    "state": "https://map.kwaai.ai/api/v1/state — every online node and the blocks it serves; the doorbell resolves a chain from this",
+    "note": "The two doors must serve identical content. This file is the single source of truth; the copy in the KwaaiNetMap repo is generated from it."
   },
   "note": "Ships in-git because www.kwaai.ai is Google Sites and cannot serve /.well-known files. Copy to kwaai.ai/.bridge/hivv.json when a file-serving host fronts the domain.",
   "status": "accepting"
