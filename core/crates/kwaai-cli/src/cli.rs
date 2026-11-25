@@ -956,9 +956,9 @@ pub struct ShardRunArgs {
     #[arg(long)]
     pub total_blocks: Option<usize>,
 
-    /// Maximum tokens to generate
-    #[arg(long, default_value = "200")]
-    pub max_tokens: usize,
+    /// Maximum tokens to generate (default: shard.max_tokens, else 200)
+    #[arg(long)]
+    pub max_tokens: Option<usize>,
 
     /// Explicit session ID (randomly generated if not set). Servers keep a
     /// session's KV for 600 s after its last step, so reusing an ID within

@@ -2040,9 +2040,8 @@ async fn spawn_session_shard_run(
     let opts = crate::shard_cmd::ShardRunOptions {
         prompt: req.content,
         model: req.model,
-        // Today the proto carries neither max_tokens nor a circuit id; we
-        // fall through to run_streaming's defaults. Both fields are reserved
-        // tag-space so they can be added without a breaking change.
+        // The length is the node's shard.max_tokens, which run_streaming
+        // reads per run; no circuit id travels on the wire yet.
         max_tokens: None,
         circuit_id: None,
         // Opt-in per request: the client asks for routing telemetry only when
