@@ -131,9 +131,20 @@ pub struct ModelConfig {
 /// `missing field hidden_size` — the exact error `hivv.org-gemma4` hit on
 /// Linux (2026-11-23). Nested values win over top-level duplicates; top-level
 /// keys only fill gaps (architectures/model_type are ignored by the struct).
-pub fn hf_config_from_json(
-    config_str: &str,
-) -> Result<candle_transformers::models::llama::LlamaConfig, serde_json::Error> {
+/// A `config.json` flattened to one level, with Gemma's rotary base mapped
+/// onto the field candle reads.
+///
+/// Llama-family configs keep every field at the top level; Gemma-2/3/4 (and
+/// friends) nest the whole text model under `text_config`. Flatten first so
+/// one reader serves both. Nested values win over top-level duplicates;
+/// top-level keys only fill gaps (`architectures`/`model_type` are ignored by
+/// the structs that consume this).
+///
+/// Every config field is read through here — `head_dim` was first read
+/// straight from the top level, which is absent on a Gemma, so the loader fell
+/// back to `hidden/heads` (192) while the weights were built for 256 and
+/// `q_proj` refused to load.
+pub fn hf_flat_config(config_str: &str) -> Result<serde_json::Value, serde_json::Error> {
     let value: serde_json::Value = serde_json::from_str(config_str)?;
     let mut merged = match value.get("hidden_size") {
         Some(_) => value,
@@ -165,7 +176,34 @@ pub fn hf_config_from_json(
             }
         }
     }
-    serde_json::from_value(merged)
+    Ok(merged)
+}
+
+pub fn hf_config_from_json(
+    config_str: &str,
+) -> Result<candle_transformers::models::llama::LlamaConfig, serde_json::Error> {
+    serde_json::from_value(hf_flat_config(config_str)?)
+}
+
+/// The prefix a model's transformer weights live under.
+///
+/// Llama-family configs keep weights at `model.*`. Gemma-2/3/4 (and other
+/// multimodal wrappers) nest the whole text model under
+/// `model.language_model.*` — the same nesting [`hf_config_from_json`]
+/// flattens on the config side. Without this a Gemma shard dies with
+/// `embedding: cannot find tensor model.embed_tokens.weight`, the error
+/// `hivv.org-gemma4` hit on Linux (2026-11-23): the config parsed (that is
+/// what the previous fix did) but the tensors were still one level down.
+///
+/// Detection mirrors [`hf_config_from_json`]: a top-level `hidden_size`
+/// means flat, a `text_config` means nested. Anything unparseable falls back
+/// to the flat prefix, which is what every Llama-family model needs.
+pub fn hf_tensor_prefix(config_str: &str) -> &'static str {
+    match serde_json::from_str::<serde_json::Value>(config_str) {
+        Ok(v) if v.get("hidden_size").is_some() => "model.",
+        Ok(v) if v.get("text_config").is_some() => "model.language_model.",
+        _ => "model.",
+    }
 }
 
 impl Default for ModelConfig {
