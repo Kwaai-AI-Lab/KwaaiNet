@@ -15,11 +15,12 @@ Number sources (feat/dream-forgetting worktree, tests/kwaai-knowledge/results/dr
   Figure 1, Table 1       <run>/metrics_t0.jsonl (temperature-0 re-score) + _recall_per_size/recall_per_size.csv
                           (memory, chunks kept); runs {Legal,NIST,Manhattan_v3}_p10_b40000, Legal_p100_b40000;
                           figures/gen_binned_t0.py -> binned_t0.csv
-  static RAG, graph+all   <run>/metrics.jsonl arms E0 (empty graph + all chunks), 0, and F/R/R2 c16
-                          graph+all (scored before the t0 re-score)
-  Table 2                 per-chunk: as Table 1; probe-check: *_p10_b40000_cap1/metrics.jsonl;
-                          per-entity: NIST_p10_b40000_pairs/metrics.jsonl (both scored before the t0 re-score),
-                          forgot counts from *_pairs/snapshots/F_c16.dream.json chunks_processed_total;
+  Baselines, Fig 1 refs   <run>/metrics_t0_extra.jsonl (2026-11-25 temperature-0 re-score,
+                          eval2/pilot/rescore_t0.py --extra / --chunk-baseline): E0 chunks-only (conventional
+                          RAG, 20 chunks), E0 graph+all (10 chunks, empty graph), F/R/R2 c16 graph+all
+  Table 2                 per-chunk: as Table 1; probe-check and per-entity: *_cap1 / *_pairs
+                          metrics_t0_extra.jsonl (per-entity re-scored with a binary that reads per-pair marks);
+                          forgot counts from <run>/snapshots/F_c16.dream.json chunks_processed_total;
                           probe-check cost: plans/DreamRAG-Forgetting-plan.md, amendment 7
   Table 3, fact audit     {NIST,Legal}_p10_b40000_pairs/fact_audit/report.json
   F out of material       plans/DreamRAG-Forgetting-plan.md, amendment 5
@@ -92,8 +93,8 @@ cycle-0 store. A rule decides when a chunk counts as consolidated:
 dreams over every chunk but records the same marks, so its curve is what the rule *would* release
 from a graph dreamed without losing evidence; R2 repeats R from the same cycle 0. If R traces F,
 the loss comes from what the rule forgets, not from dreaming with less. Two references need no
-dreaming: the cycle-0 graph with every chunk, and a conventional RAG baseline, the same chunks
-with an empty graph.
+dreaming: the cycle-0 graph with every chunk, and conventional RAG, the 20 best chunks with no
+graph.
 
 **Corpora and gold.** Three public corpora: legal opinions, AI security standards and Manhattan
 Project documents. Each run uses the first 10% of every document in reading order (so every document
@@ -126,16 +127,19 @@ graph's share of memory at cycle 0. Forgot: chunks withheld. Drops are relative 
 | Manhattan 10% | 57 | 10 | 0.76 | 53% | 82% | 25% | 43% | 9% | 34% |
 | Legal 100% | 3,723 | 20 | 0.72 | 25% | 30% | 26% | 13% | 20% | 8% |
 
-**Baselines.** Without forgetting, the graph adds no measurable recall. The conventional RAG
-baseline (empty graph, every chunk) came within 0.06 of the cycle-0 graph with every chunk in all
-four configurations, and after 16 cycles with every chunk still remembered, recall had moved by
-−0.11 to +0.23 against cycle 0, with no consistent direction and inside the run-to-run variation.
-Dreaming neither raised nor degraded recall; what it changes is what can be forgotten. (These
-comparisons were scored before the temperature-0 re-score.)
+**Baselines.** Without forgetting, the graph does not beat conventional RAG. The 20 best chunks
+with no graph scored between 0.09 below and 0.12 above the cycle-0 system (20 cards with the 10
+best chunks): lower on the legal and historical slices, level on the standards, and higher on the
+full legal corpus. The cards do add to a half-size chunk context: with the graph emptied, the same
+10 chunks lost 0.11–0.16 of recall in three configurations, though not on the standards (+0.04).
+After 16 cycles with every chunk still remembered, recall had moved by −0.13 to +0.04 against
+cycle 0, with no consistent direction and inside the run-to-run variation. Dreaming neither raised
+nor degraded recall; what it changes is what can be forgotten.
 
 ![**Figure 1.** Recall drop against memory drop over 16 dream cycles, arms F, R and R2 pooled and
-binned by memory drop (bin means, 95% bootstrap intervals). Dashed: proportional
-loss.](figures/fig1_binned_t0.png){width=100%}
+binned by memory drop (bin means, 95% bootstrap intervals). Dashed: proportional loss. Dotted:
+conventional RAG, 20 chunks and no graph. Hollow, left of 0: each arm at cycle 16 with nothing
+forgotten.](figures/fig1_binned_t0.png){width=100%}
 
 **Three curve shapes.** Legal opinions stayed below the diagonal: a 66% memory drop cost 21% of
 recall, and on the full corpus 26% cost 13%. With arms pooled into memory bins, the first fifth of
@@ -158,14 +162,14 @@ cards: on the historical documents F's cards grew 26% and R's 61%, and R's memor
 26% at cycle 1 to 9% at cycle 16 even as it released more chunks.
 
 **Table 2.** Forgetting rules, 10% slices, arm F at cycle 16: chunks forgotten and recall from graph
-plus remembered chunks (cycle 0: 0.81 legal, 0.84 standards). †Scored before the temperature-0
-re-score. Per-entity recall was evaluated on the standards only.
+plus remembered chunks (cycle 0: 0.81 legal, 0.84 standards). Each rule is a separate dream run, so
+differences of a few points between rules that forget almost nothing are dream-run variation.
 
 | Rule | Legal forgot | Legal recall | Standards forgot | Standards recall |
 |---|---|---|---|---|
 | per-chunk | 373 / 377 | 0.71 | 370 / 399 | 0.28 |
-| probe-check† | 5 / 377 | 0.82 | 7 / 399 | 0.82 |
-| per-entity† | 9 / 377 | — | 1 / 399 | 0.86 |
+| probe-check | 5 / 377 | 0.76 | 7 / 399 | 0.85 |
+| per-entity | 9 / 377 | 0.83 | 1 / 399 | 0.88 |
 
 **Rules that check the graph forget almost nothing.** The probe-check rule removed the standards'
 loss, but it also refused the legal opinions, where forgetting had cost little: the graph answered

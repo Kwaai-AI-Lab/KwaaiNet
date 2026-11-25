@@ -9,6 +9,11 @@ both drawn at memory drop 0. Bins of memory drop: [0, 5%) holds cycle 0, then 10
 bins with fewer than 2 points are dropped. 95% intervals: percentile bootstrap within each bin.
 Also writes binned_t0.csv (bin means, intervals and marginal cost between adjacent bins) beside
 the figure. Only the four public runs above are read.
+
+References (2026-11-25), from <run>/metrics_t0_extra.jsonl when scored, skipped when not:
+  dotted line    conventional RAG: 20 hybrid chunks of the slice, no graph (E0 chunks-only);
+  hollow marks   F, R, R2 at cycle 16 with every chunk kept (graph+all): dreaming, nothing forgotten.
+Both are recall drops against the same cycle-0 baseline; the hollow marks sit just left of x = 0.
 """
 import collections
 import csv
@@ -31,6 +36,7 @@ ARMS = [("F", "#2a78d6", "o"), ("R", "#eb6834", "s"), ("R2", "#1baf7a", "^")]
 EDGES = [0.0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75]
 INK, INK2, GRID, BIN = "#0b0b0b", "#52514e", "#e4e3df", "#3d3a8c"
 N_BOOT = 2000
+R0 = {}  # cycle-0 recall per run, the baseline every drop is relative to
 random.seed(0)
 
 
@@ -58,11 +64,29 @@ def points(run):
     rec = {k: mean(v) for k, v in by.items()}
     c0 = [v for (arm, c, rep, view), v in rec.items() if arm == "0"]
     r0, m0 = mean(c0), mem[("0", 0)]
+    R0[run] = r0
     pts = [("c00", 0.0, 1 - v / r0) for v in c0]
     for arm, _, _ in ARMS:
         for c in (1, 2, 4, 8, 16):
             pts.append((arm, 1 - mem[(arm, c)] / m0, 1 - rec[(arm, c, "r1", "graph+unforgotten")] / r0))
     return pts
+
+
+def references(run, r0):
+    """Recall drops of the conventional-RAG baseline and of cycle 16 with nothing forgotten."""
+    path = RES / run / "metrics_t0_extra.jsonl"
+    if not path.exists():
+        return None, {}
+    by = collections.defaultdict(list)
+    for line in open(path):
+        x = json.loads(line)
+        if x.get("answer_recall") is not None:
+            _, arm, c, rep, view = x["run_tag"].split(":")
+            by[(arm, c, view)].append(x["answer_recall"])
+    rag = by.get(("E0", "c00", "chunks-only"))
+    kept = {arm: 1 - mean(by[(arm, "c16", "graph+all")]) / r0
+            for arm, _, _ in ARMS if by.get((arm, "c16", "graph+all"))}
+    return (1 - mean(rag) / r0 if rag else None), kept
 
 
 def binned(pts):
@@ -76,7 +100,7 @@ def binned(pts):
 
 plt.rcParams.update({"font.size": 7, "axes.edgecolor": GRID, "axes.labelcolor": INK2,
                      "xtick.color": INK2, "ytick.color": INK2, "axes.titlecolor": INK})
-fig, axes = plt.subplots(1, 4, figsize=(7.0, 1.72), sharey=True)
+fig, axes = plt.subplots(1, 4, figsize=(7.0, 1.9), sharey=True)
 out = []
 for ax, (run, title, kind) in zip(axes, PANELS):
     pts = points(run)
@@ -92,6 +116,17 @@ for ax, (run, title, kind) in zip(axes, PANELS):
     ax.scatter([0] * len(c0), [100 * r for r in c0], s=10, marker="s", color=INK, zorder=4, label="cycle 0")
     xmax = max(m for _, m, _ in pts)
     ax.plot([0, 100 * xmax], [0, 100 * xmax], color=INK2, lw=0.8, ls=(0, (4, 3)))
+    rag, kept = references(run, R0[run])
+    if rag is not None:
+        ax.axhline(100 * rag, color=INK2, lw=0.8, ls=(0, (1, 1.5)), zorder=1, label="RAG, 20 chunks")
+    dx = -0.06 * 100 * xmax
+    for i, (arm, colr, mk) in enumerate(ARMS):
+        if arm in kept:
+            ax.scatter([dx * (1 + 0.35 * i)], [100 * kept[arm]], s=12, marker=mk, facecolor="white",
+                       edgecolor=colr, lw=0.9, zorder=4,
+                       label="c16, nothing forgotten" if i == 0 else None)
+    out.extend(dict(run=run, bin=f"ref {name}", recall_drop=round(v, 4))
+               for name, v in ([("rag20", rag)] if rag is not None else []) + sorted(kept.items()))
     boots, means = [], []
     for (lo, hi), inside in bins:
         draws = []
@@ -121,9 +156,10 @@ for ax, (run, title, kind) in zip(axes, PANELS):
             style="italic", color=INK2, bbox=dict(boxstyle="round,pad=0.25", fc="white", ec=GRID, lw=0.5))
     ax.set_xlabel("memory drop (%)"); ax.set_ylim(-30, 90)
 axes[0].set_ylabel("recall drop (%)")
-axes[0].legend(loc="upper left", frameon=False, fontsize=5.5, labelcolor=INK, handletextpad=0.2,
-               borderaxespad=0.1, labelspacing=0.2)
-fig.tight_layout(pad=0.3, w_pad=0.6)
+handles, labels = axes[0].get_legend_handles_labels()
+fig.legend(handles, labels, loc="lower center", ncol=len(labels), frameon=False, fontsize=6,
+           labelcolor=INK, handletextpad=0.3, columnspacing=1.2, borderaxespad=0.1)
+fig.tight_layout(pad=0.3, w_pad=0.6, rect=(0, 0.09, 1, 1))
 for ext in ("png", "pdf"):
     fig.savefig(HERE / f"fig1_binned_t0.{ext}", dpi=300)
 keys = ["run", "bin", "n", "memory_drop", "recall_drop", "marginal", "ci_lo", "ci_hi"]
