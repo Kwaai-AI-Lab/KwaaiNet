@@ -184,7 +184,7 @@ pub fn load_safetensors(
     let config_str = std::fs::read_to_string(config_json_path).map_err(|e| {
         InferenceError::ModelLoadError(format!("Cannot read {}: {e}", config_json_path.display()))
     })?;
-    let hf_config: LlamaConfig = serde_json::from_str(&config_str)
+    let hf_config: LlamaConfig = crate::hf_config_from_json(&config_str)
         .map_err(|e| InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}")))?;
 
     info!(
