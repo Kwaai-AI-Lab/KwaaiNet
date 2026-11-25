@@ -43,6 +43,7 @@ pub mod diag;
 pub mod error;
 pub mod handle;
 pub mod identity;
+pub mod lan;
 pub mod learned_addrs;
 pub mod peer_record;
 pub mod raw_stream;
