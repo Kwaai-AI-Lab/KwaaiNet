@@ -1227,7 +1227,8 @@ pub struct RunArgs {
     #[arg(long)]
     pub public: bool,
 
-    /// Seconds to wait for the run to finish (the safety review alone can take 120)
+    /// Seconds to wait in the poll phase (the safety review runs during
+    /// submit, before this countdown starts, and can take 120s)
     #[arg(long, default_value_t = 300)]
     pub timeout: u64,
 }

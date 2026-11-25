@@ -16,17 +16,27 @@
 //!
 //! Terminal states are `completed | failed | timeout | rejected`
 //! (`routes/run.js → doneStatuses`). The process exits with the remote exit
-//! code so a calling pipeline sees the truth, not a translation of it.
+//! code so a calling pipeline sees the truth, not a translation of it:
+//! `completed` → the remote code (0 = success), `timeout` → 124 (the
+//! convention), `rejected` on the poll → 2, `failed` → 1 with the hive's
+//! `error_message`. A rejection surfaced at submit is a bail → 1; both say
+//! why. stdout carries only the remote script's bytes — every status line
+//! this command prints goes to stderr.
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::hive::fetch_manifest;
+use crate::hive::{fetch_manifest, http_client, snippet as clip, user_agent};
 
 /// The peer's terminal run states.
 const DONE: &[&str] = &["completed", "failed", "timeout", "rejected"];
+
+/// Read the script file; the context is what names the file on failure.
+fn read_script(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))
+}
 
 /// Map a file extension to blnq's language ids (`/api/run/languages`).
 fn language_for(file: &Path, explicit: Option<&str>) -> Result<String> {
@@ -47,9 +57,10 @@ fn language_for(file: &Path, explicit: Option<&str>) -> Result<String> {
         "pl" => "perl",
         "c" => "c",
         "cpp" | "cc" | "cxx" => "cpp",
+        "go" => "go",
         _ => bail!(
             "cannot infer a language from .{ext} — pass --language \
-             (blnq runs: python, node, ruby, bash, php, perl, c, cpp)"
+             (blnq runs: python, node, ruby, bash, php, perl, c, cpp, go)"
         ),
     };
     Ok(lang.to_string())
@@ -66,19 +77,17 @@ fn new_bytes(full: &str, printed: usize) -> Option<&str> {
 }
 
 pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
-    let code = std::fs::read_to_string(&args.file)
-        .with_context(|| format!("reading {}", args.file.display()))?;
+    let code = read_script(&args.file)?;
     let language = language_for(&args.file, args.language.as_deref())?;
 
-    // No redirects: the door must answer as itself (see hive::http_client).
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .context("building the HTTP client")?;
+    // Shared no-redirect client: the door must answer as itself.
+    let client = http_client()?;
 
     let m = fetch_manifest(&client, &args.target).await?;
+    // stderr, not stdout: this command's stdout belongs to the remote script,
+    // so a calling pipeline (kwaainet run … > out.txt) sees only its bytes.
     for w in &m.warnings {
-        println!("warning    {w}");
+        eprintln!("warning    {w}");
     }
     let door = m.raw["endpoints"]["run"]
         .as_str()
@@ -90,6 +99,15 @@ pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
                 m.hive
             )
         })?;
+    // We POST source code and receive a read token over this door — the same
+    // rule endpoints.chat lives by: https only, one URL, never cleartext.
+    if !door.starts_with("https://") || door.chars().any(char::is_whitespace) {
+        bail!(
+            "endpoints.run must be a single https URL, got {door:?} — \
+             source code and read tokens never travel in cleartext"
+        );
+    }
+    let door = door.trim_end_matches('/'); // no // in {door}/{id}/logs
 
     let mut body = serde_json::json!({
         "language": language,
@@ -103,7 +121,7 @@ pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
         body["args"] = Value::Array(args.args.iter().cloned().map(Value::String).collect());
     }
 
-    println!(
+    eprintln!(
         "submitting to {} ({language}) — the safety review can take up to 120s …",
         m.hive
     );
@@ -123,17 +141,7 @@ pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
     if status.as_u16() == 403 {
         // Their contract: the rejection reason is FULL — "no mystery cuts in
         // transit". Show it, plus the id for bug reports.
-        let v: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        let level = v["safety"]["level"].as_str().unwrap_or("?");
-        let reason = v["safety"]["reason"]
-            .as_str()
-            .unwrap_or("(no reason given)");
-        let review = v["safety"]["review"].as_str().unwrap_or("?");
-        let id = v["id"].as_str().unwrap_or("?");
-        bail!(
-            "rejected by AI safety review (level {level}, via {review}):\n{reason}\n\
-             run id {id} — quote it in a bug report if this is wrong"
-        );
+        bail!("{}", rejection(&text));
     }
     if !status.is_success() {
         bail!("submit to {door} returned HTTP {status}: {}", clip(&text));
@@ -147,7 +155,7 @@ pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
         .context("response carried no read_token — cannot fetch private output")?;
     let pattern = v["safety"]["patternLevel"].as_str().unwrap_or("-");
     let ai = v["safety"]["aiLevel"].as_str().unwrap_or("-");
-    println!("submitted {id} (safety: pattern {pattern}, ai {ai})");
+    eprintln!("submitted {id} (safety: pattern {pattern}, ai {ai})");
 
     // ── poll: cumulative output, printed once, as it grows ──────────────
     let logs_url = format!("{door}/{id}/logs");
@@ -194,14 +202,10 @@ pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
 
         let state = v["status"].as_str().unwrap_or("");
         if DONE.contains(&state) {
-            // Final response is the authoritative DB copy; print anything the
-            // buffer had not shown yet.
-            if let Some(new) = new_bytes(out, printed_out) {
-                print!("{new}");
-            }
-            if let Some(new) = new_bytes(err_out, printed_err) {
-                eprint!("{new}");
-            }
+            // No final re-print is needed: this response IS the authoritative
+            // DB copy, and the streaming block above already emitted its
+            // unprinted suffix (blnq's buffer holds the same capped prefix the
+            // final columns contain — runStream.js, "never printed twice").
             let remote_exit = &v["exitCode"];
             let secs = started.elapsed().as_secs();
             match state {
@@ -222,11 +226,40 @@ pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
                     std::process::exit(2);
                 }
                 _ => {
-                    // failed
-                    let detail = v["stderr"].as_str().filter(|s| !s.is_empty());
+                    // failed: /logs rarely carries the cause (the executor's
+                    // outer .catch writes error_message only, stderr NULL),
+                    // so read it off the run row itself.
+                    let mut detail = v["stderr"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .map(clip)
+                        .unwrap_or_default();
+                    if detail.is_empty() {
+                        if let Ok(row) = client
+                            .get(format!("{door}/{id}"))
+                            .timeout(Duration::from_secs(20))
+                            .header("X-Run-Token", token)
+                            .send()
+                            .await
+                        {
+                            if let Ok(body) = row.text().await {
+                                if let Some(em) = serde_json::from_str::<Value>(&body)
+                                    .ok()
+                                    .and_then(|r| r["error_message"].as_str().map(str::to_string))
+                                    .filter(|s| !s.is_empty())
+                                {
+                                    detail = clip(&em);
+                                }
+                            }
+                        }
+                    }
                     bail!(
                         "run failed after {secs}s{}",
-                        detail.map(|d| format!(": {}", clip(d))).unwrap_or_default()
+                        if detail.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {detail}")
+                        }
                     );
                 }
             }
@@ -234,26 +267,32 @@ pub async fn run(args: crate::cli::RunArgs) -> Result<()> {
     }
 }
 
-fn user_agent() -> String {
-    format!("kwaainet/{}/bridge", env!("CARGO_PKG_VERSION"))
-}
-
-fn clip(s: &str) -> String {
-    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() > 300 {
-        let cut: String = flat.chars().take(300).collect();
-        format!("{cut}…")
-    } else if flat.is_empty() {
-        "(empty body)".into()
-    } else {
-        flat
-    }
+/// Render a 403 rejection card as one message.
+///
+/// The server has two shapes (routes/run.js): the pattern gate emits
+/// `safety:{level, reason, review:'pattern'}`, the AI review emits
+/// `safety:{level, reason, review, reviewer}` — both carry a pre-minted
+/// `id`. The reason is contractually FULL ("no mystery cuts in transit"),
+/// so it is shown verbatim; only a missing/blank reason gets a placeholder.
+fn rejection(text: &str) -> String {
+    let v: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    let level = v["safety"]["level"].as_str().unwrap_or("?");
+    let reason = v["safety"]["reason"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("(no reason given)");
+    let review = v["safety"]["review"].as_str().unwrap_or("?");
+    let id = v["id"].as_str().unwrap_or("?");
+    format!(
+        "rejected by the hive's safety review (level {level}, via {review}):\n{reason}\n\
+         run id {id} — quote it in a bug report if this is wrong"
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn language_comes_from_the_extension_unless_explicit() {
@@ -262,6 +301,7 @@ mod tests {
         assert_eq!(language_for(Path::new("a.mjs"), None).unwrap(), "node");
         assert_eq!(language_for(Path::new("a.sh"), None).unwrap(), "bash");
         assert_eq!(language_for(Path::new("a.cpp"), None).unwrap(), "cpp");
+        assert_eq!(language_for(Path::new("a.go"), None).unwrap(), "go");
         // explicit wins over a misleading extension
         assert_eq!(
             language_for(Path::new("a.txt"), Some("python")).unwrap(),
@@ -292,21 +332,39 @@ mod tests {
     }
 
     #[test]
-    fn run_args_file_is_read_before_anything_else() {
-        // The missing-file path must name the file, not some later step.
-        let args = crate::cli::RunArgs {
-            target: "example.org".into(),
-            file: PathBuf::from("/nonexistent/definitely-missing.py"),
-            language: None,
-            stdin: None,
-            args: vec![],
-            public: false,
-            timeout: 1,
-        };
-        // the same chain run() uses: the context is what names the file
-        let err = std::fs::read_to_string(&args.file)
-            .with_context(|| format!("reading {}", args.file.display()))
-            .unwrap_err();
+    fn read_script_names_the_missing_file() {
+        // Tests the real helper run() calls, not a re-implementation.
+        let err = read_script(Path::new("/nonexistent/definitely-missing.py")).unwrap_err();
         assert!(err.to_string().contains("definitely-missing"));
+    }
+
+    #[test]
+    fn rejection_card_parses_both_server_shapes() {
+        // The AI review's shape (routes/run.js ~557).
+        let ai = r#"{"id":"run-a","error":"Code rejected by AI safety review",
+            "safety":{"level":"high","reason":"opens an outbound socket","review":"ai"}}"#;
+        let msg = rejection(ai);
+        assert!(msg.contains("run-a"), "{msg}");
+        assert!(msg.contains("opens an outbound socket"), "{msg}");
+        assert!(msg.contains("high"), "{msg}");
+        assert!(msg.contains("via ai"), "{msg}");
+
+        // The pattern gate's shape (routes/run.js ~318) — no error field,
+        // review is the literal 'pattern'.
+        let pattern = r#"{"id":"run-b","safety":{"level":"high",
+            "reason":"matches a dangerous pattern","review":"pattern"}}"#;
+        let msg = rejection(pattern);
+        assert!(msg.contains("run-b"), "{msg}");
+        assert!(msg.contains("matches a dangerous pattern"), "{msg}");
+        assert!(msg.contains("via pattern"), "{msg}");
+
+        // Blank reason must not print an empty line.
+        let msg =
+            rejection(r#"{"id":"run-c","safety":{"level":"low","reason":"  ","review":"ai"}}"#);
+        assert!(msg.contains("(no reason given)"), "{msg}");
+
+        // Not JSON at all: still a usable message, never a panic.
+        let msg = rejection("<html>gateway error</html>");
+        assert!(msg.contains("run id ?"), "{msg}");
     }
 }

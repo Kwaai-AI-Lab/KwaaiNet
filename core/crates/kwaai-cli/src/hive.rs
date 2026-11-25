@@ -623,7 +623,7 @@ fn extract_text(v: &Value) -> Option<String> {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-fn user_agent() -> String {
+pub(crate) fn user_agent() -> String {
     format!("kwaainet/{}/bridge", env!("CARGO_PKG_VERSION"))
 }
 
@@ -638,7 +638,7 @@ fn request_id() -> String {
 }
 
 /// Trim a peer's error body to something a terminal can carry.
-fn snippet(s: &str) -> String {
+pub(crate) fn snippet(s: &str) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > 300 {
         let cut: String = flat.chars().take(300).collect();
@@ -654,12 +654,12 @@ fn snippet(s: &str) -> String {
 // CLI entry point
 // ---------------------------------------------------------------------------
 
-/// The one HTTP client both commands share.
+/// The one HTTP client the cross-hive commands share.
 ///
 /// No redirects: a manifest door must answer as itself. Following a 302
 /// could land us on a host (or an http:// URL) that validate() never saw,
 /// and a 307 on the doorbell POST would forward the user's message there.
-fn http_client() -> Result<reqwest::Client> {
+pub(crate) fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(user_agent())
         .redirect(reqwest::redirect::Policy::none())
