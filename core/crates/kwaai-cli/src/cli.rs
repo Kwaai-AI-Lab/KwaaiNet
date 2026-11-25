@@ -142,8 +142,11 @@ pub enum Command {
     /// View and manage the local peer reputation store (trust scores, observed performance)
     Reputation(ReputationArgs),
 
-    /// Talk to other hives over the open-hives/0.1 bridge (fetch manifests, ring doorbells)
-    Hive(HiveArgs),
+    /// Ask a peer hive a question through its open-hives/0.1 doorbell
+    Ask(AskArgs),
+
+    /// Fetch and validate a peer hive's discovery manifest
+    Manifest(ManifestArgs),
 
     /// Manage the local storage fabric (Eve role — host opaque vectors for Bob nodes on the network)
     Storage(StorageArgs),
@@ -1171,39 +1174,30 @@ pub enum ReputationAction {
 }
 
 // ---------------------------------------------------------------------------
-// hive (open-hives/0.1 doorbell)
+// cross-hive doorbell (open-hives/0.1) — mirrors hivv's `hivv ask`
 // ---------------------------------------------------------------------------
 
 #[derive(Args)]
-pub struct HiveArgs {
-    #[command(subcommand)]
-    pub action: HiveAction,
+pub struct AskArgs {
+    /// Peer hive: a brand ("hivv"), a host ("hivv.org"), or a manifest URL
+    pub target: String,
+
+    /// The message for the peer hive
+    pub message: String,
+
+    /// Model id (default: first model the peer publishes)
+    #[arg(long, value_name = "ID")]
+    pub model: Option<String>,
 }
 
-#[derive(Subcommand)]
-pub enum HiveAction {
-    /// Fetch and validate a peer hive's open-hives/0.1 discovery manifest
-    Fetch {
-        /// Peer hive: a brand ("hivv"), a host ("hivv.org"), or a manifest URL
-        target: String,
+#[derive(Args)]
+pub struct ManifestArgs {
+    /// Peer hive: a brand ("hivv"), a host ("hivv.org"), or a manifest URL
+    pub target: String,
 
-        /// Print the raw manifest JSON instead of the summary
-        #[arg(long)]
-        json: bool,
-    },
-
-    /// Ring a peer hive's doorbell — ask the whole hive a question
-    Ask {
-        /// Peer hive: a brand, a host, or a manifest URL
-        target: String,
-
-        /// The message for the peer hive
-        message: String,
-
-        /// Model id (default: first model the peer publishes)
-        #[arg(long, value_name = "ID")]
-        model: Option<String>,
-    },
+    /// Print the raw manifest JSON instead of the summary
+    #[arg(long)]
+    pub json: bool,
 }
 
 // ---------------------------------------------------------------------------

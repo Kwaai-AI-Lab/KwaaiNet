@@ -1638,10 +1638,14 @@ async fn main() -> Result<()> {
         }
 
         // -------------------------------------------------------------------
-        // hive (open-hives/0.1 doorbell)
+        // cross-hive doorbell (open-hives/0.1)
         // -------------------------------------------------------------------
-        Command::Hive(args) => {
-            hive::run(args).await?;
+        Command::Ask(args) => {
+            hive::ask_cmd(args).await?;
+        }
+
+        Command::Manifest(args) => {
+            hive::manifest_cmd(args).await?;
         }
 
         // -------------------------------------------------------------------
