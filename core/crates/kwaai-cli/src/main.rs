@@ -42,6 +42,7 @@ mod rebalancer;
 mod reputation;
 mod reputation_cmd;
 mod routing;
+mod run_cmd;
 mod service;
 mod shard_api;
 mod shard_cmd;
@@ -1646,6 +1647,10 @@ async fn main() -> Result<()> {
 
         Command::Manifest(args) => {
             hive::manifest_cmd(args).await?;
+        }
+
+        Command::Run(args) => {
+            run_cmd::run(args).await?;
         }
 
         // -------------------------------------------------------------------
