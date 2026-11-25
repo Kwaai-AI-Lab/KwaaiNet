@@ -1,4 +1,4 @@
-//! `kwaainet hive` — the open-hives/0.1 doorbell client.
+//! `kwaainet ask` / `kwaainet manifest` — the open-hives/0.1 doorbell client.
 //!
 //! A hive is a whole network of nodes behind one domain; the doorbell is the
 //! single `endpoints.chat` URL its discovery manifest publishes. Ringing it
@@ -654,65 +654,69 @@ fn snippet(s: &str) -> String {
 // CLI entry point
 // ---------------------------------------------------------------------------
 
-/// Dispatch for `kwaainet hive fetch|ask`.
-pub async fn run(args: crate::cli::HiveArgs) -> Result<()> {
-    // No redirects: a manifest door must answer as itself. Following a 302
-    // could land us on a host (or an http:// URL) that validate() never saw,
-    // and a 307 on the doorbell POST would forward the user's message there.
-    let client = reqwest::Client::builder()
+/// The one HTTP client both commands share.
+///
+/// No redirects: a manifest door must answer as itself. Following a 302
+/// could land us on a host (or an http:// URL) that validate() never saw,
+/// and a 307 on the doorbell POST would forward the user's message there.
+fn http_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
         .user_agent(user_agent())
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .context("building the HTTP client")?;
+        .context("building the HTTP client")
+}
 
-    match args.action {
-        crate::cli::HiveAction::Fetch { target, json } => {
-            let m = fetch_manifest(&client, &target).await?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&m.raw)?);
-                return Ok(());
-            }
-            println!("hive       {} ({})", m.hive, m.protocol);
-            println!(
-                "doorbell   {}",
-                if m.chat.is_empty() {
-                    "(none — visible but silent)"
-                } else {
-                    &m.chat
-                }
-            );
-            println!("auth       {}", m.scheme);
-            if m.chat.is_empty() {
-                println!("models     (none — no doorbell to derive from)");
-            } else {
-                println!("models     {}", m.models_url());
-            }
-            println!("manifest   {}", m.source);
-            println!("validation ok — no private addresses, https doorbell, known auth scheme");
-            for w in &m.warnings {
-                println!("warning    {w}");
-            }
-        }
-        crate::cli::HiveAction::Ask {
-            target,
-            message,
-            model,
-        } => {
-            let m = fetch_manifest(&client, &target).await?;
-            for w in &m.warnings {
-                println!("warning    {w}");
-            }
-            println!("ringing {} …", m.hive);
-            let reply = ask(&client, &m, &message, model.as_deref()).await?;
-            println!(
-                "answered by {} (model {}, {} ms)\n",
-                reply.door,
-                reply.model,
-                reply.elapsed.as_millis()
-            );
-            println!("{}", reply.text);
-        }
+/// `kwaainet manifest <hive>` — fetch, validate, and show a peer manifest.
+pub async fn manifest_cmd(args: crate::cli::ManifestArgs) -> Result<()> {
+    let client = http_client()?;
+    let m = fetch_manifest(&client, &args.target).await?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&m.raw)?);
+        return Ok(());
     }
+    println!("hive       {} ({})", m.hive, m.protocol);
+    println!(
+        "doorbell   {}",
+        if m.chat.is_empty() {
+            "(none — visible but silent)"
+        } else {
+            &m.chat
+        }
+    );
+    println!("auth       {}", m.scheme);
+    if m.chat.is_empty() {
+        println!("models     (none — no doorbell to derive from)");
+    } else {
+        println!("models     {}", m.models_url());
+    }
+    println!("manifest   {}", m.source);
+    println!("validation ok — no private addresses, https doorbell, known auth scheme");
+    for w in &m.warnings {
+        println!("warning    {w}");
+    }
+    Ok(())
+}
+
+/// `kwaainet ask <hive> "<message>"` — ring a peer hive's doorbell.
+///
+/// Mirrors hivv.org's `hivv ask <hive> "<message>"` so the two CLIs read
+/// the same way to anyone who knows one of them.
+pub async fn ask_cmd(args: crate::cli::AskArgs) -> Result<()> {
+    let client = http_client()?;
+    let m = fetch_manifest(&client, &args.target).await?;
+    for w in &m.warnings {
+        println!("warning    {w}");
+    }
+    println!("ringing {} …", m.hive);
+    let reply = ask(&client, &m, &args.message, args.model.as_deref()).await?;
+    println!(
+        "answered by {} (model {}, {} ms)\n",
+        reply.door,
+        reply.model,
+        reply.elapsed.as_millis()
+    );
+    println!("{}", reply.text);
     Ok(())
 }
 
