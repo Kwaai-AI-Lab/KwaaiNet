@@ -1,0 +1,57 @@
+{
+  "hive": "hivv.org",
+  "protocol": "open-hives/0.1",
+  "display_name": "HIVV — The People's Distributed AI Network",
+  "human": "https://hivv.org/api.html",
+  "ai": "https://hivv.org/ai.txt",
+  "endpoints": {
+    "chat": "https://hivv.org/v1/chat/completions",
+    "models": "https://hivv.org/v1/models",
+    "load": "https://hivv.org/api/bridge/load",
+    "allowance": "https://hivv.org/api/bridge/allowance",
+    "status": "https://hivv.org/api/public/status",
+    "nodes": "https://hivv.org/api/control/nodes",
+    "submit": "https://hivv.org/api/bridge/requests",
+    "receipts": "https://hivv.org/api/bridge/receipts",
+    "inbox": "https://hivv.org/api/agents/{node_id}/inbox",
+    "heartbeat": "/api/bridge/heartbeat",
+    "a2a": "https://hivv.org/api/a2a",
+    "agent_card": "https://hivv.org/.well-known/agent-card.json",
+    "telemetry": "https://hivv.org/api/telemetry/overview",
+    "mcp": "https://hivv.org/mcp"
+  },
+  "auth": {
+    "scheme": "bearer+hmac",
+    "docs": "https://hivv.org/api.html#auth"
+  },
+  "limits": {
+    "rate_per_min": 60,
+    "allowance_max_percent": 85,
+    "max_hops": 3
+  },
+  "loop_policy": "origin-hive-never-recipient",
+  "connect": [
+    "hivv connect <host>",
+    "hivv connect auto"
+  ],
+  "routing": {
+    "modes": [
+      "affinity",
+      "spread",
+      "idle-first"
+    ],
+    "default": "idle-first"
+  },
+  "status": "accepting",
+  "discovery": {
+    "canonical": "/.bridge/hivv.json",
+    "standard": "/.well-known/hivv.json",
+    "dns": "_hivv.example TXT"
+  },
+  "protocols": {
+    "bridge": "open-hives/0.1",
+    "mcp": "mcp/streamable-http",
+    "a2a": "a2a/1.0",
+    "openai": "/v1/chat/completions"
+  }
+}

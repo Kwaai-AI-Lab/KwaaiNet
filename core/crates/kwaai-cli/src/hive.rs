@@ -5,16 +5,37 @@
 //! does not name a node — the peer hive resolves the request across its own
 //! nodes, so the door keeps working when individual machines go down.
 //!
-//! This module is the kwaai-side mirror of hivv.org's `hivv ask` flow
+//! This module is the kwaai-side counterpart of hivv.org's `hivv ask` flow
 //! (`public_html/hivv-cli.py::_ask_hive`): resolve a brand or host, try the
-//! three manifest doors, validate what comes back against the same rules our
-//! own manifest is held to (`tests/bridge_manifest.rs`), then ring.
+//! three manifest doors, validate what comes back, then ring.
 //!
-//! The validation rules are deliberately shared with our own conformance
-//! tests: a manifest is a promise, and both sides of the bridge are held to
-//! the same promise. The regression this exists for: our manifest once
-//! advertised `http://192.168.1.209:8080` as the doorbell — a LAN address no
-//! peer outside that network could ever reach.
+//! ## How our validation differs from our own conformance tests
+//!
+//! [`tests/bridge_manifest.rs`] pins what *our* manifest may claim; this
+//! module decides what *a peer's* manifest may claim. The two deliberately
+//! differ, because the jobs differ:
+//!
+//! - **protocol** — ours must be exactly `open-hives/0.1`; a peer may be any
+//!   `open-hives/*` (we interoperate with the future, and hivv.org's client
+//!   is likewise prefix-tolerant).
+//! - **auth schemes** — ours may only claim what `shard_api.rs` implements;
+//!   a peer may claim any scheme *we know how to sit next to*, which includes
+//!   hivv.org's `bearer+hmac` (accounting bearer plus HMAC over the bridge
+//!   endpoints, HIVE-TO-HIVE §3).
+//! - **required fields** — ours must carry the full contract (`discovery.note`,
+//!   `discovery.state`, `status`, …); a peer need only be ringable — a hive
+//!   without `endpoints.chat` is *visible but silent* (§12.1) and is fetched
+//!   with a warning, not rejected.
+//!
+//! The two files share the private-address marker list by copy — each carries
+//! a comment pointing at the other; keep them in sync. Here the list is
+//! backed by real IP parsing (see [`string_publishes_private_address`])
+//! because this client *acts* on the values: it GETs `endpoints.models` and
+//! POSTs to `endpoints.chat`.
+//!
+//! The regression this exists for: our manifest once advertised
+//! `http://192.168.1.209:8080` as the doorbell — a LAN address no peer
+//! outside that network could ever reach.
 
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
@@ -37,20 +58,21 @@ const DOORS: &[&str] = &[
 /// an explicit URL is fetched directly.
 const BRANDS_REGISTRY: &str = "https://hivv.org/brands.json";
 
-/// Every string value in a manifest is checked against these: a private
-/// address in a public manifest leaks internal topology and cannot be reached
-/// from outside the LAN that owns it — hivv.org's SSRF guard (api/lib/ssrf.js)
-/// refuses exactly these ranges, so a peer would too.
-const FORBIDDEN_ADDRESS_MARKERS: &[&str] = &[
-    "192.168.",
-    "10.0.",
-    "127.0.0.1",
-    "localhost",
-    "0.0.0.0",
-    "169.254.",
-    ".local",
-    ".internal",
-];
+/// Hostname markers that are never a public address. Kept as substrings
+/// because they identify *names*, not address ranges — ranges are parsed by
+/// [`string_publishes_private_address`].
+///
+/// MIRROR: `tests/bridge_manifest.rs` carries the same list for our own
+/// manifest. Keep the two in sync.
+const HOSTNAME_MARKERS: &[&str] = &["localhost", ".local", ".internal"];
+
+/// Partial-octet address fragments — the cheap substring net that catches
+/// shorthand forms a strict four-octet parse would miss (`10.0.5`,
+/// `192.168.1`).
+///
+/// MIRROR: `tests/bridge_manifest.rs` carries the same list for our own
+/// manifest. Keep the two in sync.
+const ADDRESS_MARKERS: &[&str] = &["192.168.", "10.0.", "127.0.0.1", "0.0.0.0", "169.254."];
 
 /// Auth schemes a peer hive may advertise. Claiming a scheme the server does
 /// not implement makes a peer believe it authenticated when it did not — only
@@ -60,7 +82,7 @@ const FORBIDDEN_ADDRESS_MARKERS: &[&str] = &[
 /// - `bearer+hmac` — hivv.org's: an accounting bearer plus an HMAC
 ///   signature over the bridge endpoints (HIVE-TO-HIVE §3). The doorbell
 ///   itself is ringable with the bearer alone, which is what we send.
-const IMPLEMENTED_AUTH_SCHEMES: &[&str] = &["bearer-optional", "none", "anonymous", "bearer+hmac"];
+const PEER_AUTH_SCHEMES: &[&str] = &["bearer-optional", "none", "anonymous", "bearer+hmac"];
 
 // ---------------------------------------------------------------------------
 // Manifest
@@ -73,18 +95,22 @@ pub struct PeerManifest {
     pub source: String,
     pub hive: String,
     pub protocol: String,
-    /// `endpoints.chat` — the doorbell.
+    /// `endpoints.chat` — the doorbell; empty when the hive is
+    /// visible but silent (§12.1).
     pub chat: String,
     /// `endpoints.models`, if published; derived from the chat URL otherwise.
     pub models: Option<String>,
     /// `auth.scheme`, or `"none"` when unadvertised.
     pub scheme: String,
+    /// Non-fatal advisories from validation (e.g. no doorbell published).
+    pub warnings: Vec<String>,
     pub raw: Value,
 }
 
 impl PeerManifest {
     /// The models endpoint: published explicitly, else derived from the chat
-    /// door (`…/v1/chat/completions` → `…/v1/models`).
+    /// door (`…/v1/chat/completions` → `…/v1/models`), else the origin's
+    /// standard `/v1/models`.
     pub fn models_url(&self) -> String {
         if let Some(m) = &self.models {
             return m.clone();
@@ -92,21 +118,34 @@ impl PeerManifest {
         if let Some(base) = self.chat.strip_suffix("/chat/completions") {
             return format!("{base}/models");
         }
-        format!("{}/models", self.chat)
+        match self.chat.split_once("://") {
+            Some((scheme, rest)) => {
+                let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+                format!("{scheme}://{host}/v1/models")
+            }
+            None => format!("{}/v1/models", self.chat),
+        }
     }
 }
 
-/// Validate a manifest against the open-hives/0.1 rules our own manifest is
-/// held to. Returns every violation, not just the first — the error IS the
-/// documentation, so a peer author sees all the screws to remove at once.
-pub fn validate(m: &Value) -> Result<(), Vec<String>> {
+/// Validate a manifest against the peer-side open-hives rules.
+///
+/// Returns `Ok(warnings)` when the manifest is fetchable (possibly with
+/// advisories — a hive with no `endpoints.chat` is visible but silent, §12.1),
+/// or `Err(errors)` listing *every* violation: the error IS the documentation,
+/// so a peer author sees all the screws to remove at once.
+pub fn validate(m: &Value) -> Result<Vec<String>, Vec<String>> {
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
 
+    // Prefix, not exact: we interoperate with future open-hives revisions the
+    // way hivv.org's client does. "open-hivex" and bare "open-hive" do not
+    // start with "open-hives/" and are rejected — pinned by test.
     let protocol = m["protocol"].as_str().unwrap_or_default();
-    if !protocol.starts_with("open-hive") {
+    if !protocol.starts_with("open-hives/") {
         errors.push(format!(
-            "protocol must be open-hives/0.1 (got {protocol:?}) — \
-             this does not look like an open-hives manifest"
+            "protocol must start with \"open-hives/\" (current: open-hives/0.1), \
+             got {protocol:?} — this does not look like an open-hives manifest"
         ));
     }
 
@@ -115,57 +154,57 @@ pub fn validate(m: &Value) -> Result<(), Vec<String>> {
     }
 
     // The doorbell rule (open-hives/0.1 §12.1): a hive WITHOUT a usable
-    // endpoints.chat is "visible but silent".
+    // endpoints.chat is "visible but silent" — fetchable, not ringable.
     let chat = m["endpoints"]["chat"].as_str().unwrap_or_default();
     if chat.is_empty() {
-        errors.push(
-            "endpoints.chat must publish the doorbell URL — \
-             without it this hive is visible but silent"
+        warnings.push(
+            "no endpoints.chat — this hive is visible but silent (open-hives/0.1 §12.1): \
+             fetch works, ask does not"
                 .into(),
         );
     } else if !chat.starts_with("https://") {
         errors.push(format!(
-            "endpoints.chat must be an absolute https URL (open-hives/0.1 §12.1), got {chat:?}"
+            "endpoints.chat must be an absolute https URL (open-hives/0.1 §12.1), got {chat:?} — \
+             kwaainet rings doorbells over https only, a deliberate tightening over the spec's \
+             intranet allowance"
         ));
-    } else if chat.contains(' ') {
+    } else if chat.chars().any(char::is_whitespace) {
         errors.push(format!(
-            "endpoints.chat must be a URL, not a description: {chat:?}"
+            "endpoints.chat must be a single URL, not a description: {chat:?}"
         ));
     }
 
     let mut strings = Vec::new();
     all_strings(m, &mut strings);
     for s in &strings {
-        for f in FORBIDDEN_ADDRESS_MARKERS {
-            if s.contains(f) {
-                errors.push(format!(
-                    "manifest publishes a private address ({f:?}) in: {s:?} — \
-                     a peer outside this LAN can never reach it"
-                ));
-            }
+        if let Some(found) = private_address_in(s) {
+            errors.push(format!(
+                "manifest publishes a private address ({found}) in: {s:?} — \
+                 a peer outside this LAN can never reach it"
+            ));
         }
     }
 
     if let Some(scheme) = m["auth"].get("scheme").and_then(|s| s.as_str()) {
-        if !IMPLEMENTED_AUTH_SCHEMES.contains(&scheme) {
+        if !PEER_AUTH_SCHEMES.contains(&scheme) {
             errors.push(format!(
-                "auth.scheme {scheme:?} is not one of the implemented schemes \
-                 {IMPLEMENTED_AUTH_SCHEMES:?} — implement it or stop advertising it"
+                "auth.scheme {scheme:?} is not one of the schemes this client knows how to \
+                 sit next to {PEER_AUTH_SCHEMES:?} — implement it or stop advertising it"
             ));
         }
     }
 
     if let Some(pct) = m["limits"].get("allowance_max_percent") {
-        match pct.as_u64() {
-            Some(p) if p <= 100 => {}
-            other => errors.push(format!(
-                "limits.allowance_max_percent must be a percentage 0–100, got {other:?}"
+        match pct.as_f64() {
+            Some(p) if (0.0..=100.0).contains(&p) => {}
+            _ => errors.push(format!(
+                "limits.allowance_max_percent must be a number 0–100, got {pct}"
             )),
         }
     }
 
     if errors.is_empty() {
-        Ok(())
+        Ok(warnings)
     } else {
         Err(errors)
     }
@@ -181,6 +220,119 @@ fn all_strings(v: &Value, out: &mut Vec<String>) {
 }
 
 // ---------------------------------------------------------------------------
+// Private-address detection
+// ---------------------------------------------------------------------------
+
+/// Does this string publish a private address? Three nets, strongest first:
+///
+/// 1. bracketed IPv6 (`[::1]`, `[fc00::1]`) — parsed, not matched;
+/// 2. address-shaped tokens — dotted quad parsed as `Ipv4Addr`, decimal
+///    (`2130706433`) and hex (`0x7f000001`) decoded inet-aton style;
+/// 3. the substring markers for shorthand forms and hostnames.
+fn private_address_in(s: &str) -> Option<String> {
+    // 1) bracketed IPv6
+    let mut rest = s;
+    while let Some(open) = rest.find('[') {
+        if let Some(close) = rest[open..].find(']') {
+            let inner = &rest[open + 1..open + close];
+            if inner.contains(':') {
+                if let Ok(ip) = inner.parse::<std::net::Ipv6Addr>() {
+                    if ipv6_is_private(ip) {
+                        return Some(format!("[{inner}]"));
+                    }
+                }
+            }
+            rest = &rest[open + close + 1..];
+        } else {
+            break;
+        }
+    }
+
+    // 2) address-shaped tokens
+    for tok in s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')) {
+        if tok.is_empty() {
+            continue;
+        }
+        if let Some(found) = private_ipv4_token(tok) {
+            return Some(found);
+        }
+    }
+
+    // 3) markers
+    for m in ADDRESS_MARKERS.iter().chain(HOSTNAME_MARKERS) {
+        if s.contains(m) {
+            return Some((*m).to_string());
+        }
+    }
+    None
+}
+
+/// One token that might be an IPv4 address in any of the forms a URL host
+/// may take. Returns the token when it names a private address.
+fn private_ipv4_token(tok: &str) -> Option<String> {
+    if let Ok(ip) = tok.parse::<std::net::Ipv4Addr>() {
+        return if ipv4_is_private(ip) {
+            Some(tok.to_string())
+        } else {
+            None
+        };
+    }
+    // decimal (2130706433) and hex (0x7f000001) — inet-aton big-endian
+    let n = if let Some(h) = tok
+        .strip_prefix("0x")
+        .or_else(|| tok.strip_prefix("0X"))
+        .filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()))
+    {
+        u32::from_str_radix(h, 16).ok()
+    } else if tok.len() <= 10 && tok.chars().all(|c| c.is_ascii_digit()) && !tok.is_empty() {
+        tok.parse::<u32>().ok()
+    } else {
+        None
+    }?;
+    let o = n.to_be_bytes();
+    let ip = std::net::Ipv4Addr::new(o[0], o[1], o[2], o[3]);
+    if ipv4_is_private(ip) {
+        Some(format!("{tok} (= {ip})"))
+    } else {
+        None
+    }
+}
+
+fn ipv4_is_private(ip: std::net::Ipv4Addr) -> bool {
+    // is_private covers 10/8, 172.16/12, 192.168/16
+    ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+}
+
+fn ipv6_is_private(ip: std::net::Ipv6Addr) -> bool {
+    let s = ip.segments();
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || (s[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local
+        || (s[0] & 0xffc0) == 0xfe80 // fe80::/10 link local
+}
+
+/// Is this a hostname a *registry* may hand us? Unlike a user-typed target,
+/// a brand-registry value is untrusted input: it must be a bare public
+/// hostname — no scheme, path, port, userinfo, or private address.
+fn registry_host_is_usable(host: &str) -> Result<(), String> {
+    if host.is_empty() {
+        return Err("the registry returned an empty host".into());
+    }
+    if host
+        .chars()
+        .any(|c| matches!(c, '@' | '/' | '\\' | '?' | '#' | ':' | ' ' | '\t'))
+    {
+        return Err(format!(
+            "{host:?} is not a bare hostname (no scheme, path, port, or userinfo)"
+        ));
+    }
+    if let Some(found) = private_address_in(host) {
+        return Err(format!("{host:?} names a private address ({found})"));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Fetch — resolve the target, then try the doors
 // ---------------------------------------------------------------------------
 
@@ -189,23 +341,32 @@ fn all_strings(v: &Value, out: &mut Vec<String>) {
 /// `target` may be a manifest URL (ends in `.json`), a host (`hivv.org`),
 /// or a brand (`hivv` — resolved through the published brands registry).
 pub async fn fetch_manifest(client: &reqwest::Client, target: &str) -> Result<PeerManifest> {
-    let target = target.trim().to_lowercase();
+    let target = target.trim();
     if target.is_empty() {
         bail!("give a hive: a brand (hivv), a host (hivv.org), or a manifest URL");
     }
 
     // An explicit URL is a single door — try exactly what was asked for.
+    // Case is preserved: URL paths can be case-sensitive.
     if target.starts_with("http://") || target.starts_with("https://") {
         if !target.ends_with(".json") {
             bail!("{target} is not a manifest URL — pass a host instead, or the full .json URL");
         }
-        return try_door(client, &target).await;
+        return try_door(client, target).await;
     }
 
+    let target = target.to_lowercase();
     let origin = if target.contains('.') {
         format!("https://{target}")
     } else {
-        format!("https://{}", resolve_brand(client, &target).await?)
+        let host = resolve_brand(client, &target).await?;
+        if let Err(why) = registry_host_is_usable(&host) {
+            bail!(
+                "the brand registry {BRANDS_REGISTRY} returned an unusable host for {target:?}: \
+                 {why} — pass a host explicitly instead"
+            );
+        }
+        format!("https://{host}")
     };
 
     let mut tried = Vec::new();
@@ -213,7 +374,7 @@ pub async fn fetch_manifest(client: &reqwest::Client, target: &str) -> Result<Pe
         let url = format!("{origin}{door}");
         match try_door(client, &url).await {
             Ok(m) => return Ok(m),
-            Err(e) => tried.push(format!("  {url}: {e}")),
+            Err(e) => tried.push(format!("  {url}: {e:#}")),
         }
     }
 
@@ -270,19 +431,29 @@ async fn try_door(client: &reqwest::Client, url: &str) -> Result<PeerManifest> {
         .with_context(|| format!("connecting to {url}"))?;
     let status = resp.status();
     if !status.is_success() {
-        bail!("HTTP {status}");
+        // Redirects are NOT followed (the client is built with
+        // Policy::none): a door must answer as itself, and a 3xx body is
+        // where the peer's explanation (or its soft-404 page) lives.
+        let body = resp.text().await.unwrap_or_default();
+        bail!("{url} answered HTTP {status}: {}", snippet(&body));
     }
-    let m: Value = resp
-        .json()
+    let text = resp
+        .text()
         .await
-        .with_context(|| format!("{url} did not return JSON — is it a manifest door?"))?;
+        .with_context(|| format!("reading the body from {url}"))?;
+    let m: Value = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "{url} answered {status} but not JSON — is it a manifest door? {}",
+            snippet(&text)
+        )
+    })?;
 
-    if let Err(errors) = validate(&m) {
-        bail!(
+    let warnings = validate(&m).map_err(|errors| {
+        anyhow::anyhow!(
             "manifest at {url} failed validation:\n    {}",
             errors.join("\n    ")
-        );
-    }
+        )
+    })?;
 
     Ok(PeerManifest {
         source: url.to_string(),
@@ -294,6 +465,7 @@ async fn try_door(client: &reqwest::Client, url: &str) -> Result<PeerManifest> {
             .to_string(),
         models: m["endpoints"]["models"].as_str().map(|s| s.to_string()),
         scheme: m["auth"]["scheme"].as_str().unwrap_or("none").to_string(),
+        warnings,
         raw: m,
     })
 }
@@ -315,13 +487,22 @@ pub struct AskReply {
 /// `endpoints.chat`, carrying the loop-shield headers from HIVE-TO-HIVE §4.
 ///
 /// Back-off is the peer's to give and ours to honour (§5): 429/503 with a
-/// Retry-After is reported as-is, never retried harder.
+/// Retry-After is reported as-is, never retried harder. Redirects are not
+/// followed: a 307 would forward the message body to a host we never
+/// validated.
 pub async fn ask(
     client: &reqwest::Client,
     m: &PeerManifest,
     message: &str,
     model: Option<&str>,
 ) -> Result<AskReply> {
+    if m.chat.is_empty() {
+        bail!(
+            "{} publishes no endpoints.chat — visible but silent (open-hives/0.1 §12.1): \
+             there is no doorbell to ring",
+            m.hive
+        );
+    }
     let model = match model {
         Some(id) => id.to_string(),
         None => first_model(client, m).await?,
@@ -351,7 +532,6 @@ pub async fn ask(
         .await
         .with_context(|| format!("ringing {} — the door did not answer", m.chat))?;
     let status = resp.status();
-    let elapsed = started.elapsed();
 
     if status.as_u16() == 409 {
         let detail = snippet(&resp.text().await.unwrap_or_default());
@@ -382,11 +562,20 @@ pub async fn ask(
         bail!("doorbell returned HTTP {status}: {detail}");
     }
 
-    let v: Value = resp
-        .json()
-        .await
-        .context("the door answered but not with OpenAI-shaped JSON")?;
-    let text = extract_text(&v).context("response carried no message content")?;
+    let text_body = resp.text().await.context("reading the doorbell's answer")?;
+    let v: Value = serde_json::from_str(&text_body).with_context(|| {
+        format!(
+            "the door answered but not with OpenAI-shaped JSON: {}",
+            snippet(&text_body)
+        )
+    })?;
+    let text = extract_text(&v).with_context(|| {
+        format!(
+            "response carried no message content: {}",
+            snippet(&text_body)
+        )
+    })?;
+    let elapsed = started.elapsed();
 
     Ok(AskReply {
         text,
@@ -467,8 +656,12 @@ fn snippet(s: &str) -> String {
 
 /// Dispatch for `kwaainet hive fetch|ask`.
 pub async fn run(args: crate::cli::HiveArgs) -> Result<()> {
+    // No redirects: a manifest door must answer as itself. Following a 302
+    // could land us on a host (or an http:// URL) that validate() never saw,
+    // and a 307 on the doorbell POST would forward the user's message there.
     let client = reqwest::Client::builder()
         .user_agent(user_agent())
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building the HTTP client")?;
 
@@ -480,11 +673,21 @@ pub async fn run(args: crate::cli::HiveArgs) -> Result<()> {
                 return Ok(());
             }
             println!("hive       {} ({})", m.hive, m.protocol);
-            println!("doorbell   {}", m.chat);
+            println!(
+                "doorbell   {}",
+                if m.chat.is_empty() {
+                    "(none — visible but silent)"
+                } else {
+                    &m.chat
+                }
+            );
             println!("auth       {}", m.scheme);
             println!("models     {}", m.models_url());
             println!("manifest   {}", m.source);
             println!("validation ok — no private addresses, https doorbell, known auth scheme");
+            for w in &m.warnings {
+                println!("warning    {w}");
+            }
         }
         crate::cli::HiveAction::Ask {
             target,
@@ -492,6 +695,9 @@ pub async fn run(args: crate::cli::HiveArgs) -> Result<()> {
             model,
         } => {
             let m = fetch_manifest(&client, &target).await?;
+            for w in &m.warnings {
+                println!("warning    {w}");
+            }
             println!("ringing {} …", m.hive);
             let reply = ask(&client, &m, &message, model.as_deref()).await?;
             println!(
@@ -507,7 +713,7 @@ pub async fn run(args: crate::cli::HiveArgs) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — offline, the same rules our own manifest is held to
+// Tests — offline, plus the live contracts they pin
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -531,6 +737,16 @@ mod tests {
         serde_json::from_str(&raw).expect("our manifest must be valid JSON")
     }
 
+    /// hivv.org's live manifest, saved as a fixture: the real interop
+    /// contract (bearer+hmac, relative heartbeat, templated inbox).
+    fn hivv_manifest() -> Value {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hivv_manifest.json");
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+        serde_json::from_str(&raw).expect("fixture must be valid JSON")
+    }
+
     fn peer_manifest() -> Value {
         serde_json::json!({
             "hive": "example.org",
@@ -544,6 +760,32 @@ mod tests {
         })
     }
 
+    fn manifest_with_chat(chat: &str) -> Value {
+        let mut m = peer_manifest();
+        m["endpoints"]["chat"] = Value::String(chat.into());
+        // Drop the published models too, so models_url() must derive it.
+        m["endpoints"].as_object_mut().unwrap().remove("models");
+        m
+    }
+
+    fn wrap(m: &Value) -> PeerManifest {
+        PeerManifest {
+            source: "test".into(),
+            hive: m["hive"].as_str().unwrap_or_default().to_string(),
+            protocol: m["protocol"].as_str().unwrap_or_default().to_string(),
+            chat: m["endpoints"]["chat"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string(),
+            models: m["endpoints"]["models"].as_str().map(|s| s.to_string()),
+            scheme: m["auth"]["scheme"].as_str().unwrap_or("none").to_string(),
+            warnings: vec![],
+            raw: m.clone(),
+        }
+    }
+
+    // -- validation ---------------------------------------------------------
+
     #[test]
     fn our_own_manifest_passes_peer_validation() {
         // Dogfood: what a peer does with our manifest must succeed.
@@ -551,16 +793,26 @@ mod tests {
     }
 
     #[test]
+    fn hivv_orgs_live_manifest_passes_with_its_hmac_scheme() {
+        // The headline interop claim, pinned in CI: hivv.org publishes
+        // bearer+hmac, a relative heartbeat and a templated inbox — all real.
+        let m = hivv_manifest();
+        let warnings = validate(&m).expect("hivv.org's manifest must validate");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        assert_eq!(m["auth"]["scheme"], "bearer+hmac");
+        assert_eq!(m["hive"], "hivv.org");
+    }
+
+    #[test]
     fn a_reasonable_peer_manifest_passes() {
-        validate(&peer_manifest()).expect("a canonical peer manifest must validate");
+        let warnings = validate(&peer_manifest()).expect("a canonical peer manifest must validate");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
     }
 
     #[test]
     fn lan_doorbell_is_rejected() {
         // The regression: our manifest once published a LAN address.
-        let mut m = peer_manifest();
-        m["endpoints"]["chat"] =
-            Value::String("http://192.168.1.209:8080/v1/chat/completions".into());
+        let m = manifest_with_chat("http://192.168.1.209:8080/v1/chat/completions");
         let errors = validate(&m).expect_err("LAN doorbell must be rejected");
         assert!(
             errors.iter().any(|e| e.contains("192.168.")),
@@ -573,12 +825,64 @@ mod tests {
     }
 
     #[test]
-    fn missing_doorbell_is_rejected() {
-        // Visible but silent (§12.1).
+    fn every_private_address_form_is_rejected() {
+        // F5: the forms a substring list alone would miss — full 172.16/12,
+        // non-.1 loopbacks, IPv6, decimal and hex host forms.
+        let private_hosts = [
+            "https://10.1.2.3/v1/chat/completions",
+            "https://172.16.0.1/v1/chat/completions",
+            "https://172.31.255.1/v1/chat/completions",
+            "https://127.0.0.2/v1/chat/completions",
+            "https://169.254.1.1/v1/chat/completions",
+            "https://0.0.0.0/v1/chat/completions",
+            "https://192.168.1.1/v1/chat/completions",
+            "https://[::1]/v1/chat/completions",
+            "https://[fc00::1]/v1/chat/completions",
+            "https://[fe80::1]/v1/chat/completions",
+            "https://2130706433/v1/chat/completions",
+            "https://0x7f000001/v1/chat/completions",
+        ];
+        for chat in private_hosts {
+            let m = manifest_with_chat(chat);
+            let errors = validate(&m).expect_err(&format!("must reject {chat}"));
+            assert!(
+                errors.iter().any(|e| e.contains("private address")),
+                "error must name the private address for {chat}, got: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn public_addresses_are_allowed() {
+        for chat in [
+            "https://8.8.8.8/v1/chat/completions",
+            "https://93.184.216.34/v1/chat/completions",
+            "https://[2606:4700:4700::1111]/v1/chat/completions",
+        ] {
+            let m = manifest_with_chat(chat);
+            validate(&m)
+                .unwrap_or_else(|e| panic!("public {chat} must pass validation, got {e:?}"));
+        }
+    }
+
+    #[test]
+    fn a_private_address_in_any_field_is_rejected_not_just_chat() {
+        let mut m = peer_manifest();
+        m["endpoints"]["state"] = Value::String("http://10.0.0.5:9090/state".into());
+        let errors = validate(&m).expect_err("a private address in any field must be rejected");
+        assert!(errors.iter().any(|e| e.contains("private address")));
+    }
+
+    #[test]
+    fn missing_doorbell_is_fetchable_but_warns() {
+        // §12.1: visible but silent — fetchable with a warning, not rejected.
         let mut m = peer_manifest();
         m["endpoints"] = serde_json::json!({ "models": "https://example.org/v1/models" });
-        let errors = validate(&m).expect_err("a manifest without chat must be rejected");
-        assert!(errors.iter().any(|e| e.contains("endpoints.chat")));
+        let warnings = validate(&m).expect("a chat-less manifest must still be fetchable");
+        assert!(
+            warnings.iter().any(|w| w.contains("endpoints.chat")),
+            "the warning must name the missing door, got: {warnings:?}"
+        );
     }
 
     #[test]
@@ -590,44 +894,142 @@ mod tests {
     }
 
     #[test]
-    fn wrong_protocol_is_rejected() {
-        let mut m = peer_manifest();
-        m["protocol"] = Value::String("something/1.0".into());
-        let errors = validate(&m).expect_err("a foreign protocol must be rejected");
-        assert!(errors.iter().any(|e| e.contains("protocol")));
+    fn protocol_prefix_is_pinned() {
+        // P3: prefix-tolerant for future revisions, but "open-hives/" means
+        // what it says — "open-hivex" and bare "open-hive" are not protocols.
+        for good in ["open-hives/0.1", "open-hives/0.2"] {
+            let mut m = peer_manifest();
+            m["protocol"] = Value::String(good.into());
+            let r = validate(&m);
+            assert!(r.is_ok(), "{good} must be accepted, got {r:?}");
+        }
+        for bad in ["open-hivex", "open-hive", "something/1.0", ""] {
+            let mut m = peer_manifest();
+            m["protocol"] = Value::String(bad.into());
+            let r = validate(&m);
+            assert!(r.is_err(), "{bad:?} must be rejected");
+            let errors = r.unwrap_err();
+            assert!(
+                errors[0].contains("open-hives/"),
+                "the message must state the prefix rule, got: {:?}",
+                errors[0]
+            );
+        }
     }
 
     #[test]
-    fn out_of_range_allowance_is_rejected() {
+    fn out_of_range_allowance_is_rejected_and_the_raw_value_is_shown() {
         let mut m = peer_manifest();
         m["limits"]["allowance_max_percent"] = Value::from(150);
         let errors = validate(&m).expect_err("allowance > 100 must be rejected");
-        assert!(errors.iter().any(|e| e.contains("allowance_max_percent")));
+        assert!(errors.iter().any(|e| e.contains("150")));
+
+        // A float percentage is a percentage (F9: must not print "None").
+        let mut m = peer_manifest();
+        m["limits"]["allowance_max_percent"] = serde_json::json!(20.0);
+        validate(&m).expect("20.0 is a valid percentage");
+
+        // A string is not — and the message shows what arrived.
+        let mut m = peer_manifest();
+        m["limits"]["allowance_max_percent"] = Value::String("lots".into());
+        let errors = validate(&m).expect_err("a non-number must be rejected");
+        assert!(errors.iter().any(|e| e.contains("lots")));
     }
 
-    #[test]
-    fn private_address_anywhere_is_rejected_even_not_in_chat() {
-        let mut m = peer_manifest();
-        m["endpoints"]["state"] = Value::String("http://10.0.0.5:9090/state".into());
-        let errors = validate(&m).expect_err("a private address in any field must be rejected");
-        assert!(errors.iter().any(|e| e.contains("10.0.")));
-    }
+    // -- models_url ---------------------------------------------------------
 
     #[test]
     fn models_url_is_derived_from_the_chat_door_when_unpublished() {
         let mut m = peer_manifest();
         m["endpoints"].as_object_mut().unwrap().remove("models");
-        let manifest = PeerManifest {
-            source: "https://example.org/.well-known/hive.json".into(),
-            hive: "example.org".into(),
-            protocol: "open-hives/0.1".into(),
-            chat: "https://example.org/v1/chat/completions".into(),
-            models: None,
-            scheme: "none".into(),
-            raw: m,
-        };
-        assert_eq!(manifest.models_url(), "https://example.org/v1/models");
+        assert_eq!(
+            wrap(&m).models_url(),
+            "https://example.org/v1/models",
+            "strip_suffix branch"
+        );
+
+        // Suffix-less chat falls back to the origin's standard path (F4.2).
+        let m = manifest_with_chat("https://x.example/v1/chat");
+        assert_eq!(wrap(&m).models_url(), "https://x.example/v1/models");
+
+        // A trailing slash must not produce a double slash.
+        let m = manifest_with_chat("https://x.example/v1/chat/completions/");
+        assert_eq!(wrap(&m).models_url(), "https://x.example/v1/models");
     }
+
+    // -- registry host vetting (F7) ------------------------------------------
+
+    #[test]
+    fn registry_hosts_must_be_bare_public_hostnames() {
+        assert!(registry_host_is_usable("hivv.org").is_ok());
+        assert!(registry_host_is_usable("hivv.org@evil.com").is_err());
+        assert!(registry_host_is_usable("https://hivv.org").is_err());
+        assert!(registry_host_is_usable("hivv.org/path").is_err());
+        assert!(registry_host_is_usable("hivv.org:8443").is_err());
+        assert!(registry_host_is_usable("192.168.1.10").is_err());
+        assert!(registry_host_is_usable("").is_err());
+    }
+
+    // -- door HTTP behaviour (F2, F6) ----------------------------------------
+
+    /// A canned HTTP server on loopback: answers exactly one request with
+    /// `status` and `body`, then drops the connection.
+    fn canned_server(status_line: &'static str, body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let response = format!(
+            "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(response.as_bytes());
+                let _ = sock.flush();
+            }
+        });
+        format!("http://{addr}/manifest.json")
+    }
+
+    #[tokio::test]
+    async fn try_door_reports_status_url_and_body_snippet_on_error() {
+        // F2: the live 404 used to surface as a bare "HTTP 404 Not Found".
+        let url = canned_server("404 Not Found", "no such manifest here");
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let err = try_door(&client, &url)
+            .await
+            .expect_err("a 404 must fail")
+            .to_string();
+        assert!(err.contains("404"), "status in error: {err}");
+        assert!(err.contains("no such manifest"), "body in error: {err}");
+        assert!(err.contains(&url), "url in error: {err}");
+    }
+
+    #[tokio::test]
+    async fn try_door_does_not_follow_redirects() {
+        // F6: a door that redirects must fail as itself, not chase the hop.
+        let url = canned_server(
+            "301 Moved Permanently",
+            "moved to a host validate never saw",
+        );
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let err = try_door(&client, &url)
+            .await
+            .expect_err("a 301 must fail, not follow")
+            .to_string();
+        assert!(err.contains("301"), "status in error: {err}");
+        assert!(err.contains("moved to a host"), "body in error: {err}");
+    }
+
+    // -- misc ----------------------------------------------------------------
 
     #[test]
     fn request_ids_are_unique_enough_for_dedupe() {
@@ -642,5 +1044,14 @@ mod tests {
         let long = "x ".repeat(500);
         assert!(snippet(&long).chars().count() <= 301);
         assert_eq!(snippet(""), "(empty body)");
+    }
+
+    #[test]
+    fn whitespace_in_chat_is_rejected() {
+        let m = manifest_with_chat("https://example.org/v1/chat\ncompletions");
+        let errors = validate(&m).expect_err("a multiline chat must be rejected");
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("whitespace") || e.contains("single URL")));
     }
 }
