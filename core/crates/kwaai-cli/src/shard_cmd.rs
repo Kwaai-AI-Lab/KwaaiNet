@@ -369,7 +369,14 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
     // A flag applies to this run; the daemon's child gets `shard.backend`.
     let backend = args.backend(&cfg);
     let mlx = backend == crate::config::ShardBackend::Mlx;
-    if cfg!(target_os = "macos") && backend == crate::config::ShardBackend::Auto {
+    #[cfg(feature = "synthetic")]
+    let synthetic = crate::synthetic::serve_config(args.synthetic, &cfg)?;
+    #[cfg(not(feature = "synthetic"))]
+    let synthetic: Option<std::convert::Infallible> = None;
+    if cfg!(target_os = "macos")
+        && backend == crate::config::ShardBackend::Auto
+        && synthetic.is_none()
+    {
         if range_is_pinned(args.start_block, args.blocks, &cfg) {
             print_warning("A block range is set, but this node serves the whole model — it is ignored (#117).");
             print_info("To serve that range: --mlx (Apple Silicon) or --force-blocks");
@@ -650,116 +657,98 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         Err(e) => tracing::warn!("Could not start local bypass server: {e}"),
     }
 
-    // ── Phase 2+3: download (if needed) + load in background task ─────────────
-    let cell_bg = shard_cell.clone();
-    let model_id_bg = cfg.model.clone();
-    let model_path_bg = args.model_path.clone();
-    let hf_token_bg = args.hf_token.clone();
-    let device_bg = device.clone();
-    let mlx_bg = mlx;
-    let total_blocks_bg = cfg.model_total_blocks() as usize;
+    if let Some(sc) = synthetic {
+        start_synthetic_shard(&mut client, &shard_cell, start_block, end_block, sc).await?;
+    } else {
+        // ── Phase 2+3: download (if needed) + load in background task ─────────────
+        let cell_bg = shard_cell.clone();
+        let model_id_bg = cfg.model.clone();
+        let model_path_bg = args.model_path.clone();
+        let hf_token_bg = args.hf_token.clone();
+        let device_bg = device.clone();
+        let mlx_bg = mlx;
+        let total_blocks_bg = cfg.model_total_blocks() as usize;
 
-    tokio::spawn(async move {
-        let result: anyhow::Result<()> = async {
-            // Resolve model directory: CLI override > cached snapshot > download.
-            let model_dir: PathBuf = if let Some(p) = model_path_bg {
-                p
-            } else {
-                let is_first = start_block == 0;
-                let is_last = end_block >= total_blocks_bg;
-                let cached = hf::resolve_snapshot(&model_id_bg).ok().filter(|d| {
-                    hf::blocks_are_cached(d, start_block, end_block, is_first, is_last)
-                });
-                match cached {
-                    Some(d) => d,
-                    None => {
-                        print_info(&format!(
-                            "Downloading model files for blocks [{}, {})…",
-                            start_block, end_block
-                        ));
-                        hf::download_for_blocks(
-                            &model_id_bg,
-                            start_block,
-                            end_block,
-                            is_first,
-                            is_last,
-                            hf_token_bg.as_deref(),
-                        )
-                        .await
-                        .context("selective download for blocks")?
+        tokio::spawn(async move {
+            let result: anyhow::Result<()> = async {
+                // Resolve model directory: CLI override > cached snapshot > download.
+                let model_dir: PathBuf = if let Some(p) = model_path_bg {
+                    p
+                } else {
+                    let is_first = start_block == 0;
+                    let is_last = end_block >= total_blocks_bg;
+                    let cached = hf::resolve_snapshot(&model_id_bg).ok().filter(|d| {
+                        hf::blocks_are_cached(d, start_block, end_block, is_first, is_last)
+                    });
+                    match cached {
+                        Some(d) => d,
+                        None => {
+                            print_info(&format!(
+                                "Downloading model files for blocks [{}, {})…",
+                                start_block, end_block
+                            ));
+                            hf::download_for_blocks(
+                                &model_id_bg,
+                                start_block,
+                                end_block,
+                                is_first,
+                                is_last,
+                                hf_token_bg.as_deref(),
+                            )
+                            .await
+                            .context("selective download for blocks")?
+                        }
                     }
-                }
-            };
+                };
 
-            let config_path = model_dir.join("config.json");
-            let safetensors: Vec<PathBuf> = collect_safetensors(&model_dir)?;
-            if safetensors.is_empty() {
-                anyhow::bail!(
-                    "No .safetensors files found in {}. \
+                let config_path = model_dir.join("config.json");
+                let safetensors: Vec<PathBuf> = collect_safetensors(&model_dir)?;
+                if safetensors.is_empty() {
+                    anyhow::bail!(
+                        "No .safetensors files found in {}. \
                      Pass --model-path to a HuggingFace snapshot directory.",
-                    model_dir.display()
-                );
-            }
-            let paths: Vec<&Path> = safetensors.iter().map(|p| p.as_path()).collect();
-
-            print_info(&format!(
-                "Loading shard ({} file(s), blocks [{}, {}))…",
-                safetensors.len(),
-                start_block,
-                end_block
-            ));
-            let shard = Arc::new(
-                load_serving_shard(
-                    &paths,
-                    &config_path,
-                    &device_bg,
-                    start_block,
-                    end_block,
-                    mlx_bg,
-                )
-                .context("Failed to load transformer shard")?,
-            );
-
-            print_success(&format!(
-                "Shard ready  ({} blocks, is_first={}, is_last={})",
-                end_block - start_block,
-                shard.is_first(),
-                shard.is_last()
-            ));
-
-            // Make the shard available to the RPC handler.
-            *cell_bg.write().await = Some(shard.clone());
-
-            // Signal daemon that inference is live — daemon will re-announce
-            // with real block coverage instead of [0, 0).
-            //
-            // A supervised child wrote its PID file at start; a standalone
-            // `kwaainet shard serve` needs one too, or `shard_is_ready()`
-            // (ready sentinel AND live process) keeps the node at JOINING.
-            crate::daemon::ShardManager::new().write_pid(std::process::id());
-            let ready_file = crate::daemon::ShardManager::ready_file();
-            let _ = std::fs::write(&ready_file, "");
-            crate::daemon::DaemonManager::new().signal_reannounce();
-
-            // Background GC task: evict idle sessions every 30 s.
-            tokio::spawn(async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(30));
-                loop {
-                    interval.tick().await;
-                    shard.gc_sessions();
+                        model_dir.display()
+                    );
                 }
-            });
+                let paths: Vec<&Path> = safetensors.iter().map(|p| p.as_path()).collect();
 
-            Ok(())
-        }
-        .await;
+                print_info(&format!(
+                    "Loading shard ({} file(s), blocks [{}, {}))…",
+                    safetensors.len(),
+                    start_block,
+                    end_block
+                ));
+                let shard = Arc::new(
+                    load_serving_shard(
+                        &paths,
+                        &config_path,
+                        &device_bg,
+                        start_block,
+                        end_block,
+                        mlx_bg,
+                    )
+                    .context("Failed to load transformer shard")?,
+                );
 
-        if let Err(e) = result {
-            print_error(&format!("Background model load failed: {e:#}"));
-            print_info("Node will continue serving — requests will return 'warming up'.");
-            print_info("Fix the error above and restart `kwaainet shard serve`.");
-        }
-    });
+                print_success(&format!(
+                    "Shard ready  ({} blocks, is_first={}, is_last={})",
+                    end_block - start_block,
+                    shard.is_first(),
+                    shard.is_last()
+                ));
+
+                publish_shard(&cell_bg, shard).await;
+                Ok(())
+            }
+            .await;
+
+            if let Err(e) = result {
+                print_error(&format!("Background model load failed: {e:#}"));
+                print_info("Node will continue serving — requests will return 'warming up'.");
+                print_info("Fix the error above and restart `kwaainet shard serve`.");
+            }
+        });
+    }
 
     // ── Rebalancer task ───────────────────────────────────────────────────────
     // Spawn a background task that periodically checks DHT coverage and signals
@@ -1432,6 +1421,15 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
     let cfg = KwaaiNetConfig::load_or_create()?;
 
     let model_ref = args.model.as_deref().unwrap_or(&cfg.model);
+    #[cfg(feature = "synthetic")]
+    let synthetic = args.synthetic;
+    #[cfg(feature = "synthetic")]
+    if synthetic != crate::synthetic::is_synthetic_model(model_ref) {
+        bail!(
+            "--synthetic and a model starting with {} go together (model: {model_ref})",
+            crate::synthetic::MODEL_PREFIX
+        );
+    }
     // If a model was passed on the CLI that differs from config, build a temporary
     // config with that model name so effective_dht_prefix() derives the right key.
     let dht_prefix = if args.model.is_some() && args.model.as_deref() != Some(&cfg.model) {
@@ -1597,32 +1595,34 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
     }
     println!();
 
-    // Load tokenizer from the model directory for prompt encoding
-    let model_dir = if let Some(p) = &args.model_path {
-        p.clone()
-    } else {
-        hf::resolve_snapshot(model_ref)?
-    };
-    let tokenizer_path = model_dir.join("tokenizer.json");
-    let tokenizer = kwaai_inference::tokenizer::BpeTokenizer::from_file(&tokenizer_path)
-        .context("Failed to load tokenizer")?;
-
     use kwaai_inference::tokenizer::Tokenizer as _;
-
-    // Apply chat template based on tokenizer vocab, then tokenize.
-    // Instruct models require special tokens around the user turn.
-    let formatted_prompt = format_user_turn(|t| tokenizer.token_to_id(t).is_some(), &args.prompt);
-
-    let mut token_ids: Vec<u32> = tokenizer
-        .encode(&formatted_prompt)
-        .context("Failed to encode prompt")?;
-
-    // Prepend BOS token if available
-    if let Some(bos) = tokenizer.bos_token_id() {
-        token_ids.insert(0, bos);
+    // Synthetic runs have no tokenizer: prompt bytes are the token ids, and
+    // nothing ends generation but --max-tokens.
+    #[cfg(feature = "synthetic")]
+    let synthetic_hidden =
+        synthetic.then(|| cfg.shard.synthetic.clone().unwrap_or_default().hidden_dim as usize);
+    #[cfg(not(feature = "synthetic"))]
+    let synthetic_hidden: Option<usize> = None;
+    let (tokenizer, prefill_chunk) = match synthetic_hidden {
+        Some(hidden) => (None, prefill_chunk_tokens(hidden)),
+        None => {
+            let model_dir = match &args.model_path {
+                Some(p) => p.clone(),
+                None => hf::resolve_snapshot(model_ref)?,
+            };
+            (
+                Some(load_run_tokenizer(&model_dir)?),
+                prefill_chunk_tokens_for_model(&model_dir),
+            )
+        }
+    };
+    let (token_ids, eos_id) = match &tokenizer {
+        Some(t) => encode_prompt(t, &args.prompt)?,
+        None => (args.prompt.bytes().map(u32::from).collect(), u32::MAX),
+    };
+    if token_ids.is_empty() {
+        bail!("empty prompt");
     }
-
-    let eos_id = tokenizer.eos_token_id().unwrap_or(2);
     let session_id: u64 = args.session_id.unwrap_or_else(rand_session_id);
     let mut router = Router::open(RouteMode::resolve(args.route, &cfg), &our_peer_id).await;
     let max_tokens = args.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS);
@@ -1648,11 +1648,7 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
 
     // ── Inference loop ────────────────────────────────────────────────────────
     let mut generated_ids: Vec<u32> = Vec::new();
-    let mut cur = PrefillCursor::new(
-        token_ids.clone(),
-        session_id,
-        prefill_chunk_tokens_for_model(&model_dir),
-    );
+    let mut cur = PrefillCursor::new(token_ids.clone(), session_id, prefill_chunk);
     let mut failed_peers: std::collections::HashSet<PeerId> = std::collections::HashSet::new();
 
     // Pin the peer path for this session — same peers handle the same blocks
@@ -1673,6 +1669,13 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
     println!();
 
     let show_stats = args.stats;
+    #[cfg(feature = "synthetic")]
+    let mut synthetic_kv_resets = 0usize;
+    #[cfg(feature = "synthetic")]
+    let mut synthetic_steps = 0usize;
+    // A session's prompt is whatever its seq_pos 0 step sent.
+    #[cfg(feature = "synthetic")]
+    let mut synthetic_prompt_len = 0u32;
     let mut token_times_ms: Vec<f64> = Vec::new();
     // Decode steps that re-prefilled after a failed hop: kept out of decode stats.
     let mut reprefill_ms: Vec<f64> = Vec::new();
@@ -1772,6 +1775,44 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
                 continue;
             }
         };
+        // Every step is verified, prefill chunks included.
+        #[cfg(feature = "synthetic")]
+        let verified = if synthetic {
+            let seq_pos = cur.seq_pos as u32;
+            let path: Vec<(Vec<u8>, u32, u32)> = pinned_path
+                .iter()
+                .map(|e| {
+                    (
+                        e.peer_id.to_bytes(),
+                        e.start_block as u32,
+                        e.end_block as u32,
+                    )
+                })
+                .collect();
+            if seq_pos == 0 {
+                synthetic_prompt_len = step.len() as u32;
+            }
+            let v = crate::synthetic::verify_final(
+                &logits_bytes.shape,
+                &logits_bytes.data,
+                &crate::synthetic::Expected {
+                    session_id: cur.session_id,
+                    seq_pos,
+                    token_ids: &step,
+                    prompt_len: synthetic_prompt_len,
+                    total_blocks: total_blocks as u32,
+                    path: &path,
+                },
+            )
+            .with_context(|| format!("synthetic verification failed at seq_pos {seq_pos}"))?;
+            synthetic_steps += 1;
+            synthetic_kv_resets += v.kv_resets;
+            Some(v.next_token)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "synthetic"))]
+        let verified: Option<u32> = None;
         if !cur.advance(step.len()) {
             continue; // more of the prompt to prefill
         }
@@ -1799,11 +1840,18 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
             std::io::stdout().flush().ok();
         }
 
-        // The last node sampled it, or (an older node) returned logits we sample here.
-        let next_id = crate::block_rpc::next_token(&logits_bytes, sampling)?;
+        let next_id = match verified {
+            Some(t) => t,
+            // The last node sampled it, or (an older node) returned logits we sample here.
+            None => crate::block_rpc::next_token(&logits_bytes, sampling)?,
+        };
 
         // Decode and print incrementally
-        if let Ok(piece) = tokenizer.decode(&[next_id]) {
+        let piece = match &tokenizer {
+            Some(t) => t.decode(&[next_id]).ok(),
+            None => Some(format!("#{next_id} ")),
+        };
+        if let Some(piece) = piece {
             print!("{}", piece);
             use std::io::Write as _;
             std::io::stdout().flush().ok();
@@ -1891,6 +1939,13 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
         println!("  Throughput:    {:>8.1} tok/s", tps);
         println!("  Hops:          {:>8}", pinned_path.len());
         println!("  Route:         {}", router.summary());
+        #[cfg(feature = "synthetic")]
+        if synthetic {
+            println!(
+                "  Synthetic:     {:>8} steps verified, {} KV reset(s)",
+                synthetic_steps, synthetic_kv_resets
+            );
+        }
 
         // Per-hop breakdown: average elapsed across all decode tokens (skip prefill at index 0).
         if !all_hop_timings.is_empty() {
@@ -1925,6 +1980,32 @@ pub async fn cmd_shard_run(mut args: ShardRunArgs) -> Result<()> {
     print_separator();
 
     Ok(())
+}
+
+fn load_run_tokenizer(model_dir: &Path) -> Result<kwaai_inference::tokenizer::BpeTokenizer> {
+    kwaai_inference::tokenizer::BpeTokenizer::from_file(&model_dir.join("tokenizer.json"))
+        .context("Failed to load tokenizer")
+}
+
+/// Apply the chat template the vocab implies, tokenize, and prepend BOS.
+/// Returns the ids and the EOS id.
+fn encode_prompt(
+    tokenizer: &kwaai_inference::tokenizer::BpeTokenizer,
+    prompt: &str,
+) -> Result<(Vec<u32>, u32)> {
+    use kwaai_inference::tokenizer::Tokenizer as _;
+
+    let formatted_prompt = format_user_turn(|t| tokenizer.token_to_id(t).is_some(), prompt);
+
+    let mut token_ids: Vec<u32> = tokenizer
+        .encode(&formatted_prompt)
+        .context("Failed to encode prompt")?;
+
+    // Prepend BOS token if available
+    if let Some(bos) = tokenizer.bos_token_id() {
+        token_ids.insert(0, bos);
+    }
+    Ok((token_ids, tokenizer.eos_token_id().unwrap_or(2)))
 }
 
 // ── streaming API ─────────────────────────────────────────────────────────────
@@ -4036,6 +4117,60 @@ async fn cmd_circuit_close(args: CircuitCloseArgs) -> Result<()> {
         print_warning(&format!("Circuit '{}' not found", args.id));
     }
     Ok(())
+}
+
+/// Hand a loaded shard to the RPC handler and tell the daemon it is live.
+async fn publish_shard(cell: &ShardCell, shard: Arc<LoadedShard>) {
+    *cell.write().await = Some(shard.clone());
+
+    // Signal daemon that inference is live — daemon will re-announce
+    // with real block coverage instead of [0, 0).
+    //
+    // A supervised child wrote its PID file at start; a standalone
+    // `kwaainet shard serve` needs one too, or `shard_is_ready()`
+    // (ready sentinel AND live process) keeps the node at JOINING.
+    crate::daemon::ShardManager::new().write_pid(std::process::id());
+    let ready_file = crate::daemon::ShardManager::ready_file();
+    let _ = std::fs::write(&ready_file, "");
+    crate::daemon::DaemonManager::new().signal_reannounce();
+
+    // Background GC task: evict idle sessions every 30 s.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            shard.gc_sessions();
+        }
+    });
+}
+
+#[cfg(feature = "synthetic")]
+async fn start_synthetic_shard(
+    client: &mut P2PClient,
+    cell: &ShardCell,
+    start_block: usize,
+    end_block: usize,
+    sc: crate::synthetic::SyntheticConfig,
+) -> Result<()> {
+    let me = hex::decode(client.identify().await.context("identify")?)?;
+    print_success(&format!(
+        "Synthetic shard ready  (blocks [{start_block}, {end_block}) of {}, hidden {}, vocab {})",
+        sc.total_blocks, sc.hidden_dim, sc.vocab
+    ));
+    let shard = crate::synthetic::SyntheticShard::new(me, start_block as u32, end_block as u32, sc);
+    publish_shard(cell, Arc::new(LoadedShard::Synthetic(shard))).await;
+    Ok(())
+}
+
+#[cfg(not(feature = "synthetic"))]
+async fn start_synthetic_shard(
+    _: &mut P2PClient,
+    _: &ShardCell,
+    _: usize,
+    _: usize,
+    never: std::convert::Infallible,
+) -> Result<()> {
+    match never {}
 }
 
 // ── Bypass generation loop (reuse shard serve's loaded model) ────────────────

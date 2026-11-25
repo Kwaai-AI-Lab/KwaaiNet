@@ -464,6 +464,10 @@ pub struct ShardConfig {
     /// so a change applies to the next one. Read it through [`Self::max_tokens`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
+    /// Serve synthetic blocks instead of a model (bed routing tests).
+    #[cfg(feature = "synthetic")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthetic: Option<crate::synthetic::SyntheticConfig>,
 }
 
 /// A run's length when neither the run nor `shard.max_tokens` names one.
@@ -1311,6 +1315,16 @@ impl KwaaiNetConfig {
     /// snapshot is available locally. Falls back to a name-based heuristic
     /// (32 / 40 / 80) when the model has not been downloaded yet.
     pub fn model_total_blocks(&self) -> i32 {
+        // The same shape `serve_config` serves, block or no block.
+        #[cfg(feature = "synthetic")]
+        if crate::synthetic::is_synthetic_model(&self.model) {
+            return self
+                .shard
+                .synthetic
+                .clone()
+                .unwrap_or_default()
+                .total_blocks as i32;
+        }
         if let Ok(model_dir) = crate::hf::resolve_snapshot(&self.model) {
             let config_path = model_dir.join("config.json");
             if let Ok(s) = std::fs::read_to_string(&config_path) {
@@ -1681,6 +1695,22 @@ mod tests {
             blocks,
             ..KwaaiNetConfig::default()
         }
+    }
+
+    #[cfg(feature = "synthetic")]
+    #[test]
+    fn a_synthetic_model_counts_blocks_like_its_server() {
+        use crate::synthetic::{serve_config, MODEL_PREFIX};
+        // No `shard.synthetic` block: `--synthetic` serves the defaults, so the
+        // name heuristic (70b → 80) must not apply.
+        let mut c = cfg(0, 8, &format!("{MODEL_PREFIX}llama-70b"));
+        let served = serve_config(true, &c).unwrap().unwrap();
+        assert_eq!(c.model_total_blocks(), served.total_blocks as i32);
+        c.shard.synthetic = Some(crate::synthetic::SyntheticConfig {
+            total_blocks: 12,
+            ..Default::default()
+        });
+        assert_eq!(c.model_total_blocks(), 12);
     }
 
     /// PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM; unstripped, any
