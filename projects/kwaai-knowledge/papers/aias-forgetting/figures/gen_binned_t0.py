@@ -28,10 +28,10 @@ import matplotlib.pyplot as plt
 
 RES = Path(sys.argv[1])
 HERE = Path(__file__).resolve().parent
-PANELS = [("Legal_p10_b40000", "Legal, 10% slice", "well structured docs"),
-          ("Legal_p100_b40000", "Legal, 100%", "well structured docs"),
-          ("NIST_p10_b40000", "NIST, 10% slice", "unstructured docs"),
-          ("Manhattan_v3_p10_b40000", "Manhattan, 10% slice", "unstructured docs")]
+PANELS = [("Legal_p10_b40000", "Legal, 10% slice", "consistent structure"),
+          ("Legal_p100_b40000", "Legal, 100%", "consistent structure"),
+          ("NIST_p10_b40000", "NIST, 10% slice", "mixed formats"),
+          ("Manhattan_v3_p10_b40000", "Manhattan, 10% slice", "mixed formats")]
 ARMS = [("F", "#2a78d6", "o"), ("R", "#eb6834", "s"), ("R2", "#1baf7a", "^")]
 EDGES = [0.0, 0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.75]
 INK, INK2, GRID, BIN = "#0b0b0b", "#52514e", "#e4e3df", "#3d3a8c"

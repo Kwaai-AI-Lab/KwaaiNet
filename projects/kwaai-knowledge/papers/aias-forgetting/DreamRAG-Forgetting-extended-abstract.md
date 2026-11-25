@@ -36,10 +36,10 @@ Biological memory has limited capacity: it consolidates what matters and forgets
 it can keep learning. Retrieval-augmented generation (RAG) keeps every chunk. We simulate
 consolidation and forgetting in RAG: chunks are short-term memory and an entity graph is long-term
 memory. An offline "dream" loop moves facts from chunks into the graph, and the chunks it has
-consolidated are then forgotten. The cost of forgetting depends on the corpus. Legal opinions stayed
-below proportional loss: two-thirds of memory cost a fifth of recall. Security standards hit a
-cliff, where the next 9% of memory cost 30% of recall, and historical documents lost a third of their
-recall in their first tenth. Rules that check the graph before forgetting avoid the loss but forget
+consolidated are then forgotten. The cost of forgetting depends on the corpus. On Supreme Court opinions,
+which share one structure, loss stayed below proportional: two-thirds of memory cost a fifth of
+recall. On AI-security guidance in mixed formats it hit a cliff, where the next 9% of memory cost
+30% of recall, and Manhattan Project documents lost a third of their recall in their first tenth. Rules that check the graph before forgetting avoid the loss but forget
 almost nothing. A fact-level audit locates the limit in the long-term representation, not the rule:
 dreaming copies facts into the graph, but rarely onto the cards of the entities they describe.
 
@@ -89,8 +89,13 @@ records the same marks, and R2 repeats R. If R traces F, the loss comes from wha
 not from dreaming with less. Two references need no dreaming: the cycle-0 graph with every chunk,
 and conventional RAG, the 20 best chunks with no graph.
 
-**Corpora and measures.** Three public corpora, legal opinions, AI security standards and Manhattan
-Project documents, each cut to the first 10% of every document, plus the full legal corpus. Each
+**Corpora and measures.** Three public corpora.
+**Legal**: 13 U.S. Supreme Court opinions (1803–2010), all in one consistent court-opinion
+structure. **NIST**: 14 AI-security documents, mostly NIST publications with OWASP guides and agency
+information sheets, in differing formats (standards, checklists, a taxonomy, guides, notes).
+**Manhattan**: 12 Manhattan Project documents, also in differing formats (letters, a petition,
+reports, meeting summaries, eyewitness accounts). Each run uses the first 10% of every document,
+plus one run on all of Legal. Each
 question's gold facts (nuggets) are tied to their supporting chunks, adjudicated and frozen before the
 runs. At each snapshot llama3.1:8b answers at temperature 0 from the 20 best cards and the 10 best
 remembered chunks. *Recall* is the share of gold facts the answer entails (DeBERTa-v3 NLI ≥ 0.5;
@@ -110,15 +115,14 @@ graph's share of memory at cycle 0. Forgot: chunks withheld. Drops are relative 
 | Corpus | Chunks | Qs | Recall c0 | Cards | F forgot | F memory ↓ | F recall ↓ | R memory ↓ | R recall ↓ |
 |---|---|---|---|---|---|---|---|---|---|
 | Legal 10% | 377 | 19 | 0.81 | 31% | 99% | 66% | 13% | 48% | 20% |
-| Standards 10% | 399 | 19 | 0.84 | 51% | 93% | 49% | 67% | 33% | 51% |
+| NIST 10% | 399 | 19 | 0.84 | 51% | 93% | 49% | 67% | 33% | 51% |
 | Manhattan 10% | 57 | 10 | 0.76 | 53% | 82% | 25% | 43% | 9% | 34% |
 | Legal 100% | 3,723 | 20 | 0.72 | 25% | 30% | 26% | 13% | 20% | 8% |
 
 **Baselines.** Without forgetting, the graph does not beat conventional RAG. The 20 best chunks
 with no graph scored between 0.09 below and 0.12 above the cycle-0 system (20 cards with the 10
-best chunks): lower on the legal and historical slices, level on the standards, and higher on the
-full legal corpus. The cards do add to a half-size chunk context: with the graph emptied, the same
-10 chunks lost 0.11–0.16 of recall in three configurations, though not on the standards (+0.04).
+best chunks): lower on Legal 10% and Manhattan, level on NIST, and higher on Legal 100%. The cards do add to a half-size chunk context: with the graph emptied, the same
+10 chunks lost 0.11–0.16 of recall in three configurations, though not on NIST (+0.04).
 After 16 cycles with every chunk still remembered, recall had moved by −0.13 to +0.04 against
 cycle 0, with no consistent direction and inside the run-to-run variation. Dreaming neither raised
 nor degraded recall; what it changes is what can be forgotten.
@@ -128,38 +132,34 @@ binned by memory drop (bin means, 95% bootstrap intervals). Dashed: proportional
 conventional RAG, 20 chunks and no graph. Hollow, left of 0: each arm at cycle 16 with nothing
 forgotten.](figures/fig1_binned_t0.png){width=100%}
 
-**Three curve shapes.** Legal opinions stayed below the diagonal: a 66% memory drop cost 21% of
-recall, and on the full corpus 26% cost 13% (a single point, not drawn). With arms pooled into memory bins, the first fifth of
-memory cost 0.4 of its share of recall for legal opinions and 0.5 for the standards. The standards
-then hit a cliff: the next 9% of memory cost 30% of recall, 3.3 times its share (CI 2.6–4.3), and
-loss stayed roughly proportional after it. The historical documents lost 32% of their recall in the
+**Three curve shapes.** Legal stayed below the diagonal: a 66% memory drop cost 21% of recall, and
+on Legal 100% 26% cost 13% (a single point, not drawn). With arms pooled into memory bins, the first fifth of
+memory cost 0.4 of its share of recall for Legal and 0.5 for NIST. NIST then hit a cliff: the next 9% of memory cost 30% of recall, 3.3 times its share (CI 2.6–4.3), and
+loss stayed roughly proportional after it. Manhattan lost 32% of its recall in the
 first 10% of memory, then little more.
 
-**The forgetting rule, not dreaming with less.** R traced F's curve (Table 1): on the standards R
-lost 51% of recall at a 33% memory drop without hiding a chunk from its dreams, so the loss comes from
-what the per-chunk rule releases. F had forgotten almost every chunk it could by cycle 8 (cycle 4 on
-the historical documents) and left most of its later budget unspent, which is why its curves flatten.
+**The forgetting rule, not dreaming with less.** R traced F's curve (Table 1): on NIST R lost 51% of recall at a 33% memory drop without hiding a chunk from its dreams, so the loss comes from
+what the per-chunk rule releases. F had forgotten almost every chunk it could by cycle 8 (cycle 4 on Manhattan) and left most of its later budget unspent, which is why its curves flatten.
 
 **Long-term memory is not compact.** The graph's cards already made up 25–53% of memory at cycle 0
 (Table 1), so forgetting every chunk could cut memory by at most 47–75%. Dreaming then grew the
-cards: on the historical documents F's cards grew 26% and R's 61%, and R's memory drop *shrank* from
+cards: on Manhattan F's cards grew 26% and R's 61%, and R's memory drop *shrank* from
 26% at cycle 1 to 9% at cycle 16 even as it released more chunks.
 
 **Table 2.** Forgetting rules, 10% slices, arm F at cycle 16: chunks forgotten and recall from graph
-plus remembered chunks (cycle 0: 0.81 legal, 0.84 standards). Each rule is a separate dream run, so
+plus remembered chunks (cycle 0: 0.81 Legal, 0.84 NIST). Each rule is a separate dream run, so
 differences of a few points between rules that forget almost nothing are dream-run variation.
 
-| Rule | Legal forgot | Legal recall | Standards forgot | Standards recall |
+| Rule | Legal forgot | Legal recall | NIST forgot | NIST recall |
 |---|---|---|---|---|
 | per-chunk | 373 / 377 | 0.71 | 370 / 399 | 0.28 |
 | probe-check | 5 / 377 | 0.76 | 7 / 399 | 0.85 |
 | per-entity | 9 / 377 | 0.83 | 1 / 399 | 0.88 |
 
-**Rules that check the graph forget almost nothing.** The probe-check rule removed the standards'
-loss, but it also refused the legal opinions, where forgetting had cost little: the graph answered
+**Rules that check the graph forget almost nothing.** The probe-check rule removed NIST's loss, but it also refused Legal, where forgetting had cost little: the graph answered
 only 15–25% of probes in either corpus, so the check does not tell the corpora apart. It also cost
-35–107k tokens per cycle on top of the 40k dreaming budget. The per-entity rule forgot 9 legal chunks
-and one standards chunk: there a chunk mentions a median of 12 entities, and by cycle 16 F had been
+35–107k tokens per cycle on top of the 40k dreaming budget. The per-entity rule forgot 9 Legal chunks
+and one NIST chunk; in NIST a chunk mentions a median of 12 entities, and by cycle 16 F had been
 completed from a median 23% of them.
 
 **What the graph holds of a chunk.** An LLM split 100 chunks per corpus (seed 0) into at most 12
@@ -170,7 +170,7 @@ fact is held when one card contains every number and half its content words (Tab
 on the card of an entity the fact names. Reached, not held: facts whose entities dreaming had read
 from the chunk, yet no card holds.
 
-| | Legal | Standards |
+| | Legal | NIST |
 |---|---|---|
 | Facts (relational share) | 623 (51%) | 572 (60%) |
 | Held: cycle 0 → R c16 → F c16 | 0.26 → 0.27 → 0.47 | 0.45 → 0.53 → 0.61 |
@@ -200,11 +200,10 @@ measure its own curve before trusting any rule.
 chunks, far from millions of documents; one dream run per arm (two for R) when repeat runs differed
 by up to 0.31; an unvalidated lexical fact judge (a stricter NLI judge holds 0.31 and 0.46 under F);
 no random-forgetting baseline; gold facts concentrated in document openings. Consolidation did not
-raise recall, so the payoff is memory saved, measured as text, not storage or query compute. Why the
-curves differ between corpora is open: the well-structured legal opinions stayed below proportional
-loss and the less structured corpora did not (Figure 2), which suggests clean, well-delimited
-entities may benefit most from dreaming, but three corpora cannot separate structure from redundancy
-or how questions spread over documents.
+raise recall, so the payoff is memory saved, measured as text, not storage or query compute. Why the curves differ between corpora is open: Legal, whose documents share one consistent
+structure, stayed below proportional loss, while NIST and Manhattan, whose documents differ in
+format, did not (Figure 2). Consistently structured text may benefit most from dreaming, but three
+corpora cannot separate format from redundancy or from how questions spread over documents.
 
 **Conclusion.** Forgetting raw chunks after consolidation can be cheap, but whether it is depends on
 the corpus, and rules that make it safe today do so by forgetting almost nothing. The limit we find
