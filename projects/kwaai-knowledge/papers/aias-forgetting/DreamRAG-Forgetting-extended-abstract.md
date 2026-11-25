@@ -11,11 +11,12 @@ appendices included, measured in the final ACM two-column proceedings layout; ke
 category (Extended Abstract). Supplementary material goes separately at the ACM production stage.
 Build:
   python3 projects/kwaai-knowledge/papers/aias-forgetting/build_docx.py
+Figure 1 (method): figures/gen_method_diagram.py -> fig0_method.{svg,png,pdf}.
 Number sources (feat/dream-forgetting worktree, tests/kwaai-knowledge/results/dream_forget/):
-  Figure 1, Table 1       <run>/metrics_t0.jsonl (temperature-0 re-score) + _recall_per_size/recall_per_size.csv
+  Figure 2, Table 1       <run>/metrics_t0.jsonl (temperature-0 re-score) + _recall_per_size/recall_per_size.csv
                           (memory, chunks kept); runs {Legal,NIST,Manhattan_v3}_p10_b40000, Legal_p100_b40000;
                           figures/gen_binned_t0.py -> binned_t0.csv
-  Baselines, Fig 1 refs   <run>/metrics_t0_extra.jsonl (2026-11-25 temperature-0 re-score,
+  Baselines, Fig 2 refs   <run>/metrics_t0_extra.jsonl (2026-11-25 temperature-0 re-score,
                           eval2/pilot/rescore_t0.py --extra / --chunk-baseline): E0 chunks-only (conventional
                           RAG, 20 chunks), E0 graph+all (10 chunks, empty graph), F/R/R2 c16 graph+all
   Table 2                 per-chunk: as Table 1; probe-check and per-entity: *_cap1 / *_pairs
@@ -67,55 +68,41 @@ chunk, which locates the limit in the long-term store rather than in the forgett
 
 ## 2 Methodology
 
-**Two memories.** Chunks of at most 800 characters, searched by BM25 (Robertson and Zaragoza 2009)
-and dense embeddings (nomic-embed-text; Nussbaum et al. 2024), are short-term memory. An entity
-graph is long-term memory: each entity is a text card holding its description, facts and evidence.
-Cycle 0 builds the graph from the chunks with llama3.1:8b (Grattafiori et al. 2024) at
-temperature 0, using each corpus's curated ontology of entity types and predicates.
+![**Figure 1.** Data flow of one run. The forgetting rule (highlighted) turns the chunks dreaming has
+read into forgotten chunks, which arm F also hides from its own dreaming. Each snapshot is scored
+from 20 cards and 10 remembered chunks.](figures/fig0_method.png){width=100%}
 
-**Dreaming.** Each offline dream cycle completes entities: the model rewrites an entity's card, and
-proposes relations, from up to 20 of its evidence chunks, and the write is kept only if it passes
-an improvement gate. A cycle has a fixed budget of 40,000 model tokens (prompt plus generated), the
-same for every corpus size, as sleep does not lengthen after a busier day; budget that cannot be
-spent is left unspent. We run 16 cycles, at most 640,000 tokens of an 8B model per arm, and
-snapshot the graph after cycles 1, 2, 4, 8 and 16.
+**Memories and dreaming.** Short-term memory is chunks of at most 800 characters, searched by BM25
+(Robertson and Zaragoza 2009) and dense embeddings (nomic-embed-text; Nussbaum et al. 2024).
+Long-term memory is an entity graph of text cards, built at cycle 0 by llama3.1:8b (Grattafiori et
+al. 2024) at temperature 0 from each corpus's curated ontology. Each dream cycle rewrites cards, and
+proposes relations, from up to 20 evidence chunks per entity, keeping a write only if it passes an
+improvement gate. A cycle has a fixed budget of 40,000 tokens whatever the corpus size, as sleep
+does not lengthen after a busier day; we run 16 cycles and snapshot after cycles 1, 2, 4, 8 and 16.
 
-**Forgetting.** Forgotten chunks are withheld, not deleted, so every run starts from the same
-cycle-0 store. A rule decides when a chunk counts as consolidated:
+**Forgetting.** Forgotten chunks are withheld, not deleted. The *per-chunk* rule forgets a chunk once
+any accepted completion has read it; the *probe-check* rule only if the graph alone answers three
+probes the model writes from it, checked by code (every number, half the content words); the
+*per-entity* rule only once every entity the chunk mentions has been completed from it. Arm F hides
+forgotten chunks from its own dreaming as well as from retrieval; arm R dreams over every chunk but
+records the same marks, and R2 repeats R. If R traces F, the loss comes from what the rule forgets,
+not from dreaming with less. Two references need no dreaming: the cycle-0 graph with every chunk,
+and conventional RAG, the 20 best chunks with no graph.
 
-- *per-chunk*: once any accepted completion has read it;
-- *probe-check*: the model writes up to three question–answer probes from the chunk, a second call
-  answers them from graph retrieval alone, and code (not the model) checks every number and half
-  the content words of each answer; the chunk is forgotten only if all probes are answered;
-- *per-entity*: only once every entity the chunk mentions has been completed from it.
-
-**Arms.** Arm F hides its forgotten chunks from its own dreaming as well as from retrieval. Arm R
-dreams over every chunk but records the same marks, so its curve is what the rule *would* release
-from a graph dreamed without losing evidence; R2 repeats R from the same cycle 0. If R traces F,
-the loss comes from what the rule forgets, not from dreaming with less. Two references need no
-dreaming: the cycle-0 graph with every chunk, and conventional RAG, the 20 best chunks with no
-graph.
-
-**Corpora and gold.** Three public corpora: legal opinions, AI security standards and Manhattan
-Project documents. Each run uses the first 10% of every document in reading order (so every document
-contributes), plus one run on the full legal corpus. Each question carries gold facts (nuggets),
-each tied to the chunk that supports it, drafted from reference answers, adjudicated and frozen
-before the runs; a question is kept if at least one of its nuggets is supported inside the slice.
-
-**Measures.** After each snapshot, llama3.1:8b answers each question at temperature 0 from the
-graph's 20 best cards interleaved with the 10 best chunks still remembered. *Recall* is the share of
-a question's nuggets that the answer entails (DeBERTa-v3 NLI ≥ 0.5; Laurer et al. 2024). *Memory*
-is the searchable text: card characters plus remembered chunk characters. We report both as drops
-from cycle 0, which is evaluated twice. Figure 1 pools F, R and R2 into 10%-wide bins of memory
-drop (bins with fewer than two points are dropped) with 95% percentile-bootstrap intervals.
+**Corpora and measures.** Three public corpora, legal opinions, AI security standards and Manhattan
+Project documents, each cut to the first 10% of every document, plus the full legal corpus. Each
+question's gold facts (nuggets) are tied to their supporting chunks, adjudicated and frozen before the
+runs. At each snapshot llama3.1:8b answers at temperature 0 from the 20 best cards and the 10 best
+remembered chunks. *Recall* is the share of gold facts the answer entails (DeBERTa-v3 NLI ≥ 0.5;
+Laurer et al. 2024); *memory* is the searchable text of cards and remembered chunks; both are
+reported as drops from cycle 0. Figure 2 pools F, R and R2 into 10%-wide bins of memory drop, with
+95% bootstrap intervals.
 
 ## 3 Key Results & Empirical Validation
 
-**Setup and noise.** Table 1 lists the four configurations. Evaluating the same cycle-0 graph twice
-moved recall by at most 0.05; repeat dream runs (R2 against R, at the same cycle) moved it by up to
-0.31. Differences between R and R2 are therefore mostly dream-to-dream variation, not evaluation
-noise: all answers were regenerated at temperature 0 with a fixed seed and exact vector search, and
-the prompts were identical across re-runs.
+**Setup and noise.** Table 1 lists the four configurations. Re-evaluating one graph moved recall by
+at most 0.05 (temperature 0, fixed seed, exact vector search); repeat dream runs moved it by up to
+0.31, so differences between R and R2 are dream-to-dream variation.
 
 **Table 1.** Configurations and the end of each run under the per-chunk rule (cycle 16). Cards: the
 graph's share of memory at cycle 0. Forgot: chunks withheld. Drops are relative to cycle 0.
@@ -136,25 +123,22 @@ After 16 cycles with every chunk still remembered, recall had moved by −0.13 t
 cycle 0, with no consistent direction and inside the run-to-run variation. Dreaming neither raised
 nor degraded recall; what it changes is what can be forgotten.
 
-![**Figure 1.** Recall drop against memory drop over 16 dream cycles, arms F, R and R2 pooled and
+![**Figure 2.** Recall drop against memory drop over 16 dream cycles, arms F, R and R2 pooled and
 binned by memory drop (bin means, 95% bootstrap intervals). Dashed: proportional loss. Dotted:
 conventional RAG, 20 chunks and no graph. Hollow, left of 0: each arm at cycle 16 with nothing
 forgotten.](figures/fig1_binned_t0.png){width=100%}
 
 **Three curve shapes.** Legal opinions stayed below the diagonal: a 66% memory drop cost 21% of
-recall, and on the full corpus 26% cost 13%. With arms pooled into memory bins, the first fifth of
+recall, and on the full corpus 26% cost 13% (a single point, not drawn). With arms pooled into memory bins, the first fifth of
 memory cost 0.4 of its share of recall for legal opinions and 0.5 for the standards. The standards
 then hit a cliff: the next 9% of memory cost 30% of recall, 3.3 times its share (CI 2.6–4.3), and
 loss stayed roughly proportional after it. The historical documents lost 32% of their recall in the
-first 10% of memory, then little more. The single cycle-16 point on the full legal corpus has no
-second point in its bin, so it is not drawn in Figure 1.
+first 10% of memory, then little more.
 
-**The forgetting rule, not dreaming with less.** R traced F's curve (Table 1): on the standards, R
-lost 51% of recall at a 33% memory drop without ever hiding a chunk from its own dreams. So the loss
-comes from what the per-chunk rule releases. That rule also exhausts itself: F had forgotten almost
-every chunk it could by cycle 8 (cycle 4 on the historical documents), and from then on it had
-little left to dream over and left most of its budget unspent, which is why F's curves flatten after
-a few cycles.
+**The forgetting rule, not dreaming with less.** R traced F's curve (Table 1): on the standards R
+lost 51% of recall at a 33% memory drop without hiding a chunk from its dreams, so the loss comes from
+what the per-chunk rule releases. F had forgotten almost every chunk it could by cycle 8 (cycle 4 on
+the historical documents) and left most of its later budget unspent, which is why its curves flatten.
 
 **Long-term memory is not compact.** The graph's cards already made up 25–53% of memory at cycle 0
 (Table 1), so forgetting every chunk could cut memory by at most 47–75%. Dreaming then grew the
@@ -178,12 +162,9 @@ only 15–25% of probes in either corpus, so the check does not tell the corpora
 and one standards chunk: there a chunk mentions a median of 12 entities, and by cycle 16 F had been
 completed from a median 23% of them.
 
-**What the graph holds of a chunk.** To see why, we audited 100 chunks per corpus, drawn uniformly
-(seed 0) from the legal and standards slices. An LLM split each chunk into at most 12 atomic facts
-(median 6), each with its subject, object and the ontology predicate that expresses it, or none. A
-fact counts as held when one card contains every number and half the content words of it, the
-probe-check's rule (Table 3). The audit used the per-entity runs, whose F arm withholds a chunk from
-dreaming for an entity once that entity has read it.
+**What the graph holds of a chunk.** An LLM split 100 chunks per corpus (seed 0) into at most 12
+atomic facts each (median 6), with subject, object and the ontology predicate that fits, or none; a
+fact is held when one card contains every number and half its content words (Table 3, per-entity runs).
 
 **Table 3.** Fact audit, 100 chunks per corpus. Held: share of facts a card holds. Named card: held
 on the card of an entity the fact names. Reached, not held: facts whose entities dreaming had read
@@ -199,16 +180,13 @@ from the chunk, yet no card holds.
 | Reached, not held: relate no two entities | 60% | 44% |
 | Reached, not held: fit no predicate | 26% | 20% |
 
-Dreaming under forgetting kept more facts than dreaming over everything, because withholding a
-chunk from an entity that has read it sends the next completions to unread chunks. But most of what
-it kept is in the wrong place. Only 0.19 and 0.28 of facts sat on the card of an entity they name,
-the card graph retrieval would show for a question about them; up to half of the held facts were
-chunk sentences copied verbatim onto other entities' cards. Of the facts dreaming did read and
-still did not keep, most relate no two entities (requirements, conditions, numbers, definitions)
-and a fifth to a quarter are relations no declared predicate expresses: facts an entity card has no
-place for. A fact-based rule could forget the 20–29 chunks per hundred whose facts are held, which is
-more than the probe or entity rules release, but only if retrieval can find those facts where they
-were written.
+Dreaming under forgetting kept more facts, since withholding read chunks sends completions to unread
+ones, but mostly in the wrong place: only 0.19 and 0.28 sat on the card of an entity they name, the
+card retrieval would show, and up to half were chunk sentences copied onto other entities' cards. Of
+facts read but not kept, most relate no two entities (requirements, conditions, numbers,
+definitions) and a fifth to a quarter fit no declared predicate: an entity card has no place for
+them. A fact-based rule could forget the 20–29 chunks per hundred whose facts are held, but only if
+retrieval can find those facts where they were written.
 
 ## 4 Impact, Limitations & Conclusion
 
@@ -218,19 +196,15 @@ the forgetting curve measures it. Our results say the cost is not a property of 
 the same rule was nearly free on one corpus and steep on another, so a deployment would need to
 measure its own curve before trusting any rule.
 
-**Limitations.** Three corpora with 10–20 questions each, on 10% slices plus one full corpus of
-3,723 chunks, far from millions of documents; one dream run per arm per configuration (two for R),
-when repeat runs differed by up to 0.31 in recall; the fact audit's judge is a lexical rule we have
-not validated against human labels, and a stricter NLI judge holds fewer facts (0.31 and 0.46 under
-F); no random-forgetting baseline; gold facts concentrate in document openings, which the 10% slices
-over-represent. Consolidation did not raise recall in any arm, so the payoff measured here is only
-memory saved. We report memory as searchable text, not storage or compute: we have no results yet
-on the cost of queries after dreaming. Why the curve's shape differs between corpora is open. The
-curves split as the corpora do in Figure 1: the well-structured legal opinions stayed below
-proportional loss, while the less structured standards and historical documents did not, which
-suggests that text with clean, well-delimited entities may benefit most from dreaming. Three
-corpora cannot separate structure from other candidates, such as how often a corpus restates a
-fact across chunks or how its questions spread over documents.
+**Limitations.** Three corpora with 10–20 questions each, on 10% slices plus one corpus of 3,723
+chunks, far from millions of documents; one dream run per arm (two for R) when repeat runs differed
+by up to 0.31; an unvalidated lexical fact judge (a stricter NLI judge holds 0.31 and 0.46 under F);
+no random-forgetting baseline; gold facts concentrated in document openings. Consolidation did not
+raise recall, so the payoff is memory saved, measured as text, not storage or query compute. Why the
+curves differ between corpora is open: the well-structured legal opinions stayed below proportional
+loss and the less structured corpora did not (Figure 2), which suggests clean, well-delimited
+entities may benefit most from dreaming, but three corpora cannot separate structure from redundancy
+or how questions spread over documents.
 
 **Conclusion.** Forgetting raw chunks after consolidation can be cheap, but whether it is depends on
 the corpus, and rules that make it safe today do so by forgetting almost nothing. The limit we find
