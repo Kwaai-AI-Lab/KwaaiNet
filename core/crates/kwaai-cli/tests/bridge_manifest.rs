@@ -107,6 +107,10 @@ fn no_private_address_is_published_anywhere_in_the_manifest() {
     let mut strings = Vec::new();
     all_strings(&m, &mut strings);
 
+    // MIRROR: src/hive.rs carries the same list (as ADDRESS_MARKERS /
+    // HOSTNAME_MARKERS) when it validates a PEER's manifest — and there it
+    // is backed by real IPv4/IPv6 parsing, because the client acts on those
+    // values. Keep the two in sync.
     let forbidden = [
         "192.168.",
         "10.0.",

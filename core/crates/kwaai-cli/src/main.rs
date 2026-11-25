@@ -18,6 +18,7 @@ mod eval_dump;
 mod grpc_server;
 mod health;
 mod hf;
+mod hive;
 mod identity;
 mod inference_mux;
 mod llama_local;
@@ -1634,6 +1635,13 @@ async fn main() -> Result<()> {
         // -------------------------------------------------------------------
         Command::Reputation(args) => {
             reputation_cmd::run(args).await?;
+        }
+
+        // -------------------------------------------------------------------
+        // hive (open-hives/0.1 doorbell)
+        // -------------------------------------------------------------------
+        Command::Hive(args) => {
+            hive::run(args).await?;
         }
 
         // -------------------------------------------------------------------

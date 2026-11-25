@@ -142,6 +142,9 @@ pub enum Command {
     /// View and manage the local peer reputation store (trust scores, observed performance)
     Reputation(ReputationArgs),
 
+    /// Talk to other hives over the open-hives/0.1 bridge (fetch manifests, ring doorbells)
+    Hive(HiveArgs),
+
     /// Manage the local storage fabric (Eve role — host opaque vectors for Bob nodes on the network)
     Storage(StorageArgs),
 
@@ -1164,6 +1167,42 @@ pub enum ReputationAction {
     Reset {
         /// Full peer ID or unique prefix (≥ 12 chars)
         peer_id: String,
+    },
+}
+
+// ---------------------------------------------------------------------------
+// hive (open-hives/0.1 doorbell)
+// ---------------------------------------------------------------------------
+
+#[derive(Args)]
+pub struct HiveArgs {
+    #[command(subcommand)]
+    pub action: HiveAction,
+}
+
+#[derive(Subcommand)]
+pub enum HiveAction {
+    /// Fetch and validate a peer hive's open-hives/0.1 discovery manifest
+    Fetch {
+        /// Peer hive: a brand ("hivv"), a host ("hivv.org"), or a manifest URL
+        target: String,
+
+        /// Print the raw manifest JSON instead of the summary
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Ring a peer hive's doorbell — ask the whole hive a question
+    Ask {
+        /// Peer hive: a brand, a host, or a manifest URL
+        target: String,
+
+        /// The message for the peer hive
+        message: String,
+
+        /// Model id (default: first model the peer publishes)
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
     },
 }
 
