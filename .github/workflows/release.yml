@@ -189,11 +189,11 @@ jobs:
       - name: Install dependencies
         run: |
           ${{ matrix.packages_install }}
-      # MLX's libc++ file streams need macOS 12.3; say so in the binary rather
-      # than fail at launch. Intel stays at the default (11.0).
-      - name: Set Apple Silicon deployment target
-        if: ${{ contains(join(matrix.targets, ','), 'aarch64-apple-darwin') }}
-        run: echo "MACOSX_DEPLOYMENT_TARGET=12.3" >> "$GITHUB_ENV"
+      # MLX needs macOS 14 (Sonoma), core/.cargo/config.toml's default. Intel
+      # has no MLX, so it overrides that and stays at 11.0.
+      - name: Set Intel deployment target
+        if: ${{ contains(join(matrix.targets, ','), 'x86_64-apple-darwin') }}
+        run: echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
       - name: Build artifacts
         working-directory: core
         run: |

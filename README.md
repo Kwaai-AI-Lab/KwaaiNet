@@ -106,7 +106,7 @@ This quickstart shows how to install the native Rust CLI, start a node, and send
 
 | Platform | Minimum | Notes |
 | --- | --- | --- |
-| macOS, Apple Silicon | macOS 12.3 | MLX block serving (`--mlx`) needs macOS 14 |
+| macOS, Apple Silicon | macOS 14 (Sonoma) | |
 | macOS, Intel | macOS 10.12 | |
 | Linux x86_64 / arm64 (glibc) | glibc 2.34 | e.g. Ubuntu 22.04, Debian 12, RHEL 9 |
 | Linux x86_64 / arm64 (musl) | — | Statically linked, no glibc requirement |
@@ -362,7 +362,7 @@ Pinned path:
 Add `--stats` for a per-token timing breakdown (prefill, decode, throughput). For local-only
 inference without networking: `kwaainet shard run "prompt" --local`.
 
-On Apple Silicon (macOS 14+), `--mlx` serves blocks on the GPU with MLX, which release builds
+On Apple Silicon, `--mlx` serves blocks on the GPU with MLX, which release builds
 include; `--force-blocks` alone uses candle on CPU and is only for testing. The daemon's own shard child takes no
 flags; it reads `shard.backend` (`auto`, `candle` or `mlx`) from `config.yaml` instead.
 

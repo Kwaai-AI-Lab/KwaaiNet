@@ -36,7 +36,6 @@ tracing = { workspace = true }
 tokio-test = "0.4"
 tracing-subscriber = { workspace = true }
 criterion = { workspace = true }
-safetensors = "0.6"
 dirs = "5"
 
 [[bench]]
@@ -45,10 +44,10 @@ harness = false
 
 # MLX is Apple Silicon only: on any other target the `mlx` feature builds nothing.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
-mlx-rs = { version = "0.25", optional = true, features = ["safetensors"] }
-# Direct dep only so build.rs sees DEP_MLX_METALLIB; mlx-rs already links it.
-mlx-sys = { version = "0.2", optional = true }
-safetensors = { version = "0.6", optional = true }
+mlx-rs = { version = "0.33", optional = true, features = ["safetensors"] }
+# Direct dep (`links = "mlx"`) so it writes mlx.metallib before build.rs embeds it.
+mlx-sys = { version = "0.7", optional = true }
+safetensors = { version = "0.8", optional = true }
 memmap2 = { version = "0.9", optional = true }
 
 [features]

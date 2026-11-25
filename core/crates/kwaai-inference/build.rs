@@ -1,12 +1,12 @@
 //! `cfg(mlx)`: the `mlx` feature on Apple Silicon, the only target MLX builds for.
-//! `cfg(mlx_embedded_metallib)`: mlx-sys reported its kernels, so they are embedded.
+//! `cfg(mlx_embedded_metallib)`: mlx.metallib was found, so it is embedded.
 
-use std::env;
+use std::{env, path::Path};
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(mlx)");
     println!("cargo:rustc-check-cfg=cfg(mlx_embedded_metallib)");
-    println!("cargo:rerun-if-env-changed=DEP_MLX_METALLIB");
+    println!("cargo:rerun-if-env-changed=MLX_RS_METAL_PATH");
 
     let apple_silicon = env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos")
         && env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("aarch64");
@@ -15,15 +15,17 @@ fn main() {
     }
     println!("cargo:rustc-cfg=mlx");
 
-    // Only the patched mlx-sys (core/patches) reports this; a stock one falls
-    // back to MLX's own lookup beside the binary.
-    let Ok(path) = env::var("DEP_MLX_METALLIB") else {
+    // mlx-sys builds the kernels into MLX_RS_METAL_PATH (core/.cargo/config.toml).
+    // Without it they land in a per-user directory, so MLX needs them beside the binary.
+    let Some(dir) = env::var_os("MLX_RS_METAL_PATH") else {
         println!(
-            "cargo:warning=mlx-sys did not report mlx.metallib; MLX will need it beside the binary"
+            "cargo:warning=MLX_RS_METAL_PATH unset; MLX will need mlx.metallib beside the binary"
         );
         return;
     };
-    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
+    let path = Path::new(&dir).join("mlx.metallib");
+    let path = path.to_str().expect("MLX_RS_METAL_PATH is UTF-8");
+    let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("reading {path}: {e}"));
     println!("cargo:rerun-if-changed={path}");
     println!("cargo:rustc-cfg=mlx_embedded_metallib");
     println!("cargo:rustc-env=KWAAI_MLX_METALLIB={path}");

@@ -31,8 +31,6 @@ multistream-select = { path = "patches/multistream-select" }
 libp2p-kad = { path = "patches/libp2p-kad" }
 # Behaves exactly as upstream unless CUDARC_DISABLE_ASYNC_ALLOC is set; see patches/README.md.
 cudarc = { path = "patches/cudarc" }
-# Reports mlx.metallib to dependents and lets the binary point MLX at it; see patches/README.md.
-mlx-sys = { path = "patches/mlx-sys" }
 
 # Root package for examples
 [package]

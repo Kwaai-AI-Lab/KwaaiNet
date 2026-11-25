@@ -10,4 +10,3 @@ export KWAAI_FETCH_PATCHES=1
 bash "$DIR/fetch-multistream-select.sh"
 bash "$DIR/fetch-libp2p-kad.sh"
 bash "$DIR/fetch-cudarc.sh"
-bash "$DIR/fetch-mlx-sys.sh"
