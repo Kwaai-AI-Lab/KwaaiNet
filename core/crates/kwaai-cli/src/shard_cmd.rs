@@ -256,16 +256,17 @@ async fn cmd_shard_gap() -> Result<()> {
 async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServeExit> {
     print_box_header("🍎 KwaaiNet Whole-Model Server (macOS)");
     println!("  Backend: Ollama on localhost:{}", cfg.ollama_port);
-    println!("  Mode:    whole model — block sharding is not viable on Metal (#117)");
+    println!("  Mode:    whole model, no block range");
     println!();
 
     let models = match crate::ollama::readiness(cfg.ollama_port).await {
         Ok(models) => models,
         Err(why) => {
             print_error(&format!("Cannot serve: {why}"));
-            print_info("macOS nodes serve whole models through Ollama until a native");
-            print_info("Apple fast path lands — candle's Metal decode is slower than CPU.");
-            print_info("To serve blocks anyway: kwaainet shard serve --force-blocks");
+            // An MLX build already said why it is not serving blocks.
+            if !mlx_here() {
+                print_info("To serve blocks anyway: kwaainet shard serve --force-blocks");
+            }
             print_separator();
             bail!("Ollama is not ready — refusing to advertise a path we cannot serve");
         }
@@ -328,6 +329,28 @@ async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServe
     Ok(ShardServeExit::UserStop)
 }
 
+/// `shard.backend: auto` on macOS: MLX blocks on an MLX build whose weights are
+/// already local. Never downloads; without them the Mac serves the whole model.
+fn auto_serves_mlx(mlx_build: bool, weights_local: bool) -> bool {
+    mlx_build && weights_local
+}
+
+/// An MLX build on macOS 14+. On 11–13 an MLX build behaves like an Intel one.
+fn mlx_here() -> bool {
+    #[cfg(mlx)]
+    return kwaai_inference::mlx_shard::os_supported().is_ok();
+    #[cfg(not(mlx))]
+    false
+}
+
+/// Whether MLX can run here; failing (e.g. an unwritable home), `auto` keeps Ollama.
+fn mlx_starts() -> bool {
+    #[cfg(mlx)]
+    return kwaai_inference::mlx_shard::mlx_available();
+    #[cfg(not(mlx))]
+    false
+}
+
 /// Whether the operator asked for a block range. Config `blocks` always has a
 /// default, so only the flags and an operator-pinned `start_block` count.
 fn range_is_pinned(start_block: Option<u32>, blocks: Option<u32>, cfg: &KwaaiNetConfig) -> bool {
@@ -348,27 +371,8 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         crate::daemon::ShardManager::new().write_pid(std::process::id());
     }
 
-    // ── macOS: serve the whole model through Ollama, never blocks ───────────
-    //
-    // Block sharding is not viable on Apple hardware. candle's Metal backend is
-    // *slower than CPU* for single-token decode, so `DeviceType::detect_best()`
-    // skips it and a Mac lands on CPU at 2-4 tok/s — while the same machine runs
-    // the same model through Ollama at ~47 tok/s. Gap-filling can also hand a
-    // Mac a partial range it cannot serve on GPU at all (#117), which still
-    // reads as healthy coverage in `shard chain`.
-    //
-    // So a Mac does not register as a block server. It serves whole-model
-    // inference over `/kwaai/ollama-proxy/1.0.0`, which every node already
-    // registers, and stays at announce state 1 (JOINING) because no shard ever
-    // loads — no announce change needed.
-    //
-    // Stopgap. Delete this branch when an Apple fast path lands: MLX
-    // (`mlx_shard.rs`) already implements sharding and failed only on graph
-    // recompilation, and `llama_local.rs` wraps the same llama.cpp engine Ollama
-    // uses. See `projects/kwaai-compute/plans/MacOllamaStopgap-plan.md`.
     // A flag applies to this run; the daemon's child gets `shard.backend`.
-    let backend = args.backend(&cfg);
-    let mlx = backend == crate::config::ShardBackend::Mlx;
+    let mut backend = args.backend(&cfg);
     #[cfg(feature = "synthetic")]
     let synthetic = crate::synthetic::serve_config(args.synthetic, &cfg)?;
     #[cfg(not(feature = "synthetic"))]
@@ -377,14 +381,30 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         && backend == crate::config::ShardBackend::Auto
         && synthetic.is_none()
     {
-        if range_is_pinned(args.start_block, args.blocks, &cfg) {
-            print_warning("A block range is set, but this node serves the whole model — it is ignored (#117).");
-            print_info("To serve that range: --mlx (Apple Silicon) or --force-blocks");
+        let weights_local = args.model_path.is_some() || hf::resolve_snapshot(&cfg.model).is_ok();
+        if auto_serves_mlx(mlx_here(), weights_local) && mlx_starts() {
+            print_info("Serving blocks with MLX (shard.backend: auto on Apple Silicon)");
+            backend = crate::config::ShardBackend::Mlx;
+        } else {
+            if mlx_here() && !weights_local {
+                print_info(&format!(
+                    "No local weights for {}, so serving the whole model through Ollama. \
+                     To serve blocks with MLX: kwaainet shard download",
+                    cfg.model
+                ));
+            } else if mlx_here() {
+                print_warning("MLX could not start, so serving the whole model through Ollama.");
+            }
+            if range_is_pinned(args.start_block, args.blocks, &cfg) {
+                print_warning("A block range is set, but this node serves the whole model — it is ignored (#117).");
+                print_info("To serve that range: --mlx (Apple Silicon) or --force-blocks");
+            }
+            return serve_whole_model_via_ollama(&cfg).await;
         }
-        return serve_whole_model_via_ollama(&cfg).await;
     }
-    if mlx && !cfg!(feature = "mlx") {
-        bail!("--mlx needs a binary built with `cargo build -p kwaainet --features mlx`");
+    let mlx = backend == crate::config::ShardBackend::Mlx;
+    if mlx && !cfg!(mlx) {
+        bail!("--mlx needs Apple Silicon and a binary built with `--features mlx` (releases are)");
     }
 
     let target_blocks = snap_to_valid_blocks(args.blocks.unwrap_or(cfg.blocks) as usize);
@@ -2874,13 +2894,22 @@ pub async fn cmd_shard_status() -> Result<()> {
     // inference ran on CPU (#118). Label it as configuration and state the
     // serving mode separately.
     println!("  GPU (config): {}", cfg.use_gpu);
-    if cfg!(target_os = "macos") {
+    let auto_mlx = cfg.shard.backend == crate::config::ShardBackend::Auto
+        && auto_serves_mlx(mlx_here(), hf::resolve_snapshot(&cfg.model).is_ok());
+    if cfg!(target_os = "macos") && cfg.shard.backend == crate::config::ShardBackend::Mlx {
+        println!("  Mode:         blocks with MLX (shard.backend: mlx)");
+    } else if cfg!(target_os = "macos") && auto_mlx {
+        println!("  Mode:         blocks with MLX (shard.backend: auto)");
+    } else if cfg!(target_os = "macos") {
         println!(
             "  Mode:         whole model via Ollama (localhost:{})",
             cfg.ollama_port
         );
-        println!("                block sharding is not viable on Metal — see #117");
-        println!("                the range above is unused on this platform");
+        if mlx_here() {
+            println!("                the range above is used once the weights are local (shard download)");
+        } else {
+            println!("                the range above is unused unless shard.backend: candle");
+        }
     }
     println!("  DHT prefix:   {}", cfg.effective_dht_prefix());
     println!();
@@ -4326,13 +4355,13 @@ fn load_serving_shard(
     end: usize,
     mlx: bool,
 ) -> Result<LoadedShard> {
-    #[cfg(feature = "mlx")]
+    #[cfg(mlx)]
     if mlx {
         let shard =
             kwaai_inference::mlx_shard::MlxTransformerShard::load(paths, config_path, start, end)?;
         return Ok(LoadedShard::mlx(shard));
     }
-    #[cfg(not(feature = "mlx"))]
+    #[cfg(not(mlx))]
     if mlx {
         bail!("this binary was built without MLX support");
     }
@@ -4946,6 +4975,17 @@ mod tests {
         // ones still make progress.
         assert_eq!(prefill_chunk_tokens(64), 512);
         assert_eq!(prefill_chunk_tokens(1 << 20), 16);
+    }
+
+    #[test]
+    fn auto_serves_mlx_only_with_an_mlx_build_and_local_weights() {
+        assert!(auto_serves_mlx(true, true));
+        assert!(!auto_serves_mlx(true, false), "auto never downloads");
+        assert!(
+            !auto_serves_mlx(false, true),
+            "Intel or a build without mlx"
+        );
+        assert!(!auto_serves_mlx(false, false));
     }
 
     #[test]

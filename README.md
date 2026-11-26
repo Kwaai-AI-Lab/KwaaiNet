@@ -6,7 +6,7 @@ KwaaiNet is a decentralized AI node architecture for **Layer 8** — the trust a
 Each KwaaiNet node combines:
 
 - A **decentralized trust graph** (cryptographic identity, verifiable credentials, local trust scores).
-- **Shared LLM compute** over heterogeneous CPUs/GPUs. Petals-style **block sharding** pools a single oversized model across several machines, on CPU and CUDA. Nodes can also contribute **whole models through Ollama**, which works on every platform — and is how Apple Silicon contributes, since Metal decode is slower than the CPU path (see [Current status](#current-status)).
+- **Shared LLM compute** over heterogeneous CPUs/GPUs. Petals-style **block sharding** pools a single oversized model across several machines, on CPU, CUDA and Apple Silicon (MLX). Nodes can also contribute **whole models through Ollama**, which works on every platform (see [Current status](#current-status)).
 - **Multi-tenant knowledge storage** via Virtual Private Knowledge (VPK) — storage nodes hold opaque vectors and never receive your documents. Client-side sealing of those vectors is designed, not yet wired in.
 - **Local-first RAG and knowledge graphs** — retrieval-augmented generation over your own documents, with an optional link to VPK for network-outsourced storage.
 - **Intent-based, peer-to-peer networking** that routes based on "what I need" (model, trust tier, latency), not just IP addresses.
@@ -23,11 +23,10 @@ From an app's point of view, KwaaiNet looks like a familiar chat-completion styl
 the Go `p2pd` child process has been removed. A `native_p2p: false` line in an
 existing `~/.kwaainet/config.yaml` is ignored with a warning.
 
-**Two ways to contribute compute, and Apple Silicon is the one platform split.** Block sharding —
-pooling a model too large for any single machine across several — runs on CPU and CUDA. Whole-model
-serving through Ollama works everywhere. The exception is Apple Silicon, where Metal decode is
-slower than the CPU path, so Macs contribute whole models rather than block ranges
-([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)).
+**Two ways to contribute compute.** Block sharding — pooling a model too large for any single
+machine across several — runs on CPU and CUDA, and on Apple Silicon with MLX. Whole-model serving
+through Ollama works everywhere. Intel Macs serve whole models: candle's Metal decode is slower than
+its CPU path ([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)).
 
 Whole-model serving is the supported path, and needs no special mode: every node registers the
 `/kwaai/ollama-proxy/1.0.0` protocol on every platform, so installing Ollama and pulling a model
@@ -44,8 +43,10 @@ On Apple Silicon the difference is stark. Measured on a Mac mini, same model, sa
 Metal is *slower than CPU* on the candle path, so the runtime deliberately skips it — which is
 why a Mac serving blocks lands at single-digit tok/s.
 
-`kwaainet shard serve` detects macOS automatically and serves whole models over Ollama instead of
-advertising a block range — nothing to pass, but Ollama must be installed with a model pulled:
+`kwaainet shard serve` detects macOS automatically. On Apple Silicon with the model's weights
+already downloaded (`kwaainet shard download`), it serves blocks with MLX. Otherwise it serves the
+whole model over Ollama instead of advertising a block range — nothing to pass, but Ollama must be
+installed with a model pulled:
 
 ```bash
 ollama pull llama3.1:8b
@@ -101,6 +102,16 @@ This quickstart shows how to install the native Rust CLI, start a node, and send
 > **Note:** Exact flags and defaults may evolve. Check `kwaainet --help` for current options.
 
 ### 1. Install the `kwaainet` CLI
+
+**Supported platforms** (minimums of the published release binaries):
+
+| Platform | Minimum | Notes |
+| --- | --- | --- |
+| macOS, Apple Silicon | macOS 11 (Big Sur) | Serving blocks with MLX needs macOS 14 (Sonoma) |
+| macOS, Intel | macOS 10.12 | |
+| Linux x86_64 / arm64 (glibc) | glibc 2.34 | e.g. Ubuntu 22.04, Debian 12, RHEL 9 |
+| Linux x86_64 / arm64 (musl) | — | Statically linked, no glibc requirement |
+| Windows x86_64 | Windows 10 | |
 
 **Shell installer (macOS / Linux):**
 
@@ -290,11 +301,12 @@ For a full walkthrough including platform specifics, model discovery, and Python
 
 There are two ways a node can contribute compute. **Block sharding** pools a model too large for
 any single machine across several, and runs on CPU and CUDA. **Whole-model serving through Ollama**
-works on every platform, and is how Apple Silicon contributes.
+works on every platform.
 
 | Your machine | Contribute with | Why |
 |---|---|---|
-| Apple Silicon Mac | **Ollama, whole model** | Block sharding does not work on Metal — ~20× slower than Ollama on the same box ([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)) |
+| Apple Silicon Mac | **Ollama, whole model** — sharding with MLX if you are experimenting | MLX serves blocks at about 20 tok/s for Llama 8B; Ollama is about 47 tok/s on the same box |
+| Intel Mac | **Ollama, whole model** | Block sharding there is candle on CPU — ~20× slower than Ollama ([#117](https://github.com/Kwaai-AI-Lab/KwaaiNet/issues/117)) |
 | Linux + CUDA | **Ollama, whole model** — sharding if you are experimenting | Sharding works here, but expect rough edges |
 | CPU-only or small GPU | **Ollama, small model** | A slow block server stalls every chain it joins |
 
@@ -352,8 +364,9 @@ Pinned path:
 Add `--stats` for a per-token timing breakdown (prefill, decode, throughput). For local-only
 inference without networking: `kwaainet shard run "prompt" --local`.
 
-On Apple Silicon, pass `--force-blocks` if you want the block path anyway for testing or
-benchmarking — it is not a useful way to contribute. The daemon's own shard child takes no
+On Apple Silicon, blocks are served on the GPU with MLX, which release builds include: `auto` (the
+default) uses it once the weights are local, and `--mlx` uses it, downloading them if needed.
+`--force-blocks` uses candle on CPU and is only for testing. The daemon's own shard child takes no
 flags; it reads `shard.backend` (`auto`, `candle` or `mlx`) from `config.yaml` instead.
 
 See **[docs/sharded-llm-processing.md](docs/sharded-llm-processing.md)** for the full architecture of block-sharded inference, KV-cache management, and data flow diagrams.
@@ -374,9 +387,9 @@ KwaaiNet is under active development. The Rust CLI and node implementation alrea
 ### Compute & inference
 
 - **Whole-model serving over Ollama** — the recommended way to contribute today. Every node registers `/kwaai/ollama-proxy/1.0.0` on every platform, serves every model held locally (the target comes from the request), and needs no special mode.
-- **Block-sharded LLM inference** (CandleEngine) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls. Runs on CPU and CUDA; Apple Silicon contributes whole models instead.
+- **Block-sharded LLM inference** (CandleEngine) exposed through an OpenAI-compatible HTTP API — SafeTensors, RoPE, GQA, SwiGLU, per-session KV-cache, full sampling controls. Runs on CPU and CUDA, and on Apple Silicon with MLX; Intel Macs contribute whole models instead.
 - **Distributed inference across multiple machines** with session-pinned peer paths, automatic gap-filling, and graceful failover when peers go offline.
-- **Per-platform backends**: candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000) serves block shards; Apple Silicon contributes whole models through Ollama instead (47.3 tok/s measured on a Mac mini; detected automatically since v0.6.3). Candle's Metal backend is compiled but skipped at runtime — its decode is ~10× slower than CPU — so Metal block sharding is not offered. See [Current status](#current-status).
+- **Per-platform backends**: candle + CUDA with Flash Attention on Linux (30–36 tok/s FP16 on an RTX A5000) serves block shards; Apple Silicon serves them with MLX (about 20 tok/s decode for Llama 8B), or contributes whole models through Ollama (47.3 tok/s measured on a Mac mini). Candle's Metal backend is compiled but skipped at runtime — its decode is ~10× slower than CPU. See [Current status](#current-status).
 - Selective block download (`shard download --start-block N --blocks M`), reusable inference circuits (`shard circuit create`), and `shard run --local` model reuse for near-zero cold start.
 - Auto-detects local models and network state, and appears on the public map when configured at [map.kwaai.ai](https://map.kwaai.ai).
 

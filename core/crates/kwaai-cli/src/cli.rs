@@ -919,16 +919,16 @@ pub struct ShardServeArgs {
     #[arg(long)]
     pub auto_rebalance: bool,
 
-    /// macOS only: serve transformer blocks anyway, despite Metal being slower
-    /// than CPU for decode. A Mac normally serves whole models through its
-    /// local Ollama instead — this forces the block path for testing or
-    /// benchmarking. Ignored on other platforms, which always serve blocks.
+    /// macOS only: serve candle blocks on CPU, which is slow there. By default an
+    /// Apple Silicon Mac serves MLX blocks when the weights are local, and any
+    /// other Mac the whole model through Ollama. For testing or benchmarking;
+    /// ignored on other platforms, which always serve blocks.
     /// For this run only; the daemon's own shard child reads `shard.backend`.
     #[arg(long)]
     pub force_blocks: bool,
 
-    /// Serve the blocks with MLX on Apple Silicon (needs a binary built with
-    /// `--features mlx`, and its `mlx.metallib` beside it). Implies --force-blocks.
+    /// Serve the blocks with MLX on Apple Silicon (release builds include it;
+    /// a source build needs `--features mlx`). Implies --force-blocks.
     /// For this run only; set `shard.backend: mlx` for the daemon's child.
     #[arg(long)]
     pub mlx: bool,

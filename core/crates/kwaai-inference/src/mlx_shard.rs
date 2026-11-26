@@ -3,7 +3,7 @@
 //! Uses Apple's MLX framework (via mlx-rs) for unified memory, lazy evaluation,
 //! and automatic kernel fusion.
 //!
-//! Feature-gated: only compiled with `--features mlx` on macOS.
+//! Compiled only with `--features mlx` on Apple Silicon (`cfg(mlx)`).
 
 use crate::error::{InferenceError, InferenceResult};
 use crate::tokenizer::BpeTokenizer;
@@ -223,8 +223,8 @@ impl MlxAttention {
         // KV-cache append — the sequence is axis 2 in this layout, not axis 1.
         let (k, v): (Array, Array) = if let Some((ck, cv)) = kv.take() {
             (
-                mlx_rs::ops::concatenate_axis(&[&ck, &k], 2).map_err(err)?,
-                mlx_rs::ops::concatenate_axis(&[&cv, &v], 2).map_err(err)?,
+                mlx_rs::ops::concatenate(&[&ck, &k], 2).map_err(err)?,
+                mlx_rs::ops::concatenate(&[&cv, &v], 2).map_err(err)?,
             )
         } else {
             (k, v)
@@ -239,8 +239,8 @@ impl MlxAttention {
         } else {
             None
         };
-        let ao =
-            mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, scale, mask).map_err(err)?;
+        let ao = mlx_rs::fast::scaled_dot_product_attention(&q, &k, &v, scale, mask, None)
+            .map_err(err)?;
 
         // Merge heads → [b, seq, hidden]
         let ao = ao
@@ -315,10 +315,11 @@ impl MlxBlock {
         sp: usize,
     ) -> InferenceResult<Array> {
         // fast::rms_norm — optimized Metal kernel
-        let n = mlx_rs::fast::rms_norm(x, self.in_n.weight.as_ref(), self.in_n.eps).map_err(err)?;
+        let n = mlx_rs::fast::rms_norm(x, Some(self.in_n.weight.as_ref()), self.in_n.eps)
+            .map_err(err)?;
         let a = self.attn.forward(&n, kv, sp)?;
         let x = x.add(&a).map_err(err)?;
-        let n = mlx_rs::fast::rms_norm(&x, self.post_n.weight.as_ref(), self.post_n.eps)
+        let n = mlx_rs::fast::rms_norm(&x, Some(self.post_n.weight.as_ref()), self.post_n.eps)
             .map_err(err)?;
         // SwiGLU MLP with pre-transposed weights
         let g = nn::silu(&n.matmul(&self.gate_wt).map_err(err)?).map_err(err)?;
@@ -352,7 +353,7 @@ fn compiled_block_forward(inputs: &[Array]) -> Result<Vec<Array>, mlx_rs::error:
     let (b, s) = (x.shape()[0], x.shape()[1]);
 
     // Attention
-    let n = mlx_rs::fast::rms_norm(x, &inputs[3], eps)?;
+    let n = mlx_rs::fast::rms_norm(x, Some(&inputs[3]), eps)?;
     let q = n.matmul(&inputs[5])?.reshape(&[b, s, n_heads, head_dim])?;
     let k = n
         .matmul(&inputs[6])?
@@ -372,8 +373,8 @@ fn compiled_block_forward(inputs: &[Array]) -> Result<Vec<Array>, mlx_rs::error:
     let has_cache = kv_k.ndim() == 4;
     let (k, v) = if has_cache {
         (
-            mlx_rs::ops::concatenate_axis(&[kv_k, &k], 1)?,
-            mlx_rs::ops::concatenate_axis(&[kv_v, &v], 1)?,
+            mlx_rs::ops::concatenate(&[kv_k, &k], 1)?,
+            mlx_rs::ops::concatenate(&[kv_v, &v], 1)?,
         )
     } else {
         (k, v)
@@ -394,6 +395,7 @@ fn compiled_block_forward(inputs: &[Array]) -> Result<Vec<Array>, mlx_rs::error:
         } else {
             None
         },
+        None,
     )?;
     let ao = ao
         .transpose_axes(&[0, 2, 1, 3])?
@@ -401,7 +403,7 @@ fn compiled_block_forward(inputs: &[Array]) -> Result<Vec<Array>, mlx_rs::error:
     let x = x.add(&ao.matmul(&inputs[8])?)?;
 
     // MLP
-    let n = mlx_rs::fast::rms_norm(&x, &inputs[4], eps)?;
+    let n = mlx_rs::fast::rms_norm(&x, Some(&inputs[4]), eps)?;
     let g = mlx_rs::nn::silu(&n.matmul(&inputs[9])?)?;
     let x_out = x.add(&g.multiply(&n.matmul(&inputs[10])?)?.matmul(&inputs[11])?)?;
 
@@ -462,6 +464,7 @@ impl MlxTransformerShard {
         start: usize,
         end: usize,
     ) -> InferenceResult<Self> {
+        ensure_metallib()?;
         #[derive(serde::Deserialize)]
         struct Hf {
             num_hidden_layers: usize,
@@ -677,20 +680,14 @@ impl MlxTransformerShard {
             )
         });
 
-        // Create compiled forward (cached after first compilation)
-        type CompiledFn =
-            Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, mlx_rs::error::Exception> + Send>;
-        static COMPILED_FN: std::sync::OnceLock<Mutex<CompiledFn>> = std::sync::OnceLock::new();
-        // shapeless=true: don't recompile when input shapes change (KV-cache grows each token)
-        let mut compiled = COMPILED_FN
-            .get_or_init(|| {
-                Mutex::new(Box::new(mlx_rs::transforms::compile::compile(
-                    compiled_block_forward,
-                    Some(true),
-                )))
-            })
-            .lock()
-            .unwrap();
+        // Compiled forward, cached per thread: mlx-rs's compiled closure is !Send.
+        type CompiledFn = Box<dyn FnMut(&[Array]) -> Result<Vec<Array>, mlx_rs::error::Exception>>;
+        thread_local! {
+            // shapeless=true: don't recompile when input shapes change (KV-cache grows each token)
+            static COMPILED_FN: std::cell::RefCell<CompiledFn> = std::cell::RefCell::new(Box::new(
+                mlx_rs::transforms::compile::compile(compiled_block_forward, Some(true)),
+            ));
+        }
 
         let mut s = self.take_session(sid, sp, x.shape()[1] as usize)?;
 
@@ -716,7 +713,7 @@ impl MlxTransformerShard {
                 b.down_wt.clone(),
             ];
 
-            let out = compiled(&inputs).map_err(err)?;
+            let out = COMPILED_FN.with_borrow_mut(|f| f(&inputs)).map_err(err)?;
 
             x = out[0].clone();
             s.kv[i] = Some((out[1].clone(), out[2].clone()));
@@ -764,7 +761,7 @@ impl MlxTransformerShard {
         } else {
             x
         };
-        let xl = mlx_rs::fast::rms_norm(&xl, norm.weight.as_ref(), norm.eps).map_err(err)?;
+        let xl = mlx_rs::fast::rms_norm(&xl, Some(norm.weight.as_ref()), norm.eps).map_err(err)?;
         let logits = xl.matmul(lm_wt).map_err(err)?;
         logits.eval().map_err(err)?;
         Ok(logits)
@@ -792,7 +789,7 @@ impl MlxTransformerShard {
         } else {
             x
         };
-        let xl = mlx_rs::fast::rms_norm(&xl, norm.weight.as_ref(), norm.eps).map_err(err)?;
+        let xl = mlx_rs::fast::rms_norm(&xl, Some(norm.weight.as_ref()), norm.eps).map_err(err)?;
         let logits = xl.matmul(lm_wt).map_err(err)?;
         logits.eval().map_err(err)?;
         let th = t2.elapsed();
@@ -803,9 +800,121 @@ impl MlxTransformerShard {
 }
 
 pub fn mlx_available() -> bool {
+    if let Err(e) = ensure_metallib() {
+        tracing::warn!("MLX unavailable: {e}");
+        return false;
+    }
     let a = Array::from_slice::<f32>(&[1.0, 2.0, 3.0], &[3]);
-    let s: f32 = a.sum(None).expect("sum").item();
-    (s - 6.0).abs() < 0.01
+    let sum = a.sum(None).map_err(|e| e.to_string());
+    match sum.and_then(|s| s.try_item_exact::<f32>().map_err(|e| e.to_string())) {
+        Ok(s) => (s - 6.0).abs() < 0.01,
+        Err(e) => {
+            tracing::warn!("MLX unavailable: {e}");
+            false
+        }
+    }
+}
+
+/// MLX is built for macOS 14 and weak-linked, so the binary also starts on 11–13;
+/// there no MLX code may run.
+pub fn os_supported() -> Result<(), String> {
+    let mut buf = [0u8; 32];
+    let mut len = buf.len();
+    // SAFETY: buf/len describe a valid writable buffer; no new value is set.
+    let rc = unsafe {
+        sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let version = (rc == 0)
+        .then(|| {
+            String::from_utf8_lossy(&buf[..len])
+                .trim_end_matches('\0')
+                .to_owned()
+        })
+        .ok_or("cannot read the macOS version")?;
+    supports_macos(&version)
+}
+
+fn supports_macos(version: &str) -> Result<(), String> {
+    match version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+    {
+        Some(major) if major >= 14 => Ok(()),
+        _ => Err(format!(
+            "MLX needs macOS 14 or later; this Mac runs {version}"
+        )),
+    }
+}
+
+extern "C" {
+    fn sysctlbyname(
+        name: *const std::ffi::c_char,
+        oldp: *mut std::ffi::c_void,
+        oldlenp: *mut usize,
+        newp: *mut std::ffi::c_void,
+        newlen: usize,
+    ) -> std::ffi::c_int;
+}
+
+/// Point MLX at the kernels embedded in this binary, unpacked once to
+/// `$KWAAINET_HOME/mlx/`. Must run before the first MLX op; later calls are free.
+pub fn ensure_metallib() -> InferenceResult<()> {
+    os_supported().map_err(load_err)?;
+    #[cfg(mlx_embedded_metallib)]
+    {
+        static INSTALLED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+        INSTALLED
+            .get_or_init(install_metallib)
+            .clone()
+            .map_err(load_err)
+    }
+    #[cfg(not(mlx_embedded_metallib))]
+    Ok(())
+}
+
+#[cfg(mlx_embedded_metallib)]
+fn install_metallib() -> Result<(), String> {
+    static METALLIB: &[u8] = include_bytes!(env!("KWAAI_MLX_METALLIB"));
+    const ID: &str = env!("KWAAI_MLX_METALLIB_ID");
+
+    let home = std::env::var_os("KWAAINET_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".kwaainet")))
+        .ok_or("neither KWAAINET_HOME nor HOME is set")?;
+    let dir = home.join("mlx");
+    let name = format!("mlx-{ID}.metallib");
+    let path = dir.join(&name);
+    let current = std::fs::metadata(&path).is_ok_and(|m| m.len() == METALLIB.len() as u64);
+    if !current {
+        let fail = |e: std::io::Error| format!("unpacking {}: {e}", path.display());
+        std::fs::create_dir_all(&dir).map_err(fail)?;
+        let tmp = dir.join(format!(".{name}.{}", std::process::id()));
+        std::fs::write(&tmp, METALLIB).map_err(fail)?;
+        std::fs::rename(&tmp, &path).map_err(fail)?;
+        info!("MLX kernels unpacked to {}", path.display());
+    }
+    // ~140 MB each: drop other releases' kernels and unpacks abandoned mid-write.
+    for old in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        let n = old.file_name();
+        let n = n.to_string_lossy();
+        let stale_tmp = n.starts_with(".mlx-")
+            && old
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t.elapsed().is_ok_and(|age| age.as_secs() > 600));
+        if stale_tmp || (n.starts_with("mlx-") && n.ends_with(".metallib") && n != name.as_str()) {
+            let _ = std::fs::remove_file(old.path());
+        }
+    }
+    let path = path.to_str().ok_or("KWAAINET_HOME is not UTF-8")?;
+    mlx_rs::metal::set_metallib_path(path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -814,6 +923,23 @@ mod tests {
     use mlx_rs::ops::indexing::IndexOp;
     use mlx_rs::Array;
     use std::time::Instant;
+
+    #[test]
+    fn mlx_runs_on_embedded_kernels() {
+        assert!(super::mlx_available());
+    }
+
+    #[test]
+    fn mlx_refuses_macos_before_14() {
+        for v in ["11.7.10", "12.7", "13.6.1", "", "garbage"] {
+            let e = super::supports_macos(v).unwrap_err();
+            assert!(e.contains("macOS 14"), "{v}: {e}");
+        }
+        for v in ["14.0", "15.5", "27.2"] {
+            assert!(super::supports_macos(v).is_ok(), "{v}");
+        }
+        assert!(super::os_supported().is_ok(), "this Mac runs 14+");
+    }
 
     #[test]
     fn test_mlx_raw_matmul_speed() {
@@ -1194,7 +1320,7 @@ mod tests {
             ))
             .unwrap();
         c.eval().unwrap();
-        let v: f32 = c.reshape(&[4]).unwrap().index(0).item();
+        let v: f32 = c.reshape(&[4]).unwrap().index(0).item_cast();
         assert!((v - 22.0).abs() < 0.01);
         eprintln!("[OK] matmul {v}");
     }
@@ -1235,7 +1361,7 @@ mod tests {
         .unwrap()
         .sum(None)
         .unwrap()
-        .item();
+        .item_cast();
         assert!((s - 1.0).abs() < 0.01);
         eprintln!("[OK] softmax {s:.4}");
     }
@@ -1251,7 +1377,7 @@ mod tests {
     }
     #[test]
     fn test_mlx_concat() {
-        let c = mlx_rs::ops::concatenate_axis(
+        let c = mlx_rs::ops::concatenate(
             &[
                 &Array::from_slice::<f32>(&[1.0; 8], &[1, 2, 4]),
                 &Array::from_slice::<f32>(&[2.0; 4], &[1, 1, 4]),
@@ -1268,7 +1394,7 @@ mod tests {
             .add(Array::from_slice::<f32>(&[3.0, 4.0], &[2]))
             .unwrap();
         c.eval().unwrap();
-        let v: f32 = c.index(0).item();
+        let v: f32 = c.index(0).item_cast();
         assert!((v - 4.0).abs() < 0.01);
         eprintln!("[OK] eval {v}");
     }
@@ -1434,7 +1560,9 @@ mod tests {
         eprintln!("  forward_full ({} tokens)...", ids.len());
         let logits = shard.forward_full(1, &ids, 0).expect("forward");
         let flat = logits.reshape(&[-1]).unwrap();
-        let next: i32 = mlx_rs::ops::indexing::argmax(&flat, None).unwrap().item();
+        let next: i32 = mlx_rs::ops::indexing::argmax(&flat, None)
+            .unwrap()
+            .item_cast();
         let decoded = shard.tokenizer.decode(&[next as u32]).unwrap_or("?".into());
         eprintln!("[OK] forward_full — next='{decoded}' (id={next})");
     }
@@ -1507,7 +1635,9 @@ mod tests {
 
         // Sample first token
         let flat = logits.reshape(&[-1]).unwrap();
-        let mut next: i32 = mlx_rs::ops::indexing::argmax(&flat, None).unwrap().item();
+        let mut next: i32 = mlx_rs::ops::indexing::argmax(&flat, None)
+            .unwrap()
+            .item_cast();
         let first_tok = shard.tokenizer.decode(&[next as u32]).unwrap_or("?".into());
 
         // ── Decode (5 steps, timed) ──────────────────────────────────────
@@ -1520,7 +1650,9 @@ mod tests {
                 .forward_full(session, &[next as u32], sp)
                 .expect("decode");
             let flat = logits.reshape(&[-1]).unwrap();
-            next = mlx_rs::ops::indexing::argmax(&flat, None).unwrap().item();
+            next = mlx_rs::ops::indexing::argmax(&flat, None)
+                .unwrap()
+                .item_cast();
             sp += 1;
         }
         let decode_ms = t_dec.elapsed().as_secs_f64() * 1000.0;

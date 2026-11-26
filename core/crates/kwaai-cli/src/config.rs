@@ -432,8 +432,8 @@ fn reputation_config_is_default(r: &ReputationConfig) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ShardBackend {
-    /// Platform default: candle blocks, except on macOS where the node serves
-    /// the whole model through Ollama instead (#117).
+    /// Platform default: candle blocks. On macOS, MLX blocks when the build has
+    /// MLX and the weights are local, else the whole model through Ollama (#117).
     #[default]
     Auto,
     /// candle blocks everywhere, macOS included (`--force-blocks`).

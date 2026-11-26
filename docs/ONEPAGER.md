@@ -35,7 +35,7 @@ Every one of these capabilities is governed by a trust layer at the center. Each
 
 KwaaiNet is running today. Shipped: distributed inference across machines on CPU and CUDA, whole-model inference contributed by any node with a model installed, encrypted node identity, verifiable credential wallets, an OpenAI-compatible API for existing AI tools, multi-tenant vector storage, and automatic network self-organization.
 
-The one exception is Apple Silicon: Metal decode is slower than the CPU path, so Macs contribute whole models through Ollama rather than model slices.
+Apple Silicon serves model slices with MLX; Intel Macs contribute whole models through Ollama.
 
 Designed but not yet shipped: client-side encryption of stored vectors, trust-gated routing, and confidential-computing enclaves for inference.
 
