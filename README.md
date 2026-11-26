@@ -107,7 +107,7 @@ This quickstart shows how to install the native Rust CLI, start a node, and send
 
 | Platform | Minimum | Notes |
 | --- | --- | --- |
-| macOS, Apple Silicon | macOS 14 (Sonoma) | |
+| macOS, Apple Silicon | macOS 11 (Big Sur) | Serving blocks with MLX needs macOS 14 (Sonoma) |
 | macOS, Intel | macOS 10.12 | |
 | Linux x86_64 / arm64 (glibc) | glibc 2.34 | e.g. Ubuntu 22.04, Debian 12, RHEL 9 |
 | Linux x86_64 / arm64 (musl) | — | Statically linked, no glibc requirement |

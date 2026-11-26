@@ -7,5 +7,8 @@ fn main() {
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     if std::env::var_os("CARGO_FEATURE_MLX").is_some() && os == "macos" && arch == "aarch64" {
         println!("cargo:rustc-cfg=mlx");
+        // MLX (built for macOS 14) imports symbols 11–13 lack; weak, so the binary still starts.
+        println!("cargo:rustc-link-arg-bins=-Wl,-weak-lc++");
+        println!("cargo:rustc-link-arg-bins=-Wl,-weak_framework,Accelerate");
     }
 }

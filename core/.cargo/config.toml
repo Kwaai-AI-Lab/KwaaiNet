@@ -7,7 +7,8 @@ rustflags = ["-C", "target-feature=+fp16,+fullfp16"]
 rustflags = ["-L", "/usr/lib64"]
 
 [env]
-# Unset, MLX's C++ and kernels target the build host's macOS. Intel CI sets 11.0.
-MACOSX_DEPLOYMENT_TARGET = "14.0"
+# MACOSX_DEPLOYMENT_TARGET stays unset: rustc's default (11.0 arm64, 10.12 Intel).
+# MLX refuses below 14.0, so its CMake build alone gets 14.0.
+CMAKE_TOOLCHAIN_FILE_aarch64_apple_darwin = { value = "cmake/mlx-macos14.cmake", relative = true }
 # mlx-sys writes mlx.metallib here; kwaai-inference's build script embeds it.
 MLX_RS_METAL_PATH = { value = "target/mlx-metallib", relative = true }

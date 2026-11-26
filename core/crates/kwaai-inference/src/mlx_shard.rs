@@ -815,9 +815,58 @@ pub fn mlx_available() -> bool {
     }
 }
 
+/// MLX is built for macOS 14 and weak-linked, so the binary also starts on 11–13;
+/// there no MLX code may run.
+pub fn os_supported() -> Result<(), String> {
+    let mut buf = [0u8; 32];
+    let mut len = buf.len();
+    // SAFETY: buf/len describe a valid writable buffer; no new value is set.
+    let rc = unsafe {
+        sysctlbyname(
+            c"kern.osproductversion".as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    let version = (rc == 0)
+        .then(|| {
+            String::from_utf8_lossy(&buf[..len])
+                .trim_end_matches('\0')
+                .to_owned()
+        })
+        .ok_or("cannot read the macOS version")?;
+    supports_macos(&version)
+}
+
+fn supports_macos(version: &str) -> Result<(), String> {
+    match version
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+    {
+        Some(major) if major >= 14 => Ok(()),
+        _ => Err(format!(
+            "MLX needs macOS 14 or later; this Mac runs {version}"
+        )),
+    }
+}
+
+extern "C" {
+    fn sysctlbyname(
+        name: *const std::ffi::c_char,
+        oldp: *mut std::ffi::c_void,
+        oldlenp: *mut usize,
+        newp: *mut std::ffi::c_void,
+        newlen: usize,
+    ) -> std::ffi::c_int;
+}
+
 /// Point MLX at the kernels embedded in this binary, unpacked once to
 /// `$KWAAINET_HOME/mlx/`. Must run before the first MLX op; later calls are free.
 pub fn ensure_metallib() -> InferenceResult<()> {
+    os_supported().map_err(load_err)?;
     #[cfg(mlx_embedded_metallib)]
     {
         static INSTALLED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
@@ -878,6 +927,18 @@ mod tests {
     #[test]
     fn mlx_runs_on_embedded_kernels() {
         assert!(super::mlx_available());
+    }
+
+    #[test]
+    fn mlx_refuses_macos_before_14() {
+        for v in ["11.7.10", "12.7", "13.6.1", "", "garbage"] {
+            let e = super::supports_macos(v).unwrap_err();
+            assert!(e.contains("macOS 14"), "{v}: {e}");
+        }
+        for v in ["14.0", "15.5", "27.2"] {
+            assert!(super::supports_macos(v).is_ok(), "{v}");
+        }
+        assert!(super::os_supported().is_ok(), "this Mac runs 14+");
     }
 
     #[test]

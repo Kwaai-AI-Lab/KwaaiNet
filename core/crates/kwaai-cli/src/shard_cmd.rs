@@ -264,7 +264,7 @@ async fn serve_whole_model_via_ollama(cfg: &KwaaiNetConfig) -> Result<ShardServe
         Err(why) => {
             print_error(&format!("Cannot serve: {why}"));
             // An MLX build already said why it is not serving blocks.
-            if !cfg!(mlx) {
+            if !mlx_here() {
                 print_info("To serve blocks anyway: kwaainet shard serve --force-blocks");
             }
             print_separator();
@@ -335,6 +335,14 @@ fn auto_serves_mlx(mlx_build: bool, weights_local: bool) -> bool {
     mlx_build && weights_local
 }
 
+/// An MLX build on macOS 14+. On 11–13 an MLX build behaves like an Intel one.
+fn mlx_here() -> bool {
+    #[cfg(mlx)]
+    return kwaai_inference::mlx_shard::os_supported().is_ok();
+    #[cfg(not(mlx))]
+    false
+}
+
 /// Whether MLX can run here; failing (e.g. an unwritable home), `auto` keeps Ollama.
 fn mlx_starts() -> bool {
     #[cfg(mlx)]
@@ -374,17 +382,17 @@ async fn cmd_shard_serve(args: ShardServeArgs) -> Result<ShardServeExit> {
         && synthetic.is_none()
     {
         let weights_local = args.model_path.is_some() || hf::resolve_snapshot(&cfg.model).is_ok();
-        if auto_serves_mlx(cfg!(mlx), weights_local) && mlx_starts() {
+        if auto_serves_mlx(mlx_here(), weights_local) && mlx_starts() {
             print_info("Serving blocks with MLX (shard.backend: auto on Apple Silicon)");
             backend = crate::config::ShardBackend::Mlx;
         } else {
-            if cfg!(mlx) && !weights_local {
+            if mlx_here() && !weights_local {
                 print_info(&format!(
                     "No local weights for {}, so serving the whole model through Ollama. \
                      To serve blocks with MLX: kwaainet shard download",
                     cfg.model
                 ));
-            } else if cfg!(mlx) {
+            } else if mlx_here() {
                 print_warning("MLX could not start, so serving the whole model through Ollama.");
             }
             if range_is_pinned(args.start_block, args.blocks, &cfg) {
@@ -2887,7 +2895,7 @@ pub async fn cmd_shard_status() -> Result<()> {
     // serving mode separately.
     println!("  GPU (config): {}", cfg.use_gpu);
     let auto_mlx = cfg.shard.backend == crate::config::ShardBackend::Auto
-        && auto_serves_mlx(cfg!(mlx), hf::resolve_snapshot(&cfg.model).is_ok());
+        && auto_serves_mlx(mlx_here(), hf::resolve_snapshot(&cfg.model).is_ok());
     if cfg!(target_os = "macos") && cfg.shard.backend == crate::config::ShardBackend::Mlx {
         println!("  Mode:         blocks with MLX (shard.backend: mlx)");
     } else if cfg!(target_os = "macos") && auto_mlx {
@@ -2897,7 +2905,7 @@ pub async fn cmd_shard_status() -> Result<()> {
             "  Mode:         whole model via Ollama (localhost:{})",
             cfg.ollama_port
         );
-        if cfg!(mlx) {
+        if mlx_here() {
             println!("                the range above is used once the weights are local (shard download)");
         } else {
             println!("                the range above is unused unless shard.backend: candle");
