@@ -180,7 +180,7 @@ for home in $(p_kwaainet_homes); do
     fi
 done
 if [ "$_home_found" -eq 0 ]; then
-    p_fail "no KWAAINET_HOME exists — run 'kwaainet setup' to create one"
+    p_fail "no KWAAINET_HOME exists — no identity key, so there is no node on this box. Run 'kwaainet setup' to create one"
 elif [ "$_identities" -eq 0 ]; then
     p_fail "no node identity on this box — every home is a NEW node, not a moved one"
 else
