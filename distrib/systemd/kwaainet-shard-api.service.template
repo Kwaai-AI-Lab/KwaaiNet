@@ -1,0 +1,52 @@
+# KwaaiNet shard api — USER SCOPE (non-root) systemd unit.
+#
+# This is the OpenAI-compatible door that hivv.org knocks on. The model it
+# serves is resolved through the NETWORK, not on this box: 'shard api'
+# finds a covering block chain through the libp2p hivemind DHT per request,
+# so an answer can come from any node serving that model. This box
+# contributes its own blocks and relays the rest.
+#
+# Install (as your own user, no sudo):
+#   bash distrib/systemd/install-user-unit.sh
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now kwaainet-shard-api.service
+#   loginctl enable-linger $USER     # start at boot without a login session
+#
+# Rules that prevent crash loops:
+#   1. NEVER run the same port under BOTH system and user scope — the loser
+#      spins forever on "address already in use". One scope only.
+#   2. Restart=on-failure (not always): a config error stays visible
+#      instead of looping.
+#   3. The crash-loop breaker below turns "restart forever" into "sit in
+#      failed and say so". systemd's default limit (5 starts / 10 s) can
+#      never trip when RestartSec >= 10, which is exactly how a unit loops
+#      every 5 s indefinitely.
+#
+# The {{...}} placeholders are filled in by install-user-unit.sh. This file
+# is a TEMPLATE — installing it verbatim will not work.
+
+[Unit]
+Description=KwaaiNet shard api (OpenAI-compatible door for hivv.org) on port {{PORT}}
+After=network.target
+# Crash-loop breaker: 3 failures in 5 min -> sit in "failed" instead of
+# restarting forever.
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory={{WORKING_DIRECTORY}}
+# The node's own home. A box that also runs the hivv integration should
+# point this at its OWN home (e.g. ~/.kwaainet-hivv) so the shard api and
+# the hivv agent talk to the SAME node — a node with a different identity
+# is a different peer id, and the hive ends up with a door that opens onto
+# a stranger.
+Environment=KWAAINET_HOME={{KWAAINET_HOME}}
+ExecStart={{BINARY}} shard api --port {{PORT}} --model {{MODEL}}
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:{{KWAAINET_HOME}}/logs/shard_api.log
+StandardError=append:{{KWAAINET_HOME}}/logs/shard_api.log
+
+[Install]
+WantedBy=default.target
