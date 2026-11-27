@@ -142,35 +142,50 @@ fi
 
 # ── 3. the node's own state ──────────────────────────────────────────────────
 p_head "node state"
-# The home must EXIST, not merely be listed. p_kwaainet_homes always prints
-# candidate paths, so testing the list would always pass.
+# EVERY home is checked, not just one.
+#
+# A box can hold several nodes — one per model, one per role — and each has
+# its own identity, its own config and its own port. Checking only $KWAAINET_HOME
+# (or ~/.kwaainet) reported a box with three live nodes as "no identity key",
+# which is both wrong and alarming: the node was RIGHT THERE.
+#
+# The rules:
+#   * a home with a config but no identity is a HALF-BUILT node — a warning,
+#     not a failure, because the identity is generated on first start;
+#   * a box where NO home has an identity holds no node at all — a failure;
+#   * each identity is reported with its fingerprint, so two boxes can be
+#     compared.
 _home_found=0
+_home_count=0
+_identities=0
+_half_built=0
 for home in $(p_kwaainet_homes); do
     [ -n "$home" ] || continue
-    if [ -d "$home" ]; then
-        _home_found=1
-        p_dim "home: $(p_home_path "$home")"
+    [ -d "$home" ] || continue
+    _home_found=1
+    _home_count=$((_home_count + 1))
+    if [ -f "$home/identity.key" ]; then
+        _identities=$((_identities + 1))
+        p_ok "identity in $(p_home_path "$home") — $(p_secret_file "$home/identity.key" "identity.key")"
+        if [ -f "$home/config.yaml" ]; then
+            p_dim "config present, port $(p_yaml_value "$home/config.yaml" port)"
+        else
+            p_warn "$(p_home_path "$home") has an identity but no config.yaml"
+        fi
+    elif [ -f "$home/config.yaml" ]; then
+        _half_built=$((_half_built + 1))
+        p_warn "$(p_home_path "$home") has a config but no identity yet (generated on first start)"
+    else
+        p_dim "home: $(p_home_path "$home") (empty)"
     fi
 done
-if [ "$_home_found" -eq 1 ]; then
-    p_ok "at least one KWAAINET_HOME exists"
-else
+if [ "$_home_found" -eq 0 ]; then
     p_fail "no KWAAINET_HOME exists — run 'kwaainet setup' to create one"
-fi
-
-# The identity is the node. Check the one that matters most.
-_home="${KWAAINET_HOME:-${HOME}/.kwaainet}"
-if [ -f "$_home/identity.key" ]; then
-    p_ok "identity key present ($(p_secret_file "$_home/identity.key" "identity.key"))"
+elif [ "$_identities" -eq 0 ]; then
+    p_fail "no node identity on this box — every home is a NEW node, not a moved one"
 else
-    p_fail "identity key absent in $(p_home_path "$_home") — this is a NEW node, not a moved one"
+    p_ok "$_identities node identity/identities across $_home_count home(s)"
 fi
-if [ -f "$_home/config.yaml" ]; then
-    p_ok "config.yaml present"
-else
-    p_fail "config.yaml absent in $(p_home_path "$_home")"
-fi
-
 # ── 4. services ─────────────────────────────────────────────────────────────
 p_head "services"
 if command -v systemctl >/dev/null 2>&1; then

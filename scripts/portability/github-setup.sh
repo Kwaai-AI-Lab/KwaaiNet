@@ -192,6 +192,28 @@ if [ -f "$PUB_PATH" ]; then
     p_dim "$(cat "$PUB_PATH" 2>/dev/null)"
 fi
 
+# ── 4b. URL rewrites ─────────────────────────────────────────────────────────
+# A global url.<base>.insteadOf rewrite changes the TRANSPORT of every clone
+# on this machine, silently.
+#
+# Found on a real target box: url.git@github.com:.insteadOf https://github.com/
+# turned every plain-HTTPS clone into an SSH clone. The clone then needed the
+# passphrase-protected key, and with BatchMode it failed as "Permission denied
+# (publickey)" — which reads as "my key is broken", not "your config rewrote
+# your URL". The fix is GIT_CONFIG_GLOBAL=/dev/null, or an unlocked agent.
+#
+# It belongs in the report because it is invisible until a clone hangs.
+_rewrites="$(git config --global --get-regexp 'url\..*\.insteadof' 2>/dev/null || true)"
+if [ -n "$_rewrites" ]; then
+    p_warn "global git config REWRITES clone URLs:"
+    printf "%s" "$_rewrites" | while read -r _k _v; do
+        p_dim "$_k = $_v"
+    done
+    p_dim "every clone using that prefix silently uses the other transport"
+    p_dim "bypass it for one clone with: GIT_CONFIG_GLOBAL=/dev/null git clone ..."
+else
+    p_ok "no global URL rewrites (clone transport is what it looks like)"
+fi
 # ── 5. git identity ──────────────────────────────────────────────────────────
 p_head "git identity"
 _name="$(git config --global user.name 2>/dev/null || true)"
