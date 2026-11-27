@@ -230,15 +230,38 @@ p_repo_root() {
 }
 
 # p_kwaainet_homes prints every KWAAINET_HOME this box knows about.
-# The env var wins; the two conventional locations are always included so a
-# box running the hivv integration (which uses its own home) is fully
-# inventoried rather than half-inventoried.
+#
+# The env var wins, and then every ~/.kwaainet* directory is included.
+#
+# Hard-coding two locations (the plain one and the hivv one) was wrong: a
+# box running several model nodes has ~/.kwaainet-hivv-gemma and
+# ~/.kwaainet-hivv-qwen beside them, each with its OWN identity, its own
+# port and its own reputation. An inventory that reported two of the five
+# would be a half-inventory, and the half it dropped is exactly the half
+# that has to be moved.
 p_kwaainet_homes() {
     if [ -n "${KWAAINET_HOME:-}" ]; then
         printf '%s\n' "$KWAAINET_HOME"
     fi
-    printf '%s\n' "$HOME/.kwaainet"
-    printf '%s\n' "$HOME/.kwaainet-hivv"
+    _seen=""
+    if [ -n "${KWAAINET_HOME:-}" ]; then
+        printf '%s\n' "$KWAAINET_HOME"
+        _seen="$KWAAINET_HOME"
+    fi
+    for _d in "$HOME"/.kwaainet*; do
+        [ -d "$_d" ] || continue
+        case " $_seen " in
+            *" $_d "*) continue ;;
+        esac
+        printf '%s\n' "$_d"
+        _seen="$_seen $_d"
+    done
+    # The plain home may not exist at all on a box that only runs the hivv
+    # node. Report it as absent rather than omitting it: an omitted key
+    # reads as "not checked".
+    if [ -z "${KWAAINET_HOME:-}" ] && [ ! -d "$HOME/.kwaainet" ]; then
+        printf '%s\n' "$HOME/.kwaainet"
+    fi
 }
 
 # p_yaml_keys prints the top-level keys of a YAML file without printing any
