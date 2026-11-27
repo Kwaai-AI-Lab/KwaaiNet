@@ -164,14 +164,20 @@ p_git_ssh_command() {
 # whose whole job is to set the machine up.
 p_ssh_host_opts() {
     _mode="${1:-readonly}"
+    # IdentityAgent=none is load-bearing on macOS: Apple's ssh defaults to a
+    # per-user agent at ~/.ssh/agent and CREATES that file on the first
+    # connection attempt. A check mode that leaves a file in the user's
+    # home is not a check mode. It also removes the agent from the picture
+    # entirely, which is right anyway — an agent can offer other keys, and
+    # the whole point of pinning the key is that only THAT key is tested.
     if [ "$_mode" = "apply" ]; then
-        printf -- '-o BatchMode=yes -o StrictHostKeyChecking=accept-new'
+        printf -- '-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentityAgent=none'
     else
         # LogLevel=ERROR suppresses the "Permanently added ... to the list of
         # known hosts" notice that StrictHostKeyChecking=no prints on every
         # connection. Without it that notice lands on the FIRST line of the
         # probe's output and hides the actual result behind it.
-        printf -- '-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR'
+        printf -- '-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o IdentityAgent=none'
     fi
 }
 
