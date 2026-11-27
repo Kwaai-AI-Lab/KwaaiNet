@@ -221,6 +221,15 @@ jobs:
           after="$(ls -A "$HOME/.ssh" 2>/dev/null | sort || true)"
           if [ "$before" != "$after" ]; then
             echo "::error::github-setup.sh --check modified ~/.ssh"
+            echo "before: [$before]"
+            echo "after:  [$after]"
+            exit 1
+          fi
+          # The stronger invariant: no key material was created. The
+          # directory listing above is the general one; this is the one
+          # that actually matters.
+          if ls "$HOME/.ssh"/id_* >/dev/null 2>&1; then
+            echo "::error::github-setup.sh --check created an SSH key"
             exit 1
           fi
           # It is allowed to fail: a clean runner has no key and no token.

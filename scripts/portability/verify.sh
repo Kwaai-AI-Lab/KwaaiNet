@@ -198,7 +198,7 @@ p_head "github"
 # The git checks pin the SSH key on purpose — see p_git_ssh_command. An
 # unpinned check answers "can THIS box reach GitHub", which on a box with
 # several keys is not the same question as "does the key we moved work".
-GIT_SSH_COMMAND="$(p_git_ssh_command)"
+GIT_SSH_COMMAND="$(p_git_ssh_command readonly)"
 export GIT_SSH_COMMAND
 if git -C "$REPO_PATH" ls-remote --exit-code origin HEAD >/dev/null 2>&1; then
     p_ok "can read from origin"

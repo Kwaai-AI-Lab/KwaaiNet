@@ -238,7 +238,16 @@ p_head "verification"
 # $HOME, so an unpinned probe on a box with several keys reports success for
 # whichever key it happened to pick — which is not necessarily the key this
 # script just created, nor the one a migration moved.
-_SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes"
+# Host-key handling depends on the mode: in check mode the probe
+# must not write ~/.ssh/known_hosts (see p_ssh_host_opts), in apply mode
+# accepting the host key into the real known_hosts is exactly what a
+# first-time clone does anyway.
+if [ "$MODE" = "apply" ]; then
+    _SSH_OPTS="$(p_ssh_host_opts apply)"
+else
+    _SSH_OPTS="$(p_ssh_host_opts readonly)"
+fi
+_SSH_OPTS="$_SSH_OPTS -o IdentitiesOnly=yes"
 if [ -f "$KEY_PATH" ]; then
     _SSH_OPTS="$_SSH_OPTS -i $KEY_PATH"
 else
@@ -246,11 +255,14 @@ else
     # instead of finding a key through passwd's idea of '~'.
     _SSH_OPTS="$_SSH_OPTS -o IdentityFile=/dev/null"
 fi
-_ssh_out="$(ssh $_SSH_OPTS -T git@github.com 2>&1 | head -1)"
+_ssh_out="$(ssh $_SSH_OPTS -T git@github.com 2>&1)"
+# The WHOLE output, not just its first line: ssh prints warnings and
+# notices before the result, and taking head -1 reports "inconclusive" on a
+# perfectly healthy key.
 case "$_ssh_out" in
     *"successfully authenticated"*) p_ok "ssh authentication to github.com works" ;;
     *"Permission denied"*) p_fail "ssh authentication to github.com FAILED — the key is not registered" ;;
-    *) p_warn "ssh probe inconclusive: $_ssh_out" ;;
+    *) p_warn "ssh probe inconclusive: $(printf '%s' "$_ssh_out" | head -1)" ;;
 esac
 
 GIT_SSH_COMMAND="ssh $_SSH_OPTS"

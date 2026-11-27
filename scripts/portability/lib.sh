@@ -136,12 +136,42 @@ p_preferred_ssh_key() {
 # identity list, which resolves '~' through passwd — so the probe would
 # find a key on a machine that has none, and report a success that is
 # about a different machine entirely.
+#
+# $1: "readonly" (default) or "apply". See p_ssh_host_opts.
 p_git_ssh_command() {
+    _mode="${1:-readonly}"
     _key="$(p_preferred_ssh_key)"
+    printf 'ssh %s' "$(p_ssh_host_opts "$_mode")"
     if [ -n "$_key" ]; then
-        printf 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -i %s' "$_key"
+        printf ' -o IdentitiesOnly=yes -i %s' "$_key"
     else
-        printf 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -o IdentityFile=/dev/null'
+        printf ' -o IdentitiesOnly=yes -o IdentityFile=/dev/null'
+    fi
+}
+
+# p_ssh_host_opts prints the host-key options for an ssh invocation.
+#
+# "readonly" throws the host key away. This matters: with
+# StrictHostKeyChecking=accept-new, the FIRST ssh connection on a machine
+# with no ~/.ssh writes ~/.ssh/known_hosts. A check mode that creates a
+# directory in the user's home is not a check mode, and the CI job
+# "github-setup --check changes nothing" caught exactly that on macOS
+# (the macOS runner has no ~/.ssh; the ubuntu one already had one, which
+# is why only macOS failed).
+#
+# "apply" accepts the host key into the real known_hosts, which is what a
+# first-time clone does anyway and is a legitimate mutation in a mode
+# whose whole job is to set the machine up.
+p_ssh_host_opts() {
+    _mode="${1:-readonly}"
+    if [ "$_mode" = "apply" ]; then
+        printf -- '-o BatchMode=yes -o StrictHostKeyChecking=accept-new'
+    else
+        # LogLevel=ERROR suppresses the "Permanently added ... to the list of
+        # known hosts" notice that StrictHostKeyChecking=no prints on every
+        # connection. Without it that notice lands on the FIRST line of the
+        # probe's output and hides the actual result behind it.
+        printf -- '-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR'
     fi
 }
 
