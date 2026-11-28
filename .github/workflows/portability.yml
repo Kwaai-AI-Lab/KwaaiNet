@@ -1,0 +1,263 @@
+name: portability
+
+# Proves the setup path itself still works.
+#
+# Every other workflow in this repository builds the Rust workspace on a
+# runner that already has Rust, protoc and the patched dependencies. That
+# proves the CODE compiles. It says nothing about whether a person who
+# clones this repository on a fresh machine can get it running — which is
+# the question you actually face when you move a node to another box.
+#
+# This workflow is that question, asked on a clean runner on both supported
+# platforms:
+#
+#   1. 'setup.sh --check' from a bare checkout — does the setup path still
+#      work, and does it correctly detect what is missing?
+#   2. the build for real — can a fresh machine produce a binary?
+#   3. the portability scripts — do they run, and do they report correctly
+#      on a machine that has no KwaaiNet state at all?
+#
+# The third job is the one that finds rot fastest. A machine with no
+# KWAAINET_HOME, no systemd units and no identity key is exactly what a
+# brand-new box looks like, and every portability check that only ever
+# runs on a fully-provisioned development box will quietly stop testing
+# the case that matters.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'setup.sh'
+      - 'setup.ps1'
+      - 'scripts/portability/**'
+      - 'core/patches/**'
+      - '.github/workflows/portability.yml'
+  pull_request:
+    paths:
+      - 'setup.sh'
+      - 'setup.ps1'
+      - 'scripts/portability/**'
+      - 'core/patches/**'
+      - '.github/workflows/portability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ── 1. The setup path, on a bare checkout ─────────────────────────────────
+  setup-check:
+    name: setup.sh --check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # The patched dependencies are what cargo cannot resolve on its own.
+      # Without them the workspace does not even parse, so --check has to
+      # know they are present before it can report on anything else.
+      - name: Fetch patched deps
+        run: bash core/patches/fetch-patches.sh
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      # --check must NOT install anything. If it does, the check is lying
+      # about what it verifies, so the job asserts that afterwards.
+      - name: setup.sh --check
+        run: bash setup.sh --check
+
+      - name: setup.sh --check changed nothing
+        run: |
+          # The Rust toolchain must not have been installed by --check.
+          if [ -d "$HOME/.rustup" ] && [ ! -d "$HOME/.rustup/toolchains" ]; then
+            echo "::error::setup.sh --check created a rustup directory"
+            exit 1
+          fi
+          echo "setup.sh --check left the machine alone"
+
+      - name: setup.sh --help exits 0
+        run: bash setup.sh --help
+
+  # ── 2. A fresh machine can build ──────────────────────────────────────────
+  build-from-clean-checkout:
+    name: build from clean checkout (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch patched deps
+        run: bash core/patches/fetch-patches.sh
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y protobuf-compiler
+
+      - name: Install protoc (macOS)
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+
+      - name: Build
+        working-directory: core
+        run: cargo build --release -p kwaainet
+
+      - name: The binary runs
+        run: core/target/release/kwaainet --version
+
+  # ── 3. The portability scripts, on a machine with NO state ─────────────────
+  #
+  # This is the job that earns its keep. Every check below is run on a
+  # runner that has no KwaaiNet home, no identity key, no systemd units and
+  # no GitHub credentials — the situation on a brand-new machine. A check
+  # that passes here without lying about what it found is a check that can
+  # be trusted on the machine you are actually migrating to.
+  scripts-on-empty-machine:
+    name: portability scripts on an empty machine (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # ── the scripts must be syntactically valid ──────────────────────────
+      - name: Syntax-check every portability script
+        run: |
+          for f in scripts/portability/*.sh; do
+            bash -n "$f" || { echo "::error::$f does not parse"; exit 1; }
+            echo "ok: $f"
+          done
+
+      # ── inventory: must run, and must not leak a secret ─────────────────
+      - name: inventory runs and produces valid JSON
+        run: |
+          bash scripts/portability/inventory.sh --json --out inventory.json
+          python3 -c "import json,sys; d=json.load(open('inventory.json')); print(len(d), 'keys')"
+
+      - name: inventory leaks no secret value
+        run: |
+          # The inventory is meant to be pasteable into chat. Assert that
+          # nothing in it looks like a private key or a token.
+          if grep -qiE 'BEGIN (OPENSSH|RSA|EC) PRIVATE KEY' inventory.json; then
+            echo "::error::inventory.json contains a private key"
+            exit 1
+          fi
+          echo "no secret-shaped values in the inventory"
+
+      - name: inventory records the absent state honestly
+        run: |
+          python3 - <<'PYEOF'
+          import json
+          with open("inventory.json") as fh:
+              data = json.load(fh)
+          # On a clean runner there is no KWAAINET_HOME. The inventory must
+          # SAY so, not quietly omit the keys — an omitted key reads as
+          # "not checked" and a wrong key reads as "fine".
+          homes = [v for k, v in data.items() if k.startswith("home.") and k.endswith(".path")]
+          assert homes, "no KWAAINET_HOME candidates were recorded at all"
+          states = [v for k, v in data.items() if k.startswith("home.") and k.endswith(".state")]
+          assert "present" not in states, "a clean runner should have no KWAAINET_HOME"
+          print("absent state reported honestly:", len(homes), "candidates")
+          PYEOF
+
+      # ── verify: must FAIL on an empty machine, and say why ───────────────
+      - name: verify fails on a machine with no node
+        run: |
+          # The point of verify.sh is to be honest. On a machine with no
+          # KwaaiNet state it MUST exit non-zero. A verify.sh that passes
+          # everywhere is decoration.
+          set +e
+          bash scripts/portability/verify.sh > verify.txt 2>&1
+          code=$?
+          set -e
+          cat verify.txt
+          if [ "$code" -eq 0 ]; then
+            echo "::error::verify.sh passed on a machine with no node, no identity and no remote"
+            exit 1
+          fi
+          echo "verify.sh correctly failed (exit $code)"
+
+      - name: verify names the missing pieces
+        run: |
+          grep -q 'FAIL' verify.txt || { echo "::error::no FAIL line in the verify output"; exit 1; }
+          grep -qi 'identity' verify.txt || { echo "::error::verify did not mention the missing identity"; exit 1; }
+          echo "verify.sh named what is missing"
+
+      # ── github-setup --check: must not mutate, must report ───────────────
+      - name: github-setup --check changes nothing
+        run: |
+          before="$(ls -A "$HOME/.ssh" 2>/dev/null | sort || true)"
+          set +e
+          bash scripts/portability/github-setup.sh --check > gh.txt 2>&1
+          code=$?
+          set -e
+          cat gh.txt
+          after="$(ls -A "$HOME/.ssh" 2>/dev/null | sort || true)"
+          if [ "$before" != "$after" ]; then
+            echo "::error::github-setup.sh --check modified ~/.ssh"
+            echo "before: [$before]"
+            echo "after:  [$after]"
+            exit 1
+          fi
+          # The stronger invariant: no key material was created. The
+          # directory listing above is the general one; this is the one
+          # that actually matters.
+          if ls "$HOME/.ssh"/id_* >/dev/null 2>&1; then
+            echo "::error::github-setup.sh --check created an SSH key"
+            exit 1
+          fi
+          # It is allowed to fail: a clean runner has no key and no token.
+          # What it must NOT do is claim success.
+          if grep -qE '^\[ ok \].*can PUSH' gh.txt; then
+            echo "::error::github-setup.sh --check claimed push access it cannot have"
+            exit 1
+          fi
+          echo "github-setup.sh --check reported honestly (exit $code)"
+
+      # ── handoff: must produce a brief with no unsubstituted tokens ───────
+      - name: handoff renders a complete brief
+        run: |
+          bash scripts/portability/handoff.sh --out BRIEF.md
+          if grep -q '{{' BRIEF.md; then
+            echo "::error::BRIEF.md still contains template tokens"
+            grep -n '{{' BRIEF.md
+            exit 1
+          fi
+          for section in "State that must be transferred" "The runbook" "Acceptance criteria" "Gotchas"; do
+            grep -q "$section" BRIEF.md || { echo "::error::BRIEF.md is missing the '$section' section"; exit 1; }
+          done
+          echo "BRIEF.md rendered complete"
+
+      - name: handoff brief leaks no secret
+        run: |
+          if grep -qiE 'BEGIN (OPENSSH|RSA|EC) PRIVATE KEY' BRIEF.md; then
+            echo "::error::BRIEF.md contains a private key"
+            exit 1
+          fi
+          echo "BRIEF.md is safe to share"

@@ -193,6 +193,24 @@ Run all tests: `cd core && cargo test`
 
 ---
 
+## Moving a node to another machine
+
+A `git clone` brings the code. It does not bring the node: the identity
+key, the config, the systemd units and the GitHub identity all live
+outside the repo, and each one fails silently when it is left behind.
+
+```bash
+bash scripts/portability/inventory.sh      # what state does this box hold?
+bash scripts/portability/github-setup.sh   # clone AND push access (--apply)
+bash scripts/portability/verify.sh         # did the move work?
+bash scripts/portability/handoff.sh --out BRIEF.md   # brief for the next move
+```
+
+Full playbook: [docs/PORTABILITY.md](docs/PORTABILITY.md). Tooling:
+[scripts/portability/README.md](scripts/portability/README.md).
+
+---
+
 ## Project map
 
 | Project | Crates | CLI files | Docs |
