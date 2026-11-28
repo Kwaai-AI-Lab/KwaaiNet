@@ -56,9 +56,36 @@ pub fn config_head_dim(config_json: &str, hidden: usize, heads: usize) -> Infere
         #[serde(default)]
         head_dim: Option<usize>,
     }
-    let parsed: HeadDim = serde_json::from_str(config_json)
+    // Read through hf_flat_config: on a Gemma `head_dim` lives in text_config,
+    // so a top-level read saw nothing and fell back to hidden/heads — 192
+    // where the weights were built for 256, and q_proj refused to load.
+    let flat = crate::hf_flat_config(config_json)
+        .map_err(|e| InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}")))?;
+    let parsed: HeadDim = serde_json::from_value(flat)
         .map_err(|e| InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}")))?;
     Ok(parsed.head_dim.unwrap_or(hidden / heads))
+}
+
+/// Whether the LM head is tied to the embedding weights.
+///
+/// Gemma ties them and ships no `lm_head` tensor, so the last node in a chain
+/// cannot look one up — it has to reuse the embedding. The flag may sit at the
+/// top level or inside `text_config` (Gemma-4 nests), so both are checked.
+pub fn ties_word_embeddings(config_json: &str) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Tie {
+        #[serde(default)]
+        tie_word_embeddings: Option<bool>,
+        #[serde(default)]
+        text_config: Option<Box<Tie>>,
+    }
+    serde_json::from_str::<Tie>(config_json)
+        .ok()
+        .and_then(|t| {
+            t.tie_word_embeddings
+                .or_else(|| t.text_config.as_deref().and_then(|x| x.tie_word_embeddings))
+        })
+        .unwrap_or(false)
 }
 
 impl ShardConfig {
@@ -523,6 +550,11 @@ impl TransformerShard {
             InferenceError::ModelLoadError(format!("Cannot parse config.json: {e}"))
         })?;
 
+        // Gemma nests its weights under `model.language_model.*` — the same
+        // nesting hf_config_from_json flattens on the config side. Every
+        // VarBuilder scope below is built from this.
+        let tensor_prefix = crate::hf_tensor_prefix(&config_str);
+
         let num_total_blocks = hf_config.num_hidden_layers;
         if start_block >= end_block || end_block > num_total_blocks {
             return Err(InferenceError::ModelLoadError(format!(
@@ -571,8 +603,16 @@ impl TransformerShard {
         let embedding = if start_block == 0 {
             info!("  Loading embedding (vocab={vocab_size}, dim={hidden_dim})");
             Some(
-                candle_nn::embedding(vocab_size, hidden_dim, vb.pp("model.embed_tokens"))
-                    .map_err(|e| InferenceError::ModelLoadError(format!("embedding: {e}")))?,
+                candle_nn::embedding(
+                    vocab_size,
+                    hidden_dim,
+                    vb.pp(format!("{tensor_prefix}embed_tokens")),
+                )
+                .map_err(|e| {
+                    InferenceError::ModelLoadError(format!(
+                        "embedding: {e} (looked under {tensor_prefix}embed_tokens)"
+                    ))
+                })?,
             )
         } else {
             None
@@ -583,17 +623,36 @@ impl TransformerShard {
         let mut blocks = Vec::with_capacity(shard_size);
         for global_idx in start_block..end_block {
             info!("  Loading block {global_idx}");
-            let block_vb = vb.pp(format!("model.layers.{global_idx}"));
+            let block_vb = vb.pp(format!("{tensor_prefix}layers.{global_idx}"));
             blocks.push(ShardBlock::load(block_vb, &cfg)?);
         }
 
         // Final norm + LM head: only for the last node in the chain
         let (norm, lm_head) = if end_block == num_total_blocks {
             info!("  Loading norm + lm_head");
-            let n = candle_nn::rms_norm(hidden_dim, rms_norm_eps, vb.pp("model.norm"))
-                .map_err(|e| InferenceError::ModelLoadError(format!("final norm: {e}")))?;
-            let lh = candle_nn::linear_no_bias(hidden_dim, vocab_size, vb.pp("lm_head"))
-                .map_err(|e| InferenceError::ModelLoadError(format!("lm_head: {e}")))?;
+            let n = candle_nn::rms_norm(
+                hidden_dim,
+                rms_norm_eps,
+                vb.pp(format!("{tensor_prefix}norm")),
+            )
+            .map_err(|e| InferenceError::ModelLoadError(format!("final norm: {e}")))?;
+            // Gemma ties the LM head to the embedding and ships no `lm_head`
+            // tensor at all, so a plain lookup would fail on the last node.
+            // Tie it the way the weights say when the config says so.
+            let lh = if ties_word_embeddings(&config_str) {
+                let emb = match &embedding {
+                    Some(e) => e,
+                    None => {
+                        return Err(InferenceError::ModelLoadError(
+                            "tied word embeddings, but this shard carries no embedding".to_string(),
+                        ));
+                    }
+                };
+                candle_nn::Linear::new(emb.embeddings().clone(), None)
+            } else {
+                candle_nn::linear_no_bias(hidden_dim, vocab_size, vb.pp("lm_head"))
+                    .map_err(|e| InferenceError::ModelLoadError(format!("lm_head: {e}")))?
+            };
             (Some(n), Some(lh))
         } else {
             (None, None)
@@ -1090,6 +1149,58 @@ mod tests {
         // Some exports write it as null.
         let null = r#"{"hidden_size": 4096, "num_attention_heads": 32, "head_dim": null}"#;
         assert_eq!(config_head_dim(null, 4096, 32).unwrap(), 128);
+    }
+
+    /// `head_dim` nested under `text_config` is read, not silently replaced by
+    /// the quotient.
+    ///
+    /// Gemma-4 keeps `head_dim` inside `text_config` and has no top-level copy,
+    /// so a top-level read found nothing and fell back to `hidden/heads` —
+    /// 1536/8 = 192 where the weights were built for 256. `q_proj` is
+    /// `[8 * 256, 1536]` = `[2048, 1536]` and the load died on shape:
+    ///
+    ///     q_proj: shape mismatch … expected: [1536, 1536], got: [2048, 1536]
+    #[test]
+    fn config_head_dim_reads_a_nested_text_config() {
+        let gemma4 = r#"{"model_type":"gemma4",
+            "text_config":{"hidden_size":1536,"num_attention_heads":8,"head_dim":256}}"#;
+        assert_eq!(config_head_dim(gemma4, 1536, 8).unwrap(), 256);
+    }
+
+    /// Weights nested under `model.language_model.` are found; flat Llama
+    /// weights are not disturbed by the detection.
+    ///
+    /// Without this a Gemma shard died at the very first lookup:
+    ///
+    ///     embedding: cannot find tensor model.embed_tokens.weight
+    #[test]
+    fn tensor_prefix_follows_the_config_nesting() {
+        let gemma4 = r#"{"model_type":"gemma4","text_config":{"hidden_size":1536}}"#;
+        assert_eq!(crate::hf_tensor_prefix(gemma4), "model.language_model.");
+
+        let llama = r#"{"hidden_size":4096,"num_hidden_layers":32}"#;
+        assert_eq!(crate::hf_tensor_prefix(llama), "model.");
+
+        // Anything unparseable must fall back to the flat prefix — every
+        // Llama-family model needs it, and a bad config should not turn a
+        // working model into a load failure.
+        assert_eq!(crate::hf_tensor_prefix("not json"), "model.");
+    }
+
+    /// Gemma ties the LM head to the embedding and ships no `lm_head` tensor,
+    /// so the last node in a chain must reuse the embedding rather than look
+    /// one up. The flag may sit at the top level or inside `text_config`.
+    #[test]
+    fn tie_detection_reads_both_levels() {
+        let gemma4 = r#"{"model_type":"gemma4","text_config":{"tie_word_embeddings":true}}"#;
+        assert!(ties_word_embeddings(gemma4));
+
+        let llama = r#"{"hidden_size":4096,"tie_word_embeddings":false}"#;
+        assert!(!ties_word_embeddings(llama));
+
+        // Absent means not tied — the safe default, since a false tie would
+        // silently reuse the wrong weights as the head.
+        assert!(!ties_word_embeddings(r#"{"hidden_size":4096}"#));
     }
 
     /// A block whose heads are narrower than `hidden_dim / num_heads` loads and

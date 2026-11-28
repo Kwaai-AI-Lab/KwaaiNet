@@ -1314,6 +1314,14 @@ impl KwaaiNetConfig {
     /// Reads `num_hidden_layers` from the model's `config.json` when the
     /// snapshot is available locally. Falls back to a name-based heuristic
     /// (32 / 40 / 80) when the model has not been downloaded yet.
+    ///
+    /// Read through [`kwaai_inference::hf_flat_config`]: a Gemma-4 nests
+    /// `num_hidden_layers` under `text_config`, so a top-level read saw
+    /// nothing and fell through to the heuristic — reporting **32** for a
+    /// 35-layer model. The node then advertised a block range three short of
+    /// the weights, and no amount of peer coverage could ever close it: blocks
+    /// 32-34 had no owner. Every nested-config model reported its layer count
+    /// wrong to the network.
     pub fn model_total_blocks(&self) -> i32 {
         // The same shape `serve_config` serves, block or no block.
         #[cfg(feature = "synthetic")]
@@ -1328,7 +1336,7 @@ impl KwaaiNetConfig {
         if let Ok(model_dir) = crate::hf::resolve_snapshot(&self.model) {
             let config_path = model_dir.join("config.json");
             if let Ok(s) = std::fs::read_to_string(&config_path) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
+                if let Ok(v) = kwaai_inference::hf_flat_config(&s) {
                     if let Some(n) = v["num_hidden_layers"].as_i64() {
                         return n as i32;
                     }
